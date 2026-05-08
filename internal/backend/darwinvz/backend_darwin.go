@@ -534,9 +534,10 @@ func (a *Adapter) runSandboxFileTransferCommand(ctx context.Context, sandboxID s
 		return nil, err
 	}
 	return a.runFileTransferCommand(ctx, instance, backend.ExecutionRequest{
-		SandboxID: sandboxID,
-		Command:   cmd,
-		Policy:    instance.Policy,
+		SandboxID:              sandboxID,
+		Command:                cmd,
+		Policy:                 instance.Policy,
+		SkipDockerServiceStart: true,
 	}, stream)
 }
 
@@ -644,9 +645,10 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	syncCtx, cancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
 	defer cancel()
 	if _, err := executeInSandbox(syncCtx, ctx, instance, backend.ExecutionRequest{
-		SandboxID: sandboxID,
-		Command:   []string{"sync"},
-		Policy:    instance.Policy,
+		SandboxID:              sandboxID,
+		Command:                []string{"sync"},
+		Policy:                 instance.Policy,
+		SkipDockerServiceStart: true,
 	}, backend.OutputStream{}); err != nil {
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
@@ -1653,6 +1655,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		Env:                     append([]string(nil), req.Env...),
 		ClosedEnv:               req.ClosedEnv,
 		TTY:                     req.TTY,
+		StartDockerService:      activePolicy.Docker.Required && req.NetworkStage != policy.NetworkStageWorkspace && !req.SkipDockerServiceStart,
 		CacheOutputFileCaptures: cacheOutputCaptures,
 		InputProjection:         darwinVZInputProjection(req.InputProjection),
 		OverlayCapture:          guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),

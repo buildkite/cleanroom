@@ -87,51 +87,17 @@ func TestGuestInitScriptConfiguresLoopback(t *testing.T) {
 	}
 }
 
-func TestGuestInitScriptAutostartsDockerWhenAvailable(t *testing.T) {
-	if !strings.Contains(guestInitScriptTemplate, "DOCKER_REQUIRED=\"$(arg_value cleanroom_service_docker_required || true)\"") {
-		t.Fatal("expected docker service required flag lookup in init script")
+func TestGuestInitScriptDoesNotStartDocker(t *testing.T) {
+	noDockerStrings := []string{
+		"dockerd",
+		"cleanroom_service_docker_required",
+		"DOCKER_REQUIRED",
+		"/var/lib/docker",
+		"docker version",
 	}
-
-	if !strings.Contains(guestInitScriptTemplate, "[ \"$DOCKER_REQUIRED\" = \"1\" ] && command -v dockerd >/dev/null 2>&1") {
-		t.Fatal("expected dockerd launch to be gated by docker service contract")
-	}
-
-	if !strings.Contains(guestInitScriptTemplate, "DOCKER_STORAGE_DRIVER=\"$(arg_value cleanroom_service_docker_storage_driver || true)\"") {
-		t.Fatal("expected docker storage driver boot arg lookup in init script")
-	}
-
-	if !strings.Contains(guestInitScriptTemplate, "DOCKER_IPTABLES=\"$(arg_value cleanroom_service_docker_iptables || true)\"") {
-		t.Fatal("expected docker iptables boot arg lookup in init script")
-	}
-	if !strings.Contains(guestInitScriptTemplate, "DOCKER_MIRROR_HOST=\"$(arg_value cleanroom_service_docker_registry_mirror_host || true)\"") {
-		t.Fatal("expected docker registry mirror host boot arg lookup in init script")
-	}
-	if !strings.Contains(guestInitScriptTemplate, "DOCKER_MIRROR_PORT=\"$(arg_value cleanroom_service_docker_registry_mirror_port || true)\"") {
-		t.Fatal("expected docker registry mirror port boot arg lookup in init script")
-	}
-	if !strings.Contains(guestInitScriptTemplate, "DOCKER_MIRROR_REGISTRIES=\"$(arg_value cleanroom_service_docker_registry_mirror_registries || true)\"") {
-		t.Fatal("expected docker registry mirror registries boot arg lookup in init script")
-	}
-	if !strings.Contains(guestInitScriptTemplate, "--registry-mirror=http://$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT") {
-		t.Fatal("expected init script to configure dockerd registry mirror when provided")
-	}
-	if !strings.Contains(guestInitScriptTemplate, "--insecure-registry=$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT") {
-		t.Fatal("expected init script to mark the dockerd mirror as insecure for guest HTTP access")
-	}
-	if !strings.Contains(guestInitScriptTemplate, `mirror_dir="/etc/docker/certs.d/$registry"`) {
-		t.Fatal("expected init script to configure per-registry Docker host config")
-	}
-	if strings.Contains(guestInitScriptTemplate, `/etc/containerd/certs.d`) {
-		t.Fatal("expected init script to write registry host config where dockerd reads it")
-	}
-	if !strings.Contains(guestInitScriptTemplate, `printf 'server = "http://%s:%s/registry/%s"\n' "$DOCKER_MIRROR_HOST" "$DOCKER_MIRROR_PORT" "$registry"`) {
-		t.Fatal("expected init script to make the Cleanroom registry gateway path authoritative")
-	}
-	if strings.Contains(guestInitScriptTemplate, `printf 'server = "https://%s"\n' "$registry"`) {
-		t.Fatal("expected init script not to configure direct upstream fallback")
-	}
-
-	if !strings.Contains(guestInitScriptTemplate, "docker version >/dev/null 2>&1") {
-		t.Fatal("expected init script to wait for dockerd API readiness")
+	for _, s := range noDockerStrings {
+		if strings.Contains(guestInitScriptTemplate, s) {
+			t.Fatalf("expected init script not to contain %q (docker lifecycle moved to agent)", s)
+		}
 	}
 }

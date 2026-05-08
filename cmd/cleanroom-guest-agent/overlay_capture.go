@@ -22,6 +22,13 @@ type overlayCaptureLayout struct {
 	MergedRoot string
 }
 
+type overlayCaptureRuntimeSocket struct {
+	SourcePath string
+	GuestPath  string
+}
+
+type overlayCaptureFileBinder func(source, target string, mounted *[]string) error
+
 var overlayCaptureRoot = "/run/cleanroom/overlay-captures"
 var overlayCaptureVirtualMounts = []string{"/dev", "/proc", "/sys"}
 var overlayCaptureScratchMounts = []struct {
@@ -31,6 +38,10 @@ var overlayCaptureScratchMounts = []struct {
 	{Path: "/tmp", Data: "mode=1777"},
 	{Path: "/var/tmp", Data: "mode=1777"},
 	{Path: "/run", Data: "mode=0755"},
+}
+var overlayCaptureRuntimeSockets = []overlayCaptureRuntimeSocket{
+	{SourcePath: "/run/docker.sock", GuestPath: "/run/docker.sock"},
+	{SourcePath: "/var/run/docker.sock", GuestPath: "/var/run/docker.sock"},
 }
 
 func setupOverlayCapture(req vsockexec.ExecRequest) (string, func(), error) {
@@ -89,6 +100,10 @@ func setupOverlayCapture(req vsockexec.ExecRequest) (string, func(), error) {
 			cleanup()
 			return "", nil, err
 		}
+	}
+	if err := bindOverlayCaptureRuntimeSockets(layout.MergedRoot, &mounted); err != nil {
+		cleanup()
+		return "", nil, err
 	}
 	return layout.MergedRoot, cleanup, nil
 }
@@ -232,6 +247,64 @@ func bindOverlayCapturePath(source, target string, readOnly bool, mounted *[]str
 	return nil
 }
 
+func bindOverlayCaptureRuntimeSockets(mergedRoot string, mounted *[]string) error {
+	return bindOverlayCaptureRuntimeSocketsWith(mergedRoot, overlayCaptureRuntimeSockets, mounted, bindOverlayCaptureFile)
+}
+
+func bindOverlayCaptureRuntimeSocketsWith(mergedRoot string, sockets []overlayCaptureRuntimeSocket, mounted *[]string, bindFile overlayCaptureFileBinder) error {
+	mountedTargets := make(map[string]struct{}, len(sockets))
+	for _, socket := range sockets {
+		source, target, ok, err := overlayCaptureRuntimeSocketBind(mergedRoot, socket)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		if _, exists := mountedTargets[target]; exists {
+			continue
+		}
+		if err := bindFile(source, target, mounted); err != nil {
+			return err
+		}
+		mountedTargets[target] = struct{}{}
+	}
+	return nil
+}
+
+func overlayCaptureRuntimeSocketBind(mergedRoot string, socket overlayCaptureRuntimeSocket) (string, string, bool, error) {
+	source, err := cleanOverlayCaptureAbsolutePath("overlay capture runtime socket source", socket.SourcePath)
+	if err != nil {
+		return "", "", false, err
+	}
+	target, err := overlayCaptureGuestTarget(mergedRoot, socket.GuestPath)
+	if err != nil {
+		return "", "", false, err
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", false, nil
+		}
+		return "", "", false, fmt.Errorf("stat overlay capture runtime socket %s: %w", source, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return "", "", false, nil
+	}
+	return source, target, true, nil
+}
+
+func bindOverlayCaptureFile(source, target string, mounted *[]string) error {
+	if err := ensureOverlayCaptureFile(target); err != nil {
+		return err
+	}
+	if err := unix.Mount(source, target, "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("bind overlay capture file %s at %s: %w", source, target, err)
+	}
+	*mounted = append(*mounted, target)
+	return nil
+}
+
 func mountOverlayCaptureScratchPath(mergedRoot, guestPath, data string, mounted *[]string) error {
 	target, err := overlayCaptureGuestTarget(mergedRoot, guestPath)
 	if err != nil {
@@ -324,6 +397,30 @@ func ensureOverlayCaptureDir(path string) error {
 	}
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return fmt.Errorf("create overlay capture path %s: %w", path, err)
+	}
+	return nil
+}
+
+func ensureOverlayCaptureFile(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("overlay capture path %s is a directory", path)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat overlay capture path %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create overlay capture path parent %s: %w", filepath.Dir(path), err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create overlay capture file %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close overlay capture file %s: %w", path, err)
 	}
 	return nil
 }

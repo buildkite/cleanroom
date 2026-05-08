@@ -302,19 +302,24 @@ On a portable block miss, Cleanroom:
    output volumes.
 3. Mounts managed output volumes at declared `outputs.dirs` paths and prepares
    declared `outputs.files` for post-command capture.
-4. Creates a per-block overlay root with the current rootfs as lowerdir.
-5. Mounts scratch paths such as `/tmp`, `/var/tmp`, and `/run` as scratch or
+4. Starts requested runtime services, such as Docker, only after output volumes
+   are mounted and only for non-workspace phases. This lets paths like
+   `/var/lib/docker` be declared outputs instead of rootfs state.
+5. Creates a per-block overlay root with the current rootfs as lowerdir.
+6. Mounts scratch paths such as `/tmp`, `/var/tmp`, and `/run` as scratch or
    filters them from the escaped-write report.
-6. Runs the command inside the overlay view with the normal block working
+   Runtime sockets that commands need, such as `/run/docker.sock`, are rebound
+   into the overlay view after the scratch mount.
+7. Runs the command inside the overlay view with the normal block working
    directory, usually `/workspace`.
-7. Scans the overlay upperdir.
-8. Treats declared output writes, volatile writes, and scratch writes as allowed.
-9. Treats every other persistent write as an escaped write.
-10. Captures declared file outputs into their managed output volume only after
+8. Scans the overlay upperdir.
+9. Treats declared output writes, volatile writes, and scratch writes as allowed.
+10. Treats every other persistent write as an escaped write.
+11. Captures declared file outputs into their managed output volume only after
     the command succeeds.
-11. Publishes a portable cache entry only after output metadata is durably
+12. Publishes a portable cache entry only after output metadata is durably
     persisted.
-12. Leaves declared output volumes mounted for later blocks, services, and user
+13. Leaves declared output volumes mounted for later blocks, services, and user
     commands.
 
 If escaped writes are found, Cleanroom skips portable publication, discards the
@@ -630,6 +635,8 @@ Minimum coverage:
 - volatile writes do not skip portable publication and are not restored on hit
 - pre-existing declared output directories are seeded into empty output volumes
   on miss and treated as cache-owned volumes on hit
+- Docker starts after cache output mounts for non-workspace phases, and overlay
+  capture preserves the Docker socket when `/run` is scratch-mounted
 - temporary output stores are destroyed on command failure, escaped writes,
   undeclared reads, metadata failure, cancellation, and exact fallback
 - cache hits restore output dirs and files before later dependency, service, and

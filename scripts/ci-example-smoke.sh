@@ -50,12 +50,12 @@ sandbox:
       - host: pkg-containers.githubusercontent.com
         ports: [443]
 EOF
-
 docker_pull_image="ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9"
 
 for example_dir in \
   "$REPO_ROOT/examples/basic" \
   "$REPO_ROOT/examples/docker" \
+  "$REPO_ROOT/examples/docker-cache-output" \
   "$REPO_ROOT/examples/rails" \
   "$REPO_ROOT/examples/buildkite-agent"; do
   echo "--- :mag: Validate $(basename "$example_dir") example"
@@ -76,6 +76,13 @@ echo "--- :whale: Docker example version smoke test ($BACKEND)"
 "$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$docker_smoke_dir" -- sh -lc 'docker version >/dev/null && echo docker-version-ok' | tee "$tmpdir/docker-version.out"
 if ! grep -q '^docker-version-ok$' "$tmpdir/docker-version.out"; then
   echo "expected docker version smoke output missing" >&2
+  exit 1
+fi
+
+echo "--- :whale: Docker cache-output regression smoke test ($BACKEND)"
+"$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$REPO_ROOT/examples/docker-cache-output" -- sh -lc 'docker version >/dev/null && echo docker-cached-ok' | tee "$tmpdir/docker-cached.out"
+if ! grep -q '^docker-cached-ok$' "$tmpdir/docker-cached.out"; then
+  echo "expected docker cache-output regression smoke output missing" >&2
   exit 1
 fi
 

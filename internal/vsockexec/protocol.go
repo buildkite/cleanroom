@@ -20,6 +20,7 @@ type ExecRequest struct {
 	ClosedEnv               bool                     `json:"closed_env,omitempty"`
 	EntropySeed             []byte                   `json:"entropy_seed,omitempty"`
 	TTY                     bool                     `json:"tty,omitempty"`
+	StartDockerService      bool                     `json:"start_docker_service,omitempty"`
 	CacheOutputMounts       []CacheOutputMount       `json:"cache_output_mounts,omitempty"`
 	CacheOutputFileCaptures []CacheOutputFileCapture `json:"cache_output_file_captures,omitempty"`
 	InputProjection         *InputProjection         `json:"input_projection,omitempty"`

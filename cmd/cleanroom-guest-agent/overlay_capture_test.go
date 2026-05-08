@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,6 +205,131 @@ func TestOverlayCaptureInputProjectionBindUsesSourceRootWhenMountedReadOnly(t *t
 	}
 }
 
+func TestBindOverlayCaptureRuntimeSocketsPreservesVarRunDockerSocketThroughRunScratch(t *testing.T) {
+	t.Parallel()
+
+	mergedRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mergedRoot, "run"), 0o755); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(mergedRoot, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(mergedRoot, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	socketPath := listenOverlayCaptureTestSocket(t)
+	var gotSource, gotTarget string
+	var mounted []string
+	err := bindOverlayCaptureRuntimeSocketsWith(mergedRoot, []overlayCaptureRuntimeSocket{
+		{SourcePath: socketPath, GuestPath: "/var/run/docker.sock"},
+	}, &mounted, func(source, target string, mounted *[]string) error {
+		gotSource = source
+		gotTarget = target
+		*mounted = append(*mounted, target)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("bindOverlayCaptureRuntimeSocketsWith returned error: %v", err)
+	}
+	if gotSource != socketPath {
+		t.Fatalf("unexpected source: got %q want %q", gotSource, socketPath)
+	}
+	if want := filepath.Join(mergedRoot, "run", "docker.sock"); gotTarget != want {
+		t.Fatalf("unexpected target: got %q want %q", gotTarget, want)
+	}
+	if len(mounted) != 1 || mounted[0] != gotTarget {
+		t.Fatalf("unexpected mounted targets: %#v", mounted)
+	}
+}
+
+func TestBindOverlayCaptureRuntimeSocketsDeduplicatesVarRunSymlink(t *testing.T) {
+	t.Parallel()
+
+	mergedRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mergedRoot, "run"), 0o755); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(mergedRoot, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(mergedRoot, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	socketPath := listenOverlayCaptureTestSocket(t)
+	binds := 0
+	var mounted []string
+	err := bindOverlayCaptureRuntimeSocketsWith(mergedRoot, []overlayCaptureRuntimeSocket{
+		{SourcePath: socketPath, GuestPath: "/run/docker.sock"},
+		{SourcePath: socketPath, GuestPath: "/var/run/docker.sock"},
+	}, &mounted, func(source, target string, mounted *[]string) error {
+		binds++
+		*mounted = append(*mounted, target)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("bindOverlayCaptureRuntimeSocketsWith returned error: %v", err)
+	}
+	if binds != 1 {
+		t.Fatalf("unexpected bind count: got %d want 1", binds)
+	}
+	if want := []string{filepath.Join(mergedRoot, "run", "docker.sock")}; len(mounted) != len(want) || mounted[0] != want[0] {
+		t.Fatalf("unexpected mounted targets: got %#v want %#v", mounted, want)
+	}
+}
+
+func TestBindOverlayCaptureRuntimeSocketsIgnoresMissingAndNonSocketPaths(t *testing.T) {
+	t.Parallel()
+
+	mergedRoot := t.TempDir()
+	regularFile := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(regularFile, []byte("not a socket"), 0o644); err != nil {
+		t.Fatalf("write regular file: %v", err)
+	}
+
+	var mounted []string
+	err := bindOverlayCaptureRuntimeSocketsWith(mergedRoot, []overlayCaptureRuntimeSocket{
+		{SourcePath: filepath.Join(t.TempDir(), "missing.sock"), GuestPath: "/run/docker.sock"},
+		{SourcePath: regularFile, GuestPath: "/var/run/docker.sock"},
+	}, &mounted, func(source, target string, mounted *[]string) error {
+		t.Fatalf("unexpected bind for source %s target %s", source, target)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("bindOverlayCaptureRuntimeSocketsWith returned error: %v", err)
+	}
+	if len(mounted) != 0 {
+		t.Fatalf("unexpected mounted targets: %#v", mounted)
+	}
+}
+
+func TestOverlayCaptureRuntimeSocketDefaultsCoverDockerSocketPaths(t *testing.T) {
+	t.Parallel()
+
+	want := []overlayCaptureRuntimeSocket{
+		{SourcePath: "/run/docker.sock", GuestPath: "/run/docker.sock"},
+		{SourcePath: "/var/run/docker.sock", GuestPath: "/var/run/docker.sock"},
+	}
+	if len(overlayCaptureRuntimeSockets) != len(want) {
+		t.Fatalf("unexpected runtime socket count: got %d want %d", len(overlayCaptureRuntimeSockets), len(want))
+	}
+	for _, socket := range overlayCaptureRuntimeSockets {
+		if !strings.HasPrefix(socket.SourcePath, "/run/") && !strings.HasPrefix(socket.SourcePath, "/var/run/") {
+			t.Fatalf("runtime socket source %q is outside expected runtime dirs", socket.SourcePath)
+		}
+		if !strings.HasPrefix(socket.GuestPath, "/run/") && !strings.HasPrefix(socket.GuestPath, "/var/run/") {
+			t.Fatalf("runtime socket guest path %q is outside expected runtime dirs", socket.GuestPath)
+		}
+	}
+	for i, socket := range want {
+		if overlayCaptureRuntimeSockets[i] != socket {
+			t.Fatalf("unexpected runtime socket at %d: got %#v want %#v", i, overlayCaptureRuntimeSockets[i], socket)
+		}
+	}
+}
+
 func TestNewGuestCommandUsesOverlayRootAsChroot(t *testing.T) {
 	t.Parallel()
 
@@ -241,6 +367,19 @@ func TestNewGuestCommandNormalizesOverlayRootRelativeDirs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func listenOverlayCaptureTestSocket(t *testing.T) string {
+	t.Helper()
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+	return socketPath
 }
 
 func assertOverlayCaptureEntry(t *testing.T, entries []vsockexec.OverlayCaptureEntry, want vsockexec.OverlayCaptureEntry) {
