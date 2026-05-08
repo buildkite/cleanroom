@@ -209,6 +209,7 @@ type executionOptions struct {
 	LaunchSeconds                               int64
 	PreserveRepositoryChangesetPendingExecution bool
 	SkipRunBefore                               bool
+	WorkspaceCopyIn                             bool
 }
 
 type executionSnapshot struct {
@@ -2117,6 +2118,7 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		}
 		tty = opts.GetTty()
 	}
+	execOpts.WorkspaceCopyIn = internalWorkspaceCopyIn && repository != nil
 	if err := validateInternalExecutionOptions(execOpts, internalWorkspaceCopyIn); err != nil {
 		return nil, err
 	}
@@ -3241,6 +3243,10 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		})
 	}
 
+	networkStage := policy.NetworkStageExecution
+	if ex.Options.WorkspaceCopyIn {
+		networkStage = policy.NetworkStageWorkspace
+	}
 	executionReq := backend.ExecutionRequest{
 		SandboxID:         sandboxID,
 		ExecutionID:       ex.ID,
@@ -3248,7 +3254,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		Env:               append([]string(nil), ex.Env...),
 		TTY:               ex.TTY,
 		Policy:            sb.Policy,
-		NetworkStage:      policy.NetworkStageExecution,
+		NetworkStage:      networkStage,
 		FirecrackerConfig: firecrackerCfg,
 	}
 	runCtx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
