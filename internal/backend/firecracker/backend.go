@@ -462,9 +462,6 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	}
 
 	cacheOutputMounts := cloneCacheOutputMounts(instance.cacheOutputMounts)
-	if req.NetworkStage == policy.NetworkStageWorkspace {
-		cacheOutputMounts = nil
-	}
 	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Dir, req.Env, req.ClosedEnv, req.InputProjection, cacheOutputMounts, cacheOutputCaptures, req.OverlayCapture, req.TTY, stream)
 	if err != nil {
 		observation.ExitCode = 1

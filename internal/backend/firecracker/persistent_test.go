@@ -314,7 +314,7 @@ func TestRunFileTransferCommandForwardsCacheOutputMounts(t *testing.T) {
 	}
 }
 
-func TestRunInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
+func TestRunInSandboxForwardsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 	t.Parallel()
 
 	var gotMounts []vsockexec.CacheOutputMount
@@ -348,8 +348,17 @@ func TestRunInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 	}, backend.OutputStream{}); err != nil {
 		t.Fatalf("RunInSandbox returned error: %v", err)
 	}
-	if len(gotMounts) != 0 {
-		t.Fatalf("workspace stage should not receive cache output mounts, got %#v", gotMounts)
+	wantMounts := []vsockexec.CacheOutputMount{
+		{
+			DevicePath: "/dev/vdb",
+			MountPath:  "/run/cleanroom/cache-output-volumes/cacheout0",
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/workspace/node_modules", Subpath: "dirs/0"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(gotMounts, wantMounts) {
+		t.Fatalf("workspace stage should receive cache output mounts, got %#v", gotMounts)
 	}
 }
 

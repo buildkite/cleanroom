@@ -1657,9 +1657,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		InputProjection:         darwinVZInputProjection(req.InputProjection),
 		OverlayCapture:          guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),
 	}
-	if req.NetworkStage != policy.NetworkStageWorkspace {
-		guestReq.CacheOutputMounts = cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts)
-	}
+	guestReq.CacheOutputMounts = cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts)
 	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
 		if gwPort <= 0 {

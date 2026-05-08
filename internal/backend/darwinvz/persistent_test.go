@@ -300,7 +300,7 @@ func TestRunInSandboxRejectsExitedSandbox(t *testing.T) {
 	}
 }
 
-func TestExecuteInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
+func TestExecuteInSandboxForwardsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 	t.Parallel()
 
 	socketDir, err := os.MkdirTemp("", "cr-cache-mounts-")
@@ -331,8 +331,17 @@ func TestExecuteInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 			t.Errorf("decode guest exec request: %v", decodeErr)
 			return
 		}
-		if len(req.CacheOutputMounts) != 0 {
-			t.Errorf("workspace stage should not receive cache output mounts, got %#v", req.CacheOutputMounts)
+		wantMounts := []vsockexec.CacheOutputMount{
+			{
+				DevicePath: "/dev/vdb",
+				MountPath:  "/run/cleanroom/cache-output-volumes/cacheout0",
+				DirMappings: []vsockexec.CacheOutputDirMount{
+					{GuestPath: "/workspace/node_modules", Subpath: "dirs/0"},
+				},
+			},
+		}
+		if !reflect.DeepEqual(req.CacheOutputMounts, wantMounts) {
+			t.Errorf("workspace stage should receive cache output mounts, got %#v", req.CacheOutputMounts)
 		}
 		if encodeErr := vsockexec.EncodeStreamFrame(conn, vsockexec.ExecStreamFrame{Type: "exit", ExitCode: 0}); encodeErr != nil {
 			t.Errorf("encode guest exec response: %v", encodeErr)
