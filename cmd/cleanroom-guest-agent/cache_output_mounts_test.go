@@ -100,23 +100,6 @@ func TestCacheOutputMountActionsLeavesUnspecifiedFileModeUnset(t *testing.T) {
 	}
 }
 
-func TestEnsureCacheOutputDirRejectsNonEmptyMountpoint(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "existing"), []byte("image content"), 0o644); err != nil {
-		t.Fatalf("write existing file: %v", err)
-	}
-
-	err := ensureCacheOutputDir(dir, 0o755, false, true)
-	if err == nil {
-		t.Fatal("expected non-empty directory to fail")
-	}
-	if !strings.Contains(err.Error(), "not empty") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestSeedCacheOutputDirCopiesExistingOutputDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -241,7 +224,7 @@ func TestSeedCacheOutputDirRejectsSymlinkInsideSource(t *testing.T) {
 func TestEnsureCacheOutputDirRequiresExistingHitSource(t *testing.T) {
 	t.Parallel()
 
-	err := ensureCacheOutputDir(filepath.Join(t.TempDir(), "missing"), 0o755, true, false)
+	err := ensureCacheOutputDir(filepath.Join(t.TempDir(), "missing"), 0o755, true)
 	if err == nil {
 		t.Fatal("expected missing hit source directory to fail")
 	}
