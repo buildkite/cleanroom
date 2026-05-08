@@ -1,0 +1,24 @@
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine-docker@sha256:19c696770ae8f3f36e786bf25a0e08e5a5c18b9a7fe52bde7d988c3da500bf08
+  docker:
+    required: true
+  services:
+    - name: docker-images
+      command: docker version >/dev/null
+      inputs:
+        files:
+          - examples/docker-cache-output/cleanroom.yaml
+      outputs:
+        dirs:
+          - /var/lib/docker
+  network:
+    default: deny
+    allow:
+      - host: github.com
+        ports: [443]
+      - host: ghcr.io
+        ports: [443]
+      - host: pkg-containers.githubusercontent.com
+        ports: [443]

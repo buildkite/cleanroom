@@ -57,6 +57,30 @@ func main() {
 	}
 }
 
+var setupCacheOutputMountsOnceFn = setupCacheOutputMountsOnce
+var startDockerServiceOnceFn = func() error {
+	return startDockerServiceOnce(dockerServiceConfigForRequestedStart(readKernelCmdline()))
+}
+
+func dockerServiceConfigForRequestedStart(cmdline string) dockerServiceConfig {
+	cfg := parseDockerServiceConfig(cmdline)
+	cfg.Required = true
+	return cfg
+}
+
+func runConnPrelude(req vsockexec.ExecRequest) error {
+	if err := setupCacheOutputMountsOnceFn(req.CacheOutputMounts); err != nil {
+		return err
+	}
+	if !req.StartDockerService {
+		return nil
+	}
+	if err := startDockerServiceOnceFn(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func handleConn(conn io.ReadWriteCloser) {
 	defer conn.Close()
 
@@ -80,7 +104,7 @@ func handleConn(conn io.ReadWriteCloser) {
 	if len(req.EntropySeed) > 0 {
 		_ = injectEntropy(req.EntropySeed)
 	}
-	if err := setupCacheOutputMountsOnce(req.CacheOutputMounts); err != nil {
+	if err := runConnPrelude(req); err != nil {
 		sendErrorResponse(conn, err)
 		return
 	}

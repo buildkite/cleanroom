@@ -300,7 +300,7 @@ func TestRunInSandboxRejectsExitedSandbox(t *testing.T) {
 	}
 }
 
-func TestExecuteInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
+func TestExecuteInSandboxSkipsCacheOutputMountsAndDockerForWorkspaceStage(t *testing.T) {
 	t.Parallel()
 
 	socketDir, err := os.MkdirTemp("", "cr-cache-mounts-")
@@ -334,6 +334,9 @@ func TestExecuteInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 		if len(req.CacheOutputMounts) != 0 {
 			t.Errorf("workspace stage should not receive cache output mounts, got %#v", req.CacheOutputMounts)
 		}
+		if req.StartDockerService {
+			t.Error("workspace stage should not request docker service startup")
+		}
 		if encodeErr := vsockexec.EncodeStreamFrame(conn, vsockexec.ExecStreamFrame{Type: "exit", ExitCode: 0}); encodeErr != nil {
 			t.Errorf("encode guest exec response: %v", encodeErr)
 		}
@@ -343,7 +346,7 @@ func TestExecuteInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 	_, err = adapter.executeInSandbox(context.Background(), context.Background(), &sandboxInstance{
 		SandboxID:       "cr-test",
 		ProxySocketPath: socketPath,
-		Policy:          &policy.CompiledPolicy{NetworkDefault: "deny"},
+		Policy:          &policy.CompiledPolicy{NetworkDefault: "deny", Docker: policy.DockerService{Required: true}},
 		Helper:          &helperSession{},
 		exitedCh:        make(chan struct{}),
 		cacheOutputMounts: []vsockexec.CacheOutputMount{
@@ -359,8 +362,141 @@ func TestExecuteInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 		SandboxID:    "cr-test",
 		ExecutionID:  "run-123",
 		Command:      []string{"true"},
-		Policy:       &policy.CompiledPolicy{NetworkDefault: "deny"},
+		Policy:       &policy.CompiledPolicy{NetworkDefault: "deny", Docker: policy.DockerService{Required: true}},
 		NetworkStage: policy.NetworkStageWorkspace,
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("executeInSandbox returned error: %v", err)
+	}
+	<-done
+}
+
+func TestExecuteInSandboxRequestsDockerStartAfterCacheOutputMounts(t *testing.T) {
+	t.Parallel()
+
+	socketDir, err := os.MkdirTemp("", "cr-docker-start-")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(socketDir)
+
+	socketPath := filepath.Join(socketDir, "proxy.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	wantMounts := []vsockexec.CacheOutputMount{
+		{
+			DevicePath: "/dev/vdb",
+			MountPath:  "/run/cleanroom/cache-output-volumes/cacheout0",
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/var/lib/docker", Subpath: "dirs/0"},
+			},
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			t.Errorf("accept guest exec connection: %v", acceptErr)
+			return
+		}
+		defer conn.Close()
+
+		var req vsockexec.ExecRequest
+		if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+			t.Errorf("decode guest exec request: %v", decodeErr)
+			return
+		}
+		if !reflect.DeepEqual(req.CacheOutputMounts, wantMounts) {
+			t.Errorf("unexpected cache output mounts: got %#v want %#v", req.CacheOutputMounts, wantMounts)
+		}
+		if !req.StartDockerService {
+			t.Error("expected docker service startup request")
+		}
+		if encodeErr := vsockexec.EncodeStreamFrame(conn, vsockexec.ExecStreamFrame{Type: "exit", ExitCode: 0}); encodeErr != nil {
+			t.Errorf("encode guest exec response: %v", encodeErr)
+		}
+	}()
+
+	adapter := &Adapter{}
+	_, err = adapter.executeInSandbox(context.Background(), context.Background(), &sandboxInstance{
+		SandboxID:         "cr-test",
+		ProxySocketPath:   socketPath,
+		Policy:            &policy.CompiledPolicy{NetworkDefault: "deny", Docker: policy.DockerService{Required: true}},
+		Helper:            &helperSession{},
+		exitedCh:          make(chan struct{}),
+		cacheOutputMounts: cloneDarwinVZCacheOutputMounts(wantMounts),
+	}, backend.ExecutionRequest{
+		SandboxID:    "cr-test",
+		ExecutionID:  "run-123",
+		Command:      []string{"docker", "version"},
+		Policy:       &policy.CompiledPolicy{NetworkDefault: "deny", Docker: policy.DockerService{Required: true}},
+		NetworkStage: policy.NetworkStageServices,
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("executeInSandbox returned error: %v", err)
+	}
+	<-done
+}
+
+func TestExecuteInSandboxSkipsDockerStartWhenSuppressed(t *testing.T) {
+	t.Parallel()
+
+	socketDir, err := os.MkdirTemp("", "cr-docker-skip-")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(socketDir)
+
+	socketPath := filepath.Join(socketDir, "proxy.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			t.Errorf("accept guest exec connection: %v", acceptErr)
+			return
+		}
+		defer conn.Close()
+
+		var req vsockexec.ExecRequest
+		if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+			t.Errorf("decode guest exec request: %v", decodeErr)
+			return
+		}
+		if req.StartDockerService {
+			t.Error("expected docker service startup to be suppressed")
+		}
+		if encodeErr := vsockexec.EncodeStreamFrame(conn, vsockexec.ExecStreamFrame{Type: "exit", ExitCode: 0}); encodeErr != nil {
+			t.Errorf("encode guest exec response: %v", encodeErr)
+		}
+	}()
+
+	adapter := &Adapter{}
+	_, err = adapter.executeInSandbox(context.Background(), context.Background(), &sandboxInstance{
+		SandboxID:       "cr-test",
+		ProxySocketPath: socketPath,
+		Policy:          &policy.CompiledPolicy{NetworkDefault: "deny", Docker: policy.DockerService{Required: true}},
+		Helper:          &helperSession{},
+		exitedCh:        make(chan struct{}),
+	}, backend.ExecutionRequest{
+		SandboxID:              "cr-test",
+		ExecutionID:            "run-123",
+		Command:                []string{"sync"},
+		Policy:                 &policy.CompiledPolicy{NetworkDefault: "deny", Docker: policy.DockerService{Required: true}},
+		NetworkStage:           policy.NetworkStageServices,
+		SkipDockerServiceStart: true,
 	}, backend.OutputStream{})
 	if err != nil {
 		t.Fatalf("executeInSandbox returned error: %v", err)

@@ -360,6 +360,7 @@ type ExecutionRequest struct {
 	OverlayCapture          *OverlayCapture
 	Policy                  *policy.CompiledPolicy
 	NetworkStage            policy.NetworkStage
+	SkipDockerServiceStart  bool
 	FirecrackerConfig
 }
 

@@ -221,78 +221,6 @@ if [ -z "$GUEST_PORT" ]; then
 fi
 export CLEANROOM_VSOCK_PORT="$GUEST_PORT"
 
-DOCKER_REQUIRED="$(arg_value cleanroom_service_docker_required || true)"
-if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
-  DOCKER_STARTUP_TIMEOUT="$(arg_value cleanroom_service_docker_startup_timeout || true)"
-  case "$DOCKER_STARTUP_TIMEOUT" in
-    ''|*[!0-9]*) DOCKER_STARTUP_TIMEOUT="20" ;;
-  esac
-  if [ "$DOCKER_STARTUP_TIMEOUT" -le 0 ]; then
-    DOCKER_STARTUP_TIMEOUT="20"
-  fi
-  DOCKER_STORAGE_DRIVER="$(arg_value cleanroom_service_docker_storage_driver || true)"
-  if [ -z "$DOCKER_STORAGE_DRIVER" ]; then
-    DOCKER_STORAGE_DRIVER="overlay2"
-  fi
-  DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
-  DOCKER_MIRROR_HOST="$(arg_value cleanroom_service_docker_registry_mirror_host || true)"
-  DOCKER_MIRROR_PORT="$(arg_value cleanroom_service_docker_registry_mirror_port || true)"
-  DOCKER_MIRROR_REGISTRIES="$(arg_value cleanroom_service_docker_registry_mirror_registries || true)"
-  case "$DOCKER_MIRROR_PORT" in
-    ''|*[!0-9]*) DOCKER_MIRROR_PORT="" ;;
-  esac
-
-  if [ -n "$DOCKER_MIRROR_HOST" ] && [ -n "$DOCKER_MIRROR_PORT" ] && [ -n "$DOCKER_MIRROR_REGISTRIES" ]; then
-    old_ifs="$IFS"
-    IFS=','
-    for registry in $DOCKER_MIRROR_REGISTRIES; do
-      IFS="$old_ifs"
-      case "$registry" in
-        ''|*/*|*[[:space:]]*) ;;
-        *)
-          mirror_dir="/etc/docker/certs.d/$registry"
-          mkdir -p "$mirror_dir" 2>/dev/null || true
-          {
-            printf 'server = "http://%s:%s/registry/%s"\n' "$DOCKER_MIRROR_HOST" "$DOCKER_MIRROR_PORT" "$registry"
-          } > "$mirror_dir/hosts.toml" 2>/dev/null || true
-        ;;
-      esac
-      IFS=','
-    done
-    IFS="$old_ifs"
-  fi
-
-  DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
-  if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then
-    DOCKER_ARGS="$DOCKER_ARGS --iptables=false"
-  fi
-  if [ -n "$DOCKER_MIRROR_HOST" ] && [ -n "$DOCKER_MIRROR_PORT" ]; then
-    DOCKER_ARGS="$DOCKER_ARGS --registry-mirror=http://$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT"
-    DOCKER_ARGS="$DOCKER_ARGS --insecure-registry=$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT"
-  fi
-
-  mkdir -p /var/log /var/lib/docker /etc/docker /var/run /sys/fs/cgroup
-  mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
-  if [ ! -S /var/run/docker.sock ]; then
-    dockerd $DOCKER_ARGS >/var/log/dockerd.log 2>&1 &
-  fi
-  i=0
-  DOCKER_WAIT_TICKS=$((DOCKER_STARTUP_TIMEOUT * 10))
-  while [ "$i" -lt "$DOCKER_WAIT_TICKS" ]; do
-    if [ -S /var/run/docker.sock ]; then
-      if command -v docker >/dev/null 2>&1; then
-        if docker version >/dev/null 2>&1; then
-          break
-        fi
-      else
-        break
-      fi
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-fi
-
 while true; do
   /usr/local/bin/cleanroom-guest-agent || true
   sleep 1
@@ -537,7 +465,8 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	if req.NetworkStage == policy.NetworkStageWorkspace {
 		cacheOutputMounts = nil
 	}
-	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Dir, req.Env, req.ClosedEnv, req.InputProjection, cacheOutputMounts, cacheOutputCaptures, req.OverlayCapture, req.TTY, stream)
+	startDockerService := activePolicy != nil && activePolicy.Docker.Required && req.NetworkStage != policy.NetworkStageWorkspace && !req.SkipDockerServiceStart
+	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Dir, req.Env, req.ClosedEnv, req.InputProjection, cacheOutputMounts, cacheOutputCaptures, req.OverlayCapture, startDockerService, req.TTY, stream)
 	if err != nil {
 		observation.ExitCode = 1
 		observation.GuestError = err.Error()
@@ -629,7 +558,7 @@ func (a *Adapter) runFileTransferCommand(ctx context.Context, sandboxID string, 
 	if err != nil {
 		return nil, err
 	}
-	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, "", nil, false, nil, cloneCacheOutputMounts(instance.cacheOutputMounts), nil, nil, false, stream)
+	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, "", nil, false, nil, cloneCacheOutputMounts(instance.cacheOutputMounts), nil, nil, false, false, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -707,7 +636,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, cloneCacheOutputMounts(instance.cacheOutputMounts), nil, nil, false, backend.OutputStream{})
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, cloneCacheOutputMounts(instance.cacheOutputMounts), nil, nil, false, false, backend.OutputStream{})
 	if err != nil {
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
@@ -844,13 +773,14 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	return nil
 }
 
-func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, dir string, env []string, closedEnv bool, inputProjection *backend.InputProjection, cacheOutputMounts []vsockexec.CacheOutputMount, cacheOutputFileCaptures []vsockexec.CacheOutputFileCapture, overlayCapture *backend.OverlayCapture, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, dir string, env []string, closedEnv bool, inputProjection *backend.InputProjection, cacheOutputMounts []vsockexec.CacheOutputMount, cacheOutputFileCaptures []vsockexec.CacheOutputFileCapture, overlayCapture *backend.OverlayCapture, startDockerService bool, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	guestReq := vsockexec.ExecRequest{
 		Command:                 append([]string(nil), command...),
 		Dir:                     strings.TrimSpace(dir),
 		Env:                     append([]string(nil), env...),
 		ClosedEnv:               closedEnv,
 		TTY:                     tty,
+		StartDockerService:      startDockerService,
 		CacheOutputMounts:       cloneCacheOutputMounts(cacheOutputMounts),
 		CacheOutputFileCaptures: append([]vsockexec.CacheOutputFileCapture(nil), cacheOutputFileCaptures...),
 		InputProjection:         vsockInputProjection(inputProjection),

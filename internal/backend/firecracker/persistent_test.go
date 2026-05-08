@@ -273,6 +273,67 @@ func TestRunInSandboxForwardsCacheOutputMounts(t *testing.T) {
 	}
 }
 
+func TestRunInSandboxRequestsDockerStartForDockerPolicy(t *testing.T) {
+	t.Parallel()
+
+	var gotStartDocker bool
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotStartDocker = req.StartDockerService
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			Policy:    &policy.CompiledPolicy{Docker: policy.DockerService{Required: true}},
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-123",
+		Command:     []string{"docker", "version"},
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if !gotStartDocker {
+		t.Fatal("expected docker service startup request")
+	}
+}
+
+func TestRunInSandboxSkipsDockerStartWhenSuppressed(t *testing.T) {
+	t.Parallel()
+
+	var gotStartDocker bool
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotStartDocker = req.StartDockerService
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			Policy:    &policy.CompiledPolicy{Docker: policy.DockerService{Required: true}},
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:              "cr-test",
+		ExecutionID:            "run-123",
+		Command:                []string{"sync"},
+		SkipDockerServiceStart: true,
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if gotStartDocker {
+		t.Fatal("expected docker service startup to be suppressed")
+	}
+}
+
 func TestRunFileTransferCommandForwardsCacheOutputMounts(t *testing.T) {
 	t.Parallel()
 
@@ -314,13 +375,15 @@ func TestRunFileTransferCommandForwardsCacheOutputMounts(t *testing.T) {
 	}
 }
 
-func TestRunInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
+func TestRunInSandboxSkipsCacheOutputMountsAndDockerForWorkspaceStage(t *testing.T) {
 	t.Parallel()
 
 	var gotMounts []vsockexec.CacheOutputMount
+	var gotStartDocker bool
 	adapter := &Adapter{}
 	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 		gotMounts = cloneCacheOutputMounts(req.CacheOutputMounts)
+		gotStartDocker = req.StartDockerService
 		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
@@ -328,6 +391,7 @@ func TestRunInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 			SandboxID: "cr-test",
 			VsockPath: "/tmp/fake.sock",
 			GuestPort: 10700,
+			Policy:    &policy.CompiledPolicy{Docker: policy.DockerService{Required: true}},
 			cacheOutputMounts: []vsockexec.CacheOutputMount{
 				{
 					DevicePath: "/dev/vdb",
@@ -350,6 +414,9 @@ func TestRunInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
 	}
 	if len(gotMounts) != 0 {
 		t.Fatalf("workspace stage should not receive cache output mounts, got %#v", gotMounts)
+	}
+	if gotStartDocker {
+		t.Fatal("workspace stage should not request docker service startup")
 	}
 }
 
