@@ -582,6 +582,40 @@ func TestHTTPSProxyForwardsTrustedHeadersAndPreservesHost(t *testing.T) {
 	}
 }
 
+func TestHTTPSProxyRewritesBackendRedirectsToExternalHost(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "http://cleanroom-sandbox:3000/redirected")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(backend.Close)
+
+	manager := NewManager(Config{TLSDir: t.TempDir()})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	registerHTTPSRouteForTest(t, manager, "owner-1", "sandbox-1", "*.buildkite", backendDialerFromURL(t, backend.URL))
+
+	req := httptest.NewRequest(http.MethodGet, "https://api.buildkite.cleanroom.localhost:8143/sessions", nil)
+	req.Host = "api.buildkite.cleanroom.localhost:8143"
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.TLS = &tls.ConnectionState{}
+
+	rr := httptest.NewRecorder()
+	manager.handleHTTPS(rr, req)
+
+	if got, want := rr.Code, http.StatusFound; got != want {
+		t.Fatalf("unexpected status: got %d want %d", got, want)
+	}
+	if got, want := rr.Header().Get("Location"), "https://api.buildkite.cleanroom.localhost:8143/redirected"; got != want {
+		t.Fatalf("unexpected redirect location: got %q want %q", got, want)
+	}
+}
+
 func TestHTTPSListenerServesDirectTLSForConfiguredNestedWildcardHosts(t *testing.T) {
 	t.Parallel()
 

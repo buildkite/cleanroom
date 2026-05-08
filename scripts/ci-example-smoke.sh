@@ -25,6 +25,61 @@ docker_smoke_dir="$tmpdir/docker"
 wildcard_example_dir="$REPO_ROOT/examples/wildcard-routing"
 exposure_cert_path="${XDG_CONFIG_HOME:-$HOME/.config}/cleanroom/tls/exposure-cert.pem"
 
+dump_file_if_present() {
+  local label="$1"
+  local path="$2"
+
+  if [[ -f "$path" ]]; then
+    echo "--- $label ($path)" >&2
+    cat "$path" >&2 || true
+  fi
+}
+
+dump_file_tail_if_present() {
+  local label="$1"
+  local path="$2"
+  local lines="${3:-40}"
+
+  if [[ -f "$path" ]]; then
+    echo "--- $label tail ($path)" >&2
+    tail -n "$lines" "$path" >&2 || true
+  fi
+}
+
+dump_wildcard_attempt_debug() {
+  local attempt="$1"
+  local mode="$2"
+
+  echo "--- wildcard attempt debug: attempt=$attempt mode=$mode backend=$BACKEND" >&2
+  if [[ -n "${wildcard_pid:-}" ]]; then
+    ps -p "$wildcard_pid" -o pid=,ppid=,stat=,etime=,command= >&2 || true
+  fi
+  dump_file_tail_if_present "wildcard stderr" "$tmpdir/wildcard.stderr" 80
+  dump_file_tail_if_present "wildcard stdout" "$tmpdir/wildcard.stdout" 80
+  dump_file_tail_if_present "wildcard last curl stderr" "$tmpdir/wildcard-curl.stderr" 40
+}
+
+dump_wildcard_debug() {
+  echo "--- wildcard debug: backend=$BACKEND listen_endpoint=$LISTEN_ENDPOINT" >&2
+  echo "--- wildcard debug: example_dir=$wildcard_example_dir" >&2
+  echo "--- wildcard debug: wildcard_pid=${wildcard_pid:-}" >&2
+  echo "--- wildcard debug: wildcard_url=${wildcard_url:-}" >&2
+  echo "--- wildcard debug: wildcard_port=${wildcard_port:-}" >&2
+  echo "--- wildcard debug: exposure_cert_path=$exposure_cert_path" >&2
+
+  if [[ -f "$exposure_cert_path" ]]; then
+    echo "--- wildcard debug: exposure cert subject" >&2
+    openssl x509 -in "$exposure_cert_path" -noout -subject -issuer -ext subjectAltName >&2 || true
+  fi
+
+  dump_file_if_present "wildcard stdout" "$tmpdir/wildcard.stdout"
+  dump_file_if_present "wildcard stderr" "$tmpdir/wildcard.stderr"
+  dump_file_if_present "wildcard exact response" "$tmpdir/wildcard-exact.out"
+  dump_file_if_present "wildcard app response" "$tmpdir/wildcard-app.out"
+  dump_file_if_present "wildcard redirect headers" "$tmpdir/wildcard-redirect.headers"
+  dump_file_if_present "wildcard last curl stderr" "$tmpdir/wildcard-curl.stderr"
+}
+
 mkdir -p "$basic_smoke_dir" "$docker_smoke_dir"
 cat > "$basic_smoke_dir/cleanroom.yaml" <<'EOF'
 version: 1
@@ -157,10 +212,21 @@ fi
 curl_retry() {
   local output_file="$1"
   shift
-  for _ in $(seq 1 60); do
-    if curl --silent --show-error --fail-with-body --cacert "$exposure_cert_path" "$@" >"$output_file"; then
+  : >"$tmpdir/wildcard-curl.stderr"
+  for attempt in $(seq 1 60); do
+    if curl \
+      --silent \
+      --show-error \
+      --fail-with-body \
+      --connect-timeout 5 \
+      --max-time 20 \
+      --cacert "$exposure_cert_path" \
+      "$@" >"$output_file" 2>"$tmpdir/wildcard-curl.stderr"; then
       return 0
     fi
+    echo "curl attempt $attempt/60 failed for: $*" >&2
+    cat "$tmpdir/wildcard-curl.stderr" >&2 || true
+    dump_wildcard_attempt_debug "$attempt" body
     sleep 1
   done
   return 1
@@ -169,10 +235,23 @@ curl_retry() {
 curl_headers_retry() {
   local output_file="$1"
   shift
-  for _ in $(seq 1 60); do
-    if curl --silent --show-error --fail-with-body --cacert "$exposure_cert_path" --dump-header "$output_file" --output /dev/null "$@"; then
+  : >"$tmpdir/wildcard-curl.stderr"
+  for attempt in $(seq 1 60); do
+    if curl \
+      --silent \
+      --show-error \
+      --fail-with-body \
+      --connect-timeout 5 \
+      --max-time 20 \
+      --cacert "$exposure_cert_path" \
+      --dump-header "$output_file" \
+      --output /dev/null \
+      "$@" 2>"$tmpdir/wildcard-curl.stderr"; then
       return 0
     fi
+    echo "curl attempt $attempt/60 failed for headers: $*" >&2
+    cat "$tmpdir/wildcard-curl.stderr" >&2 || true
+    dump_wildcard_attempt_debug "$attempt" headers
     sleep 1
   done
   return 1
@@ -182,13 +261,12 @@ if ! curl_retry "$tmpdir/wildcard-exact.out" \
   --resolve "example.cleanroom.localhost:${wildcard_port}:127.0.0.1" \
   "https://example.cleanroom.localhost:${wildcard_port}/"; then
   echo "wildcard exact route did not become ready" >&2
-  cat "$tmpdir/wildcard.stdout" >&2 || true
-  cat "$tmpdir/wildcard.stderr" >&2 || true
+  dump_wildcard_debug
   exit 1
 fi
 if ! grep -q '^exact route ok$' "$tmpdir/wildcard-exact.out"; then
   echo "expected exact wildcard route output missing" >&2
-  cat "$tmpdir/wildcard-exact.out" >&2 || true
+  dump_wildcard_debug
   exit 1
 fi
 
@@ -196,8 +274,7 @@ if ! curl_retry "$tmpdir/wildcard-app.out" \
   --resolve "app.example.cleanroom.localhost:${wildcard_port}:127.0.0.1" \
   "https://app.example.cleanroom.localhost:${wildcard_port}/"; then
   echo "wildcard app route did not become ready" >&2
-  cat "$tmpdir/wildcard.stdout" >&2 || true
-  cat "$tmpdir/wildcard.stderr" >&2 || true
+  dump_wildcard_debug
   exit 1
 fi
 for needle in \
@@ -208,7 +285,7 @@ for needle in \
   '"x_forwarded_for": "127.0.0.1"'; do
   if ! grep -q "$needle" "$tmpdir/wildcard-app.out"; then
     echo "expected wildcard app response to contain $needle" >&2
-    cat "$tmpdir/wildcard-app.out" >&2 || true
+    dump_wildcard_debug
     exit 1
   fi
 done
@@ -217,17 +294,17 @@ if ! curl_headers_retry "$tmpdir/wildcard-redirect.headers" \
   --resolve "s3.example.cleanroom.localhost:${wildcard_port}:127.0.0.1" \
   "https://s3.example.cleanroom.localhost:${wildcard_port}/"; then
   echo "wildcard redirect route did not become ready" >&2
-  cat "$tmpdir/wildcard.stdout" >&2 || true
-  cat "$tmpdir/wildcard.stderr" >&2 || true
+  dump_wildcard_debug
   exit 1
 fi
 if ! grep -q '^HTTP/.* 302' "$tmpdir/wildcard-redirect.headers"; then
   echo "expected wildcard redirect status missing" >&2
-  cat "$tmpdir/wildcard-redirect.headers" >&2 || true
+  dump_wildcard_debug
   exit 1
 fi
-if ! grep -q "^Location: https://app.example.cleanroom.localhost:${wildcard_port}/from-s3?client=127.0.0.1"$'\r' "$tmpdir/wildcard-redirect.headers"; then
+if ! grep -Fqi "location: https://app.example.cleanroom.localhost:${wildcard_port}/from-s3?client=127.0.0.1" "$tmpdir/wildcard-redirect.headers"; then
   echo "expected wildcard redirect location missing" >&2
+  dump_wildcard_debug
   exit 1
 fi
 

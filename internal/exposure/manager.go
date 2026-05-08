@@ -21,6 +21,8 @@ import (
 	"github.com/miekg/dns"
 )
 
+type proxyRequestURLContextKey struct{}
+
 const (
 	Domain             = "cleanroom.localhost"
 	DefaultDNSListen   = "127.0.0.1:8153"
@@ -531,8 +533,13 @@ func (m *Manager) newHTTPSProxy(r *route) (*httputil.ReverseProxy, *http.Transpo
 		Rewrite: func(req *httputil.ProxyRequest) {
 			req.SetURL(target)
 			req.Out.Host = req.In.Host
+			req.Out = req.Out.WithContext(context.WithValue(req.Out.Context(), proxyRequestURLContextKey{}, externalRequestURL(req.In)))
 			req.SetXForwarded()
 			req.Out.Header.Set("X-Forwarded-Port", forwardedPort(req.In))
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			rewriteRedirectLocation(resp, r.guestPort)
+			return nil
 		},
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -760,6 +767,72 @@ func forwardedPort(req *http.Request) string {
 		return "443"
 	}
 	return "80"
+}
+
+func externalRequestURL(req *http.Request) *url.URL {
+	if req == nil {
+		return nil
+	}
+	external := &url.URL{
+		Scheme: "http",
+		Host:   strings.TrimSpace(req.Host),
+	}
+	if req.TLS != nil {
+		external.Scheme = "https"
+	}
+	if req.URL != nil {
+		external.Path = req.URL.Path
+		external.RawPath = req.URL.RawPath
+		external.RawQuery = req.URL.RawQuery
+		external.Fragment = req.URL.Fragment
+	}
+	return external
+}
+
+func rewriteRedirectLocation(resp *http.Response, guestPort int) {
+	if resp == nil {
+		return
+	}
+	location := strings.TrimSpace(resp.Header.Get("Location"))
+	if location == "" {
+		return
+	}
+	redirectURL, err := url.Parse(location)
+	if err != nil || !redirectURL.IsAbs() {
+		return
+	}
+	if resp.Request == nil {
+		return
+	}
+	externalURL, _ := resp.Request.Context().Value(proxyRequestURLContextKey{}).(*url.URL)
+	if externalURL == nil || strings.TrimSpace(externalURL.Host) == "" {
+		return
+	}
+	if !shouldRewriteRedirectHost(redirectURL, externalURL, guestPort) {
+		return
+	}
+	redirectURL.Scheme = externalURL.Scheme
+	redirectURL.Host = externalURL.Host
+	resp.Header.Set("Location", redirectURL.String())
+}
+
+func shouldRewriteRedirectHost(redirectURL, externalURL *url.URL, guestPort int) bool {
+	if redirectURL == nil || externalURL == nil {
+		return false
+	}
+	redirectHost := normalizeRequestHost(redirectURL.Host)
+	externalHost := normalizeRequestHost(externalURL.Host)
+	if redirectHost == "" || externalHost == "" {
+		return false
+	}
+	redirectPort := redirectURL.Port()
+	if redirectPort == "" {
+		return false
+	}
+	if redirectPort != strconv.Itoa(guestPort) {
+		return false
+	}
+	return redirectHost == externalHost || redirectHost == "cleanroom-sandbox"
 }
 
 func wildcardHost(host string) string {

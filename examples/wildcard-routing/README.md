@@ -1,6 +1,6 @@
 # Wildcard Routing Example
 
-Runs an in-guest `nginx` proxy behind Cleanroom HTTPS exposure to prove:
+Runs an in-guest Python HTTP server behind Cleanroom HTTPS exposure to prove:
 
 - exact and wildcard host exposure can coexist
 - guest apps see the original external host and forwarded headers
@@ -8,10 +8,10 @@ Runs an in-guest `nginx` proxy behind Cleanroom HTTPS exposure to prove:
 
 The guest layout is:
 
-- `nginx` listens on `0.0.0.0:80`
-- `app.example.cleanroom.localhost` proxies to a small Python backend on `127.0.0.1:18080`
-- `s3.example.cleanroom.localhost` proxies to a small Python backend on `127.0.0.1:18081`
-- `example.cleanroom.localhost` is an exact route served directly by `nginx`
+- a small Python server listens on `0.0.0.0:80`
+- `example.cleanroom.localhost` returns a plain text exact-route response
+- `app.example.cleanroom.localhost` returns the original host and forwarded headers
+- `s3.example.cleanroom.localhost` returns a redirect derived from forwarded headers
 
 ## Prerequisites
 
@@ -67,7 +67,7 @@ If Cleanroom chooses a different HTTPS listener port, pass that port to
 
 - exact route registration for `example.cleanroom.localhost`
 - single-label wildcard route registration for `*.example.cleanroom.localhost`
-- guest-side host-based virtual hosting in `nginx`
+- guest-side host-based virtual routing
 - preserved `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
   `X-Forwarded-Port`, and `X-Forwarded-For`
 - a guest-generated redirect from `s3.example.cleanroom.localhost` to
@@ -85,7 +85,7 @@ If Cleanroom chooses a different HTTPS listener port, pass that port to
 
 ## Notes
 
-- The first run is slow because the guest installs `nginx` and `python3`
-  through `apt-get`
+- The example uses the Debian agents base image because it already includes
+  `python3`, keeping startup deterministic across backends.
 - The example keeps all runtime behavior backend-agnostic and does not depend
-  on a backend-specific guest network layout
+  on a backend-specific guest network layout.
