@@ -1,6 +1,4 @@
 version: 1
-repository:
-  enabled: false
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/debian-ruby@sha256:cba9876d67beb8971e791f1bc6af175f0bff47e938f955059813c4dd6914eb53

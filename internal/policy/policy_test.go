@@ -567,6 +567,42 @@ func TestCompileDefaultsDependenciesDisabled(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsRepositoryDisabledWithDependencyBlocks(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+repository:
+  enabled: false
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    - name: go-modules
+      command: go mod download
+      inputs:
+        files:
+          - go.mod
+          - go.sum
+      outputs:
+        dirs:
+          - ${HOME}/go/pkg/mod
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject dependency blocks without repository bootstrap")
+	}
+	if !strings.Contains(err.Error(), "sandbox.dependencies") || !strings.Contains(err.Error(), "repository bootstrap is disabled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	t.Parallel()
 
@@ -770,6 +806,41 @@ func TestCompileNormalizesServicesBootstrapConfig(t *testing.T) {
 	}
 	if got, want := compiled.Services.KeyFiles, []string{"docker-compose.yml"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected services key files: got %v want %v", got, want)
+	}
+}
+
+func TestCompileRejectsRepositoryDisabledWithServiceBlocks(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+repository:
+  enabled: false
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  services:
+    - name: postgres
+      command: docker compose up -d postgres
+      inputs:
+        files:
+          - docker-compose.yml
+      outputs:
+        dirs:
+          - /var/lib/cleanroom/services/postgres
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject service blocks without repository bootstrap")
+	}
+	if !strings.Contains(err.Error(), "sandbox.services") || !strings.Contains(err.Error(), "repository bootstrap is disabled") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
