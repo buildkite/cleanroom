@@ -18,8 +18,9 @@ trap cleanup EXIT
 
 basic_smoke_dir="$tmpdir/basic"
 docker_smoke_dir="$tmpdir/docker"
+docker_cached_smoke_dir="$tmpdir/docker-cached"
 
-mkdir -p "$basic_smoke_dir" "$docker_smoke_dir"
+mkdir -p "$basic_smoke_dir" "$docker_smoke_dir" "$docker_cached_smoke_dir"
 cat > "$basic_smoke_dir/cleanroom.yaml" <<'EOF'
 version: 1
 repository:
@@ -42,6 +43,29 @@ sandbox:
     ref: ghcr.io/buildkite/cleanroom-base/alpine-docker@sha256:19c696770ae8f3f36e786bf25a0e08e5a5c18b9a7fe52bde7d988c3da500bf08
   docker:
     required: true
+  network:
+    default: deny
+    allow:
+      - host: ghcr.io
+        ports: [443]
+      - host: pkg-containers.githubusercontent.com
+        ports: [443]
+EOF
+cat > "$docker_cached_smoke_dir/cleanroom.yaml" <<'EOF'
+version: 1
+repository:
+  enabled: false
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine-docker@sha256:19c696770ae8f3f36e786bf25a0e08e5a5c18b9a7fe52bde7d988c3da500bf08
+  docker:
+    required: true
+  services:
+    - name: docker-images
+      command: docker version >/dev/null
+      outputs:
+        dirs:
+          - /var/lib/docker
   network:
     default: deny
     allow:
@@ -76,6 +100,13 @@ echo "--- :whale: Docker example version smoke test ($BACKEND)"
 "$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$docker_smoke_dir" -- sh -lc 'docker version >/dev/null && echo docker-version-ok' | tee "$tmpdir/docker-version.out"
 if ! grep -q '^docker-version-ok$' "$tmpdir/docker-version.out"; then
   echo "expected docker version smoke output missing" >&2
+  exit 1
+fi
+
+echo "--- :whale: Docker cache-output regression smoke test ($BACKEND)"
+"$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$docker_cached_smoke_dir" -- sh -lc 'docker version >/dev/null && echo docker-cached-ok' | tee "$tmpdir/docker-cached.out"
+if ! grep -q '^docker-cached-ok$' "$tmpdir/docker-cached.out"; then
+  echo "expected docker cache-output regression smoke output missing" >&2
   exit 1
 fi
 
