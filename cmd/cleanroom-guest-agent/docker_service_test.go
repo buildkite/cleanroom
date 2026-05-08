@@ -359,14 +359,20 @@ func TestStartDockerServiceOnceCachesError(t *testing.T) {
 	resetDockerServiceOnce()
 	t.Cleanup(resetDockerServiceOnce)
 
+	origStat := dockerStatSocket
 	origLook := dockerLookPath
 	origStart := dockerStartProcess
 	origWait := dockerWaitReady
 	t.Cleanup(func() {
+		dockerStatSocket = origStat
 		dockerLookPath = origLook
 		dockerStartProcess = origStart
 		dockerWaitReady = origWait
 	})
+
+	dockerStatSocket = func() (os.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
 
 	spawnCount := 0
 	waitCount := 0
