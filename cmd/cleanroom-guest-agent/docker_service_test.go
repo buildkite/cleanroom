@@ -355,6 +355,71 @@ func TestStartDockerServiceOnceIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestStartDockerServiceOncePassesMirrorFlagsWithoutRegistries(t *testing.T) {
+	resetDockerServiceOnce()
+	t.Cleanup(resetDockerServiceOnce)
+
+	tmpDir := t.TempDir()
+
+	origCertsDir := dockerCertsDirRoot
+	origLook := dockerLookPath
+	origStart := dockerStartProcess
+	origWait := dockerWaitReady
+	origStat := dockerStatSocket
+	t.Cleanup(func() {
+		dockerCertsDirRoot = origCertsDir
+		dockerLookPath = origLook
+		dockerStartProcess = origStart
+		dockerWaitReady = origWait
+		dockerStatSocket = origStat
+	})
+
+	dockerCertsDirRoot = tmpDir
+	dockerStatSocket = func() (os.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
+	dockerLookPath = func(file string) (string, error) {
+		return "/usr/bin/dockerd", nil
+	}
+	dockerWaitReady = func(timeoutSec int) error { return nil }
+
+	var capturedArgs []string
+	dockerStartProcess = func(cmd *exec.Cmd) error {
+		capturedArgs = cmd.Args
+		return nil
+	}
+
+	cfg := dockerServiceConfig{
+		Required:           true,
+		StartupTimeoutSec:  20,
+		StorageDriver:      "overlay2",
+		IPTablesEnabled:    true,
+		RegistryMirrorHost: "mirror.example.com",
+		RegistryMirrorPort: 5000,
+	}
+	if err := startDockerServiceOnce(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantMirror := "--registry-mirror=http://mirror.example.com:5000"
+	wantInsecure := "--insecure-registry=mirror.example.com:5000"
+	foundMirror, foundInsecure := false, false
+	for _, arg := range capturedArgs {
+		if arg == wantMirror {
+			foundMirror = true
+		}
+		if arg == wantInsecure {
+			foundInsecure = true
+		}
+	}
+	if !foundMirror {
+		t.Errorf("expected %q in dockerd args, got %v", wantMirror, capturedArgs)
+	}
+	if !foundInsecure {
+		t.Errorf("expected %q in dockerd args, got %v", wantInsecure, capturedArgs)
+	}
+}
+
 func TestStartDockerServiceOnceCachesError(t *testing.T) {
 	resetDockerServiceOnce()
 	t.Cleanup(resetDockerServiceOnce)

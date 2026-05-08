@@ -130,6 +130,7 @@ func doStartDockerService(cfg dockerServiceConfig) error {
 	}
 
 	mirrorSet := cfg.RegistryMirrorHost != "" && cfg.RegistryMirrorPort > 0 && len(cfg.RegistryMirrorRegistries) > 0
+	mirrorEndpointSet := cfg.RegistryMirrorHost != "" && cfg.RegistryMirrorPort > 0
 	if mirrorSet {
 		for _, registry := range cfg.RegistryMirrorRegistries {
 			if registry == "" || strings.ContainsAny(registry, " \t\n\r") || strings.Contains(registry, "/") {
@@ -164,7 +165,7 @@ func doStartDockerService(cfg dockerServiceConfig) error {
 		if !cfg.IPTablesEnabled {
 			args = append(args, "--iptables=false")
 		}
-		if mirrorSet {
+		if mirrorEndpointSet {
 			args = append(args,
 				fmt.Sprintf("--registry-mirror=http://%s:%d", cfg.RegistryMirrorHost, cfg.RegistryMirrorPort),
 				fmt.Sprintf("--insecure-registry=%s:%d", cfg.RegistryMirrorHost, cfg.RegistryMirrorPort),
