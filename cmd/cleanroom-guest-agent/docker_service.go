@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -147,12 +148,14 @@ func doStartDockerService(cfg dockerServiceConfig) error {
 		}
 	}
 
-	_, statErr := dockerStatSocket()
+	info, statErr := dockerStatSocket()
+	switch {
+	case statErr != nil && !os.IsNotExist(statErr):
+		return fmt.Errorf("stat docker socket: %w", statErr)
+	case statErr == nil && info.Mode()&os.ModeSocket == 0:
+		statErr = fs.ErrNotExist
+	}
 	if statErr != nil {
-		if !os.IsNotExist(statErr) {
-			return fmt.Errorf("stat docker socket: %w", statErr)
-		}
-
 		logFile, err := os.OpenFile("/var/log/dockerd.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return fmt.Errorf("open dockerd log: %w", err)

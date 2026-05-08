@@ -9,7 +9,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+type fakeFileInfo struct {
+	mode os.FileMode
+}
+
+func (f fakeFileInfo) Name() string       { return "docker.sock" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 func TestParseDockerServiceConfigReadsKnownKeys(t *testing.T) {
 	t.Parallel()
@@ -417,6 +429,44 @@ func TestStartDockerServiceOncePassesMirrorFlagsWithoutRegistries(t *testing.T) 
 	}
 	if !foundInsecure {
 		t.Errorf("expected %q in dockerd args, got %v", wantInsecure, capturedArgs)
+	}
+}
+
+func TestStartDockerServiceOnceSpawnsWhenSocketIsNotASocket(t *testing.T) {
+	resetDockerServiceOnce()
+	t.Cleanup(resetDockerServiceOnce)
+
+	origStat := dockerStatSocket
+	origLook := dockerLookPath
+	origStart := dockerStartProcess
+	origWait := dockerWaitReady
+	t.Cleanup(func() {
+		dockerStatSocket = origStat
+		dockerLookPath = origLook
+		dockerStartProcess = origStart
+		dockerWaitReady = origWait
+	})
+
+	dockerStatSocket = func() (os.FileInfo, error) {
+		return fakeFileInfo{mode: 0o644}, nil
+	}
+	dockerLookPath = func(file string) (string, error) {
+		return "/usr/bin/dockerd", nil
+	}
+	dockerWaitReady = func(timeoutSec int) error { return nil }
+
+	spawnCalled := false
+	dockerStartProcess = func(cmd *exec.Cmd) error {
+		spawnCalled = true
+		return nil
+	}
+
+	cfg := dockerServiceConfig{Required: true, StartupTimeoutSec: 20, StorageDriver: "overlay2", IPTablesEnabled: true}
+	if err := startDockerServiceOnce(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !spawnCalled {
+		t.Error("expected dockerStartProcess to be called when socket path exists but is not a socket")
 	}
 }
 
