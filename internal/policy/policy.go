@@ -1114,7 +1114,7 @@ func normalizeDependencies(raw rawDependencyStage, workspaceRoot string) (Depend
 	if blocksField == "" {
 		blocksField = "sandbox.dependencies"
 	}
-	blocks, err := normalizeStageBlocks(raw.Blocks, blocksField, workspaceRoot)
+	blocks, err := normalizeStageBlocks(raw.Blocks, blocksField, workspaceRoot, true)
 	if err != nil {
 		return Dependencies{}, err
 	}
@@ -1136,7 +1136,7 @@ func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, er
 	if pb == nil {
 		return Dependencies{}, nil
 	}
-	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy dependencies")
+	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy dependencies", true)
 	if err != nil {
 		return Dependencies{}, err
 	}
@@ -1169,7 +1169,7 @@ func normalizeDependencyReuse(raw string, keyFiles []string, field string) (stri
 }
 
 func normalizeServices(raw rawPolicyBlocks, workspaceRoot string) (Services, error) {
-	blocks, err := normalizeStageBlocks(raw, "sandbox.services", workspaceRoot)
+	blocks, err := normalizeStageBlocks(raw, "sandbox.services", workspaceRoot, false)
 	if err != nil {
 		return Services{}, err
 	}
@@ -1184,7 +1184,7 @@ func servicesFromProto(pb *cleanroomv1.PolicyServices) (Services, error) {
 	if pb == nil {
 		return Services{}, nil
 	}
-	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy services")
+	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy services", false)
 	if err != nil {
 		return Services{}, err
 	}
@@ -1327,7 +1327,7 @@ const (
 	defaultBlockWorkspace = "/workspace"
 )
 
-func normalizeStageBlocks(raw []rawPolicyBlock, field string, workspaceRoot string) ([]StageBlock, error) {
+func normalizeStageBlocks(raw []rawPolicyBlock, field string, workspaceRoot string, requireInputFiles bool) ([]StageBlock, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -1335,7 +1335,7 @@ func normalizeStageBlocks(raw []rawPolicyBlock, field string, workspaceRoot stri
 	seenNames := make(map[string]struct{}, len(raw))
 	blocks := make([]StageBlock, 0, len(raw))
 	for i, candidate := range raw {
-		block, err := normalizeStageBlock(candidate, fmt.Sprintf("%s[%d]", field, i), workspaceRoot)
+		block, err := normalizeStageBlock(candidate, fmt.Sprintf("%s[%d]", field, i), workspaceRoot, requireInputFiles)
 		if err != nil {
 			return nil, err
 		}
@@ -1351,7 +1351,7 @@ func normalizeStageBlocks(raw []rawPolicyBlock, field string, workspaceRoot stri
 	return blocks, nil
 }
 
-func normalizeStageBlock(raw rawPolicyBlock, field string, workspaceRoot string) (StageBlock, error) {
+func normalizeStageBlock(raw rawPolicyBlock, field string, workspaceRoot string, requireInputFiles bool) (StageBlock, error) {
 	name := strings.TrimSpace(raw.Name)
 	if name == "" {
 		return StageBlock{}, fmt.Errorf("%s.name is required", field)
@@ -1370,7 +1370,7 @@ func normalizeStageBlock(raw rawPolicyBlock, field string, workspaceRoot string)
 	if err != nil {
 		return StageBlock{}, err
 	}
-	if len(inputFiles) == 0 {
+	if requireInputFiles && len(inputFiles) == 0 {
 		return StageBlock{}, fmt.Errorf("%s.inputs.files must include at least one file or glob", field)
 	}
 	env, err := normalizeBlockEnv(raw.Env, field+".env", workspaceRoot)
@@ -1705,7 +1705,7 @@ func stageBlocksToProto(blocks []StageBlock) []*cleanroomv1.PolicyBlock {
 	return out
 }
 
-func stageBlocksFromProto(blocks []*cleanroomv1.PolicyBlock, field string) ([]StageBlock, error) {
+func stageBlocksFromProto(blocks []*cleanroomv1.PolicyBlock, field string, requireInputFiles bool) ([]StageBlock, error) {
 	raw := make([]rawPolicyBlock, 0, len(blocks))
 	for _, block := range blocks {
 		if block == nil {
@@ -1725,7 +1725,7 @@ func stageBlocksFromProto(blocks []*cleanroomv1.PolicyBlock, field string) ([]St
 			},
 		})
 	}
-	return normalizeStageBlocks(raw, field+".blocks", defaultBlockWorkspace)
+	return normalizeStageBlocks(raw, field+".blocks", defaultBlockWorkspace, requireInputFiles)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
