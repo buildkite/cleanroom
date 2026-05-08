@@ -196,8 +196,9 @@ func defaultDockerWaitReady(timeoutSec int) error {
 	for {
 		conn, err := net.Dial("unix", socketPath)
 		if err == nil {
-			_, writeErr := fmt.Fprint(conn, "GET /version HTTP/1.1\r\nHost: localhost\r\n\r\n")
+			_, writeErr := fmt.Fprint(conn, "GET /version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
 			if writeErr == nil {
+				_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 				buf := make([]byte, 32)
 				n, _ := conn.Read(buf)
 				conn.Close()
