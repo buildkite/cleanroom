@@ -283,14 +283,6 @@ func TestStartDockerServiceOnceSkipsSpawnWhenSocketExists(t *testing.T) {
 	resetDockerServiceOnce()
 	t.Cleanup(resetDockerServiceOnce)
 
-	tmpDir := t.TempDir()
-	socketFile := filepath.Join(tmpDir, "docker.sock")
-	f, err := os.Create(socketFile)
-	if err != nil {
-		t.Fatalf("failed to create fake socket: %v", err)
-	}
-	f.Close()
-
 	origStat := dockerStatSocket
 	origLook := dockerLookPath
 	origStart := dockerStartProcess
@@ -303,7 +295,7 @@ func TestStartDockerServiceOnceSkipsSpawnWhenSocketExists(t *testing.T) {
 	})
 
 	dockerStatSocket = func() (os.FileInfo, error) {
-		return os.Stat(socketFile)
+		return fakeFileInfo{mode: os.ModeSocket | 0o755}, nil
 	}
 	dockerLookPath = func(file string) (string, error) {
 		return "/usr/bin/dockerd", nil
