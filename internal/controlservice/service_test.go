@@ -3655,6 +3655,143 @@ func TestCreateSandboxBootstrapsServicesAfterDependencyStageRestoreWithoutServic
 	}
 }
 
+func TestCreateSandboxDependencyRestoreFailureUsesWorkspaceCache(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	records, err := svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	var (
+		workspaceRecord  *cachestore.Record
+		dependencyRecord *cachestore.Record
+	)
+	for _, record := range records {
+		switch record.Stage {
+		case workspaceStageName:
+			recordCopy := record
+			workspaceRecord = &recordCopy
+		case dependencyStageName:
+			recordCopy := record
+			dependencyRecord = &recordCopy
+		case servicesStageName:
+			if err := svc.CacheStore.Delete(context.Background(), record.Stage, record.CacheKey); err != nil {
+				t.Fatalf("Delete services cache record returned error: %v", err)
+			}
+		}
+	}
+	if workspaceRecord == nil {
+		t.Fatal("expected published workspace stage cache record")
+	}
+	if dependencyRecord == nil {
+		t.Fatal("expected published dependency stage cache record")
+	}
+
+	var restoreReqs []backend.ProvisionFromSnapshotRequest
+	adapter.provisionFromSnapshotFn = func(_ context.Context, req backend.ProvisionFromSnapshotRequest) error {
+		restoreReqs = append(restoreReqs, req)
+		if req.SnapshotID == dependencyRecord.BackingSnapshotID {
+			return errors.New("dependency stage restore failed")
+		}
+		return nil
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "workspace stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetSourceKind(), "workspace stage cache"; got != want {
+		t.Fatalf("unexpected sandbox source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected dependency restore failure to fall back through workspace cache without cold provision, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 2; got != want {
+		t.Fatalf("expected failed dependency restore plus successful workspace restore, got %d want %d", got, want)
+	}
+	if got, want := len(restoreReqs), 2; got != want {
+		t.Fatalf("expected two restore requests, got %d want %d", got, want)
+	}
+	if got, want := restoreReqs[0].SnapshotID, dependencyRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected first restore snapshot id: got %q want %q", got, want)
+	}
+	if got, want := restoreReqs[1].SnapshotID, workspaceRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected second restore snapshot id: got %q want %q", got, want)
+	}
+	if got, want := adapter.runCalls, 5; got != want {
+		t.Fatalf("expected dependency and services bootstrap after workspace restore, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 5; got != want {
+		t.Fatalf("expected replacement dependency and services stage snapshots, got %d want %d", got, want)
+	}
+	if got, want := len(snapshotReqs), 5; got != want {
+		t.Fatalf("expected five snapshot publish requests, got %d want %d", got, want)
+	}
+	if got, want := adapter.deleteSnapshotCalls, 1; got != want {
+		t.Fatalf("expected stale dependency stage snapshot deletion, got %d want %d", got, want)
+	}
+	if got, want := adapter.deleteSnapshotReq.SnapshotID, dependencyRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected deleted snapshot id: got %q want %q", got, want)
+	}
+	if got, want := adapter.deleteSnapshotReq.StorageRef, dependencyRecord.StorageRef; got != want {
+		t.Fatalf("unexpected deleted storage ref: got %q want %q", got, want)
+	}
+
+	records, err = svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	var (
+		replacementDependencyRecord *cachestore.Record
+		replacementServicesRecord   *cachestore.Record
+	)
+	for _, record := range records {
+		switch record.Stage {
+		case dependencyStageName:
+			recordCopy := record
+			replacementDependencyRecord = &recordCopy
+		case servicesStageName:
+			recordCopy := record
+			replacementServicesRecord = &recordCopy
+		}
+	}
+	if replacementDependencyRecord == nil {
+		t.Fatal("expected replacement dependency stage cache record")
+	}
+	if replacementServicesRecord == nil {
+		t.Fatal("expected replacement services stage cache record")
+	}
+	if got, stale := replacementDependencyRecord.BackingSnapshotID, dependencyRecord.BackingSnapshotID; got == stale {
+		t.Fatalf("expected dependency stage cache record to be replaced, still has backing snapshot id %q", got)
+	}
+}
+
 func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
