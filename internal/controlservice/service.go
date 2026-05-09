@@ -629,66 +629,27 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 
 			if restoredDependencyResp == nil {
-				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "checking workspace stage cache")
-				var record cachestore.Record
-				var found bool
-				var lookupReason string
-				err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_workspace_stage_cache", cachePhaseAttributes(
-					observability.CacheStageWorkspace,
-					observability.CacheOperationLookup,
-					repository,
-					attribute.String(observability.AttrBackend, backendName),
-				), func(ctx context.Context) error {
-					var lookupErr error
-					record, found, lookupReason, lookupErr = s.lookupWorkspaceStageCache(ctx, backendName, compiled, workspaceStageRuntimeBaseKey, repository, changeset)
-					setCacheLookupSpanAttributes(ctx, found, lookupReason, lookupErr)
-					return lookupErr
+				workspaceHit, err := s.resolveWorkspaceStageCache(ctx, workspaceStageResolveRequest{
+					stageCacheResolveContext: cacheResolveContext,
+					runtimeBaseKey:           workspaceStageRuntimeBaseKey,
+					cacheKey:                 workspaceStageKey,
+					dependencyBootstrap:      dependencyStageBootstrapEnabled,
+					servicesBootstrap:        servicesStageBootstrapEnabled,
+					cacheOutputs:             appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes),
 				})
 				if err != nil {
-					s.logWorkspaceStageWarning("lookup workspace stage cache", "", err)
-				} else if found {
-					s.logWorkspaceStageCacheHit(record)
-					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "workspace stage cache hit")
-					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
-					restoreReq := &cleanroomv1.CreateSandboxRequest{
-						Backend: backendName,
-						Options: req.GetOptions(),
-					}
-					var restoreResp *cleanroomv1.CreateSandboxResponse
-					restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_workspace_stage_cache", cachePhaseAttributes(
-						observability.CacheStageWorkspace,
-						observability.CacheOperationRestore,
-						repository,
-						attribute.String(observability.AttrBackend, backendName),
-					), func(ctx context.Context) error {
-						var err error
-						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes), reporter)
-						setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
-						return err
-					})
-					if restoreErr == nil {
-						metricSourceKind = "workspace stage cache"
-						if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-							if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
-								s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
-							}
-						}
-						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
-						s.logWorkspaceStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
-						if !dependencyStageBootstrapEnabled && !servicesStageBootstrapEnabled {
-							return restoreResp, nil
-						}
-						restoredWorkspaceResp = restoreResp
-					} else if errors.Is(restoreErr, errSandboxCreateAborted) {
-						return nil, restoreErr
-					} else {
-						recordCopy := record
-						replacedWorkspaceStageRecord = &recordCopy
-						s.logWorkspaceStageRestoreWarning(record, restoreErr)
-					}
-				} else {
-					s.logWorkspaceStageCacheMiss(backendName, workspaceStageKey)
-					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "workspace stage cache miss")
+					return nil, err
+				}
+				if workspaceHit.replaced != nil {
+					replacedWorkspaceStageRecord = workspaceHit.replaced
+				}
+				if workspaceHit.completed != nil {
+					metricSourceKind = workspaceHit.sourceKind
+					return workspaceHit.completed, nil
+				}
+				if workspaceHit.restored != nil {
+					metricSourceKind = workspaceHit.sourceKind
+					restoredWorkspaceResp = workspaceHit.restored
 				}
 			}
 		}

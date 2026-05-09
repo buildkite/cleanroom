@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
 **Status:** In progress
-**Last reviewed:** 2026-05-09
+**Last reviewed:** 2026-05-10
 
 ## Summary
 
@@ -1139,9 +1139,8 @@ This metadata should live in a dedicated `changesetstore`, not in
    replayed outside the original sandbox create request.
 5. Concentrate request-time stage-cache resolution behind a private
    control-plane Module. Services-stage resolution has landed, exact
-   dependency-stage resolution has landed, this slice moves portable
-   dependency-stage resolution behind the same Module, and workspace resolution
-   remains a follow-up slice.
+   dependency-stage and portable dependency-stage resolution have landed, and
+   this slice moves workspace-stage resolution behind the same Module.
 
 The stage-cache flow is architecturally landed, but the full performance win
 still depends on clone-capable storage instead of the default `file` driver,
