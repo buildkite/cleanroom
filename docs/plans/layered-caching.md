@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
 **Status:** In progress
-**Last reviewed:** 2026-05-05
+**Last reviewed:** 2026-05-09
 
 ## Summary
 
@@ -1137,6 +1137,10 @@ This metadata should live in a dedicated `changesetstore`, not in
    workspace-plus-command-plus-key-files slice.
 4. Add a user-facing changeset reuse surface if durable changesets need to be
    replayed outside the original sandbox create request.
+5. Concentrate request-time stage-cache resolution behind a private
+   control-plane Module. Services-stage resolution has landed, exact
+   dependency-stage resolution is the current slice, and portable dependency
+   plus workspace resolution remain follow-up slices.
 
 The stage-cache flow is architecturally landed, but the full performance win
 still depends on clone-capable storage instead of the default `file` driver,

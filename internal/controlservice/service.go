@@ -547,18 +547,22 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 			}
 
+			cacheResolveContext := stageCacheResolveContext{
+				backendName:     backendName,
+				snapshotAdapter: snapshotAdapter,
+				compiled:        compiled,
+				firecrackerCfg:  firecrackerCfg,
+				repository:      repository,
+				changeset:       changeset,
+				commitBundle:    commitBundle,
+				options:         req.GetOptions(),
+				reporter:        reporter,
+			}
+
 			if servicesStageCachingEnabled {
 				servicesHit, err := s.resolveServicesStageCache(ctx, servicesStageResolveRequest{
-					backendName:     backendName,
-					snapshotAdapter: snapshotAdapter,
-					compiled:        compiled,
-					firecrackerCfg:  firecrackerCfg,
-					repository:      repository,
-					changeset:       changeset,
-					commitBundle:    commitBundle,
-					options:         req.GetOptions(),
-					plan:            servicesStagePlan,
-					reporter:        reporter,
+					stageCacheResolveContext: cacheResolveContext,
+					plan:                     servicesStagePlan,
 				})
 				if err != nil {
 					return nil, err
@@ -596,116 +600,30 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 
 			if dependencyStageCachingEnabled {
-				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "checking dependency stage cache")
-				var record cachestore.Record
-				var found bool
-				var lookupReason string
-				err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_dependency_stage_cache", cachePhaseAttributes(
-					observability.CacheStageDependency,
-					observability.CacheOperationLookup,
-					repository,
-					attribute.String(observability.AttrBackend, backendName),
-				), func(ctx context.Context) error {
-					var lookupErr error
-					record, found, lookupReason, lookupErr = s.lookupDependencyStageCache(ctx, backendName, compiled, repository, changeset, dependencyStagePlan)
-					setCacheLookupSpanAttributes(ctx, found, lookupReason, lookupErr)
-					return lookupErr
+				dependencyHit, err := s.resolveDependencyStageCache(ctx, dependencyStageResolveRequest{
+					stageCacheResolveContext: cacheResolveContext,
+					plan:                     dependencyStagePlan,
+					servicesPlan:             servicesStagePlan,
+					servicesCaching:          servicesStageCachingEnabled,
+					servicesBootstrap:        servicesStageBootstrapEnabled,
+					serviceCacheOutputs:      serviceCacheOutputVolumes,
 				})
 				if err != nil {
-					s.logDependencyStageWarning("lookup dependency stage cache", "", err)
-				} else {
-					if !found {
-						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "checking dependency stage cache peers")
-						importErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.import_dependency_stage_cache", cachePhaseAttributes(
-							observability.CacheStageDependency,
-							observability.CacheOperationLookup,
-							repository,
-							attribute.String(observability.AttrBackend, backendName),
-						), func(ctx context.Context) error {
-							var imported bool
-							var err error
-							record, imported, err = s.importDependencyStageCacheFromPeers(ctx, snapshotAdapter, backendName, compiled, firecrackerCfg, repository, changeset, dependencyStagePlan)
-							found = imported
-							reason := lookupReason
-							if imported {
-								reason = ""
-							}
-							setCacheLookupSpanAttributes(ctx, imported, reason, err)
-							return err
-						})
-						if importErr != nil {
-							s.logDependencyStageWarning("import dependency stage cache from peer", "", importErr)
-						}
-					}
-					if found {
-						if servicesStageCachingEnabled {
-							servicesHit, err := s.resolveServicesStageCacheAfterDependency(ctx, servicesStageResolveRequest{
-								backendName:     backendName,
-								snapshotAdapter: snapshotAdapter,
-								compiled:        compiled,
-								firecrackerCfg:  firecrackerCfg,
-								repository:      repository,
-								changeset:       changeset,
-								commitBundle:    commitBundle,
-								options:         req.GetOptions(),
-								plan:            servicesStagePlan,
-								reporter:        reporter,
-							})
-							if err != nil {
-								return nil, err
-							}
-							if servicesHit.restored != nil {
-								metricSourceKind = "services stage cache"
-								return servicesHit.restored, nil
-							}
-							if servicesHit.replaced != nil {
-								replacedServicesStageRecord = servicesHit.replaced
-							}
-						}
-
-						s.logDependencyStageCacheHit(record)
-						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "dependency stage cache hit")
-						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE, "restoring dependency stage cache")
-						restoreReq := &cleanroomv1.CreateSandboxRequest{
-							Backend: backendName,
-							Options: req.GetOptions(),
-						}
-						var restoreResp *cleanroomv1.CreateSandboxResponse
-						restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_dependency_stage_cache", cachePhaseAttributes(
-							observability.CacheStageDependency,
-							observability.CacheOperationRestore,
-							repository,
-							attribute.String(observability.AttrBackend, backendName),
-						), func(ctx context.Context) error {
-							var err error
-							restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, serviceCacheOutputVolumes, reporter)
-							setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
-							return err
-						})
-						if restoreErr == nil {
-							metricSourceKind = "dependency stage cache"
-							if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-								if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
-									s.logDependencyStageWarning("touch dependency stage cache", "", err)
-								}
-							}
-							s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
-							s.logDependencyStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
-							if !servicesStageBootstrapEnabled {
-								return restoreResp, nil
-							}
-							restoredDependencyResp = restoreResp
-						} else if errors.Is(restoreErr, errSandboxCreateAborted) {
-							return nil, restoreErr
-						} else {
-							recordCopy := record
-							replacedDependencyStageRecord = &recordCopy
-							s.logDependencyStageRestoreWarning(record, restoreErr)
-						}
-					} else {
-						s.logDependencyStageCacheMiss(backendName, dependencyStagePlan.CacheKey)
-						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "dependency stage cache miss")
-					}
+					return nil, err
+				}
+				if dependencyHit.replacedServices != nil {
+					replacedServicesStageRecord = dependencyHit.replacedServices
+				}
+				if dependencyHit.replacedDependency != nil {
+					replacedDependencyStageRecord = dependencyHit.replacedDependency
+				}
+				if dependencyHit.completed != nil {
+					metricSourceKind = dependencyHit.sourceKind
+					return dependencyHit.completed, nil
+				}
+				if dependencyHit.restored != nil {
+					metricSourceKind = dependencyHit.sourceKind
+					restoredDependencyResp = dependencyHit.restored
 				}
 
 				if strings.TrimSpace(dependencyStagePlan.PortableCacheKey) != "" {
