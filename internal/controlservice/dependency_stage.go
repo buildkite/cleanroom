@@ -35,6 +35,13 @@ const (
 	portableDependencyOutputMode           = "outside-workspace"
 )
 
+var dependencyStageToolchainInputFiles = []string{
+	".mise.toml",
+	".tool-versions",
+	"mise.lock",
+	"mise.toml",
+}
+
 type dependencyStagePlan struct {
 	CacheKey                string
 	PortableCacheKey        string
@@ -44,6 +51,8 @@ type dependencyStagePlan struct {
 	BootstrapRecipeDigest   string
 	KeyFiles                []string
 	KeyFilesDigest          string
+	ToolchainInputFiles     []string
+	ToolchainInputsDigest   string
 	Portable                bool
 }
 
@@ -74,6 +83,7 @@ func dependencyStagePlanForRepository(compiled *policy.CompiledPolicy, repositor
 		BootstrapCommand:      bootstrapCommand,
 		BootstrapRecipeDigest: bootstrapRecipeDigest,
 		KeyFiles:              append([]string(nil), compiled.Dependencies.KeyFiles...),
+		ToolchainInputFiles:   normalizeStageOptionalKeyFiles(dependencyStageToolchainInputFiles),
 		Portable:              compiled.Dependencies.Reuse == policy.DependencyReusePortable,
 	}, true
 }
@@ -93,7 +103,7 @@ func (s *Service) finalizeDependencyStagePlan(
 		return plan, false, nil
 	}
 
-	keyFilesDigest, err := s.dependencyStageKeyFilesDigest(ctx, repository, changeset, commitBundle, plan.KeyFiles)
+	keyFilesDigest, toolchainInputsDigest, err := s.dependencyStagePlanInputDigests(ctx, repository, changeset, commitBundle, plan.KeyFiles, plan.ToolchainInputFiles)
 	if err != nil {
 		return plan, false, err
 	}
@@ -102,6 +112,7 @@ func (s *Service) finalizeDependencyStagePlan(
 		WorkspaceKey:          strings.TrimSpace(workspaceStageKey),
 		CompiledPolicyHash:    strings.TrimSpace(compiled.Hash),
 		KeyFilesDigest:        strings.TrimSpace(keyFilesDigest),
+		ToolchainInputsDigest: strings.TrimSpace(toolchainInputsDigest),
 		BootstrapRecipeDigest: strings.TrimSpace(plan.BootstrapRecipeDigest),
 	})
 	if strings.TrimSpace(cacheKey) == "" {
@@ -112,6 +123,7 @@ func (s *Service) finalizeDependencyStagePlan(
 	plan.ParentWorkspaceCacheKey = strings.TrimSpace(workspaceStageKey)
 	plan.ParentRuntimeCacheKey = strings.TrimSpace(runtimeBaseKey)
 	plan.KeyFilesDigest = strings.TrimSpace(keyFilesDigest)
+	plan.ToolchainInputsDigest = strings.TrimSpace(toolchainInputsDigest)
 	if plan.Portable && strings.TrimSpace(runtimeBaseKey) != "" && strings.TrimSpace(keyFilesDigest) != "" {
 		normalizedRepository := normalizeRepositoryCheckoutForComparison(repository)
 		plan.PortableCacheKey = cachekey.PortableDependencyStageKey(cachekey.PortableDependencyStageInputs{
@@ -123,6 +135,7 @@ func (s *Service) finalizeDependencyStagePlan(
 			DestinationDir:              strings.TrimSpace(normalizedRepository.DestinationDir),
 			CheckoutRefreshRecipeDigest: repositorycheckout.RefreshRecipeDigest(normalizedRepository),
 			KeyFilesDigest:              strings.TrimSpace(keyFilesDigest),
+			ToolchainInputsDigest:       strings.TrimSpace(toolchainInputsDigest),
 			BootstrapRecipeDigest:       strings.TrimSpace(plan.BootstrapRecipeDigest),
 			OutputMode:                  portableDependencyOutputMode,
 			ProducerVersion:             portableDependencyStageProducerVersion,
@@ -133,6 +146,96 @@ func (s *Service) finalizeDependencyStagePlan(
 
 func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, commitBundle *repositorybundle.Bundle, files []string) (string, error) {
 	return s.stageKeyFilesDigest(ctx, repository, changeset, commitBundle, files, dependencyStageName)
+}
+
+func (s *Service) dependencyStagePlanInputDigests(
+	ctx context.Context,
+	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
+	commitBundle *repositorybundle.Bundle,
+	keyFiles []string,
+	toolchainInputFiles []string,
+) (string, string, error) {
+	if len(keyFiles) == 0 && len(toolchainInputFiles) == 0 {
+		return "", "", nil
+	}
+	if repository == nil {
+		return "", "", fmt.Errorf("%s input files require a repository checkout", dependencyStageName)
+	}
+	if s.RepositoryStore == nil {
+		return "", "", fmt.Errorf("%s input files require repository store", dependencyStageName)
+	}
+
+	readDigests := func(repoDir string) (string, string, error) {
+		if changeset != nil {
+			keyFilesDigest := ""
+			if len(keyFiles) > 0 {
+				var err error
+				keyFilesDigest, err = stageKeyFilesDigestWithChangeset(ctx, repoDir, changeset, keyFiles, dependencyStageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
+				if err != nil {
+					return "", "", err
+				}
+			}
+			toolchainInputsDigest := ""
+			if len(toolchainInputFiles) > 0 {
+				var err error
+				toolchainInputsDigest, err = stageKeyFilesDigestWithChangeset(ctx, repoDir, changeset, toolchainInputFiles, dependencyStageName+" toolchain", repository.RemoteURL, repository.Submodules, s.RepositoryStore)
+				if err != nil {
+					return "", "", err
+				}
+			}
+			return keyFilesDigest, toolchainInputsDigest, nil
+		}
+		keyFilesDigest := ""
+		if len(keyFiles) > 0 {
+			var err error
+			keyFilesDigest, err = stageKeyFilesDigestAtCommit(ctx, repoDir, repository.RemoteURL, repository.CommitSHA, keyFiles, dependencyStageName, repository.Submodules, s.RepositoryStore)
+			if err != nil {
+				return "", "", err
+			}
+		}
+		toolchainInputsDigest := ""
+		if len(toolchainInputFiles) > 0 {
+			var err error
+			toolchainInputsDigest, err = stageOptionalKeyFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, toolchainInputFiles, dependencyStageName+" toolchain")
+			if err != nil {
+				return "", "", err
+			}
+		}
+		return keyFilesDigest, toolchainInputsDigest, nil
+	}
+
+	if commitBundle != nil {
+		prerequisiteCommit, err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle)
+		if err != nil {
+			return "", "", err
+		}
+		var keyFilesDigest string
+		var toolchainInputsDigest string
+		err = s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, prerequisiteCommit, repositorystore.FetchHints{}, func(repoDir string) error {
+			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
+				var err error
+				keyFilesDigest, toolchainInputsDigest, err = readDigests(bundleRepoDir)
+				return err
+			})
+		})
+		if err != nil {
+			return "", "", err
+		}
+		return keyFilesDigest, toolchainInputsDigest, nil
+	}
+
+	var keyFilesDigest string
+	var toolchainInputsDigest string
+	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
+		var err error
+		keyFilesDigest, toolchainInputsDigest, err = readDigests(repoDir)
+		return err
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return keyFilesDigest, toolchainInputsDigest, nil
 }
 
 func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, commitBundle *repositorybundle.Bundle, files []string, stageName string) (string, error) {
@@ -269,14 +372,73 @@ func stageKeyFilesDigestWithChangeset(ctx context.Context, repoDir string, chang
 			Deleted: file.Deleted,
 		})
 	}
+	return digestStageKeyFileManifest(manifest, stageName)
+}
 
-	payload, err := json.Marshal(manifest)
-	if err != nil {
-		return "", fmt.Errorf("marshal %s key file manifest: %w", stageName, err)
+func stageOptionalKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
+	trimmedCommitSHA := strings.TrimSpace(commitSHA)
+	if trimmedCommitSHA == "" {
+		return "", fmt.Errorf("%s input file commit SHA is empty", stageName)
 	}
 
-	sum := sha256.Sum256(payload)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	normalizedFiles := normalizeStageOptionalKeyFiles(files)
+	if len(normalizedFiles) == 0 {
+		return "", nil
+	}
+
+	entries, err := gitTreeEntriesForFiles(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, normalizedFiles)
+	if err != nil {
+		return "", fmt.Errorf("inspect %s input files: %w", stageName, err)
+	}
+
+	existingFiles := make([]string, 0, len(normalizedFiles))
+	for _, file := range normalizedFiles {
+		if entry, ok := entries[file]; ok {
+			if entry.Mode == "160000" {
+				return "", fmt.Errorf("%s input file %q is a gitlink; toolchain input files must be blobs", stageName, file)
+			}
+			existingFiles = append(existingFiles, file)
+		}
+	}
+
+	digests := map[string]string{}
+	if len(existingFiles) > 0 {
+		digests, err = gitFileDigestsAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, existingFiles)
+		if err != nil {
+			return "", fmt.Errorf("read %s input files: %w", stageName, err)
+		}
+	}
+
+	manifest := make([]stageKeyFileDigest, 0, len(normalizedFiles))
+	for _, file := range normalizedFiles {
+		if _, ok := entries[file]; !ok {
+			manifest = append(manifest, stageKeyFileDigest{Path: file, Deleted: true})
+			continue
+		}
+		manifest = append(manifest, stageKeyFileDigest{
+			Path:   file,
+			SHA256: digests[file],
+		})
+	}
+	return digestStageKeyFileManifest(manifest, stageName)
+}
+
+func normalizeStageOptionalKeyFiles(files []string) []string {
+	seen := make(map[string]struct{}, len(files))
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		file = strings.TrimSpace(file)
+		if file == "" {
+			continue
+		}
+		if _, ok := seen[file]; ok {
+			continue
+		}
+		seen[file] = struct{}{}
+		out = append(out, file)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func stageInputFilesDigestWithChangeset(ctx context.Context, repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string, parentRemoteURL string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
@@ -302,6 +464,15 @@ func stageInputFilesDigestWithChangeset(ctx context.Context, repoDir string, cha
 		})
 	}
 	return digestStageInputFileManifest(manifest, stageName)
+}
+
+func digestStageKeyFileManifest(manifest []stageKeyFileDigest, stageName string) (string, error) {
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshal %s key file manifest: %w", stageName, err)
+	}
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, parentRemoteURL, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
@@ -383,14 +554,7 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, parentRemoteURL, 
 			SHA256: allDigests[file],
 		})
 	}
-
-	payload, err := json.Marshal(manifest)
-	if err != nil {
-		return "", fmt.Errorf("marshal %s key file manifest: %w", stageName, err)
-	}
-
-	sum := sha256.Sum256(payload)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	return digestStageKeyFileManifest(manifest, stageName)
 }
 
 func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, parentRemoteURL, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
@@ -759,6 +923,7 @@ func (s *Service) restorePortableDependencyStageCache(
 	changeset *repositorychangeset.Changeset,
 	commitBundle *repositorybundle.Bundle,
 	options *cleanroomv1.SandboxOptions,
+	plan dependencyStagePlan,
 	record cachestore.Record,
 	cacheOutputVolumes []backend.CacheOutputVolumeSpec,
 	reporter CreateSandboxReporter,
@@ -792,6 +957,12 @@ func (s *Service) restorePortableDependencyStageCache(
 			return nil, fmt.Errorf("validate portable dependency stage key files: %w; cleanup failed: %v", err, cleanupErr)
 		}
 		return nil, fmt.Errorf("validate portable dependency stage key files: %w", err)
+	}
+	if err := s.validatePortableDependencyStageToolchainInputs(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, plan); err != nil {
+		if cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); cleanupErr != nil {
+			return nil, fmt.Errorf("validate portable dependency stage toolchain inputs: %w; cleanup failed: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("validate portable dependency stage toolchain inputs: %w", err)
 	}
 
 	if sandbox := s.markRestoredSandboxRepositoryReady(sandboxID, repository, commitBundle, changeset != nil); sandbox != nil {
@@ -837,7 +1008,38 @@ func (s *Service) validatePortableDependencyStageKeyFiles(
 	if expectedDigest == "" {
 		return fmt.Errorf("portable dependency stage is missing dependency key-file digest")
 	}
-	command, err := dependencyStageKeyFilesDigestCommand(repository, compiled.Dependencies.KeyFiles)
+	return s.validatePortableDependencyStageFileDigest(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, compiled.Dependencies.KeyFiles, expectedDigest, "portable dependency key-file")
+}
+
+func (s *Service) validatePortableDependencyStageToolchainInputs(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	plan dependencyStagePlan,
+) error {
+	expectedDigest := strings.TrimSpace(plan.ToolchainInputsDigest)
+	files := normalizeStageOptionalKeyFiles(plan.ToolchainInputFiles)
+	if expectedDigest == "" || len(files) == 0 {
+		return nil
+	}
+	return s.validatePortableDependencyStageFileDigest(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, files, expectedDigest, "portable dependency toolchain input")
+}
+
+func (s *Service) validatePortableDependencyStageFileDigest(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	files []string,
+	expectedDigest string,
+	label string,
+) error {
+	command, err := dependencyStageFileDigestCommand(repository, files, label+" validation")
 	if err != nil {
 		return err
 	}
@@ -859,7 +1061,7 @@ func (s *Service) validatePortableDependencyStageKeyFiles(
 		return fmt.Errorf("%s", message)
 	}
 	if result == nil {
-		return fmt.Errorf("portable dependency key-file validation returned no result")
+		return fmt.Errorf("%s validation returned no result", label)
 	}
 	if result.ExitCode != 0 {
 		message := strings.TrimSpace(stderr.String())
@@ -867,23 +1069,27 @@ func (s *Service) validatePortableDependencyStageKeyFiles(
 			message = strings.TrimSpace(stdout.String())
 		}
 		if message == "" {
-			message = fmt.Sprintf("portable dependency key-file validation failed with exit code %d", result.ExitCode)
+			message = fmt.Sprintf("%s validation failed with exit code %d", label, result.ExitCode)
 		}
 		return fmt.Errorf("%s", message)
 	}
 	actualDigest := strings.TrimSpace(stdout.String())
 	if actualDigest != expectedDigest {
-		return fmt.Errorf("portable dependency key-file digest mismatch: expected %s got %s", expectedDigest, actualDigest)
+		return fmt.Errorf("%s digest mismatch: expected %s got %s", label, expectedDigest, actualDigest)
 	}
 	return nil
 }
 
 func dependencyStageKeyFilesDigestCommand(repository *repositorycheckout.Checkout, files []string) ([]string, error) {
+	return dependencyStageFileDigestCommand(repository, files, "portable dependency key-file validation")
+}
+
+func dependencyStageFileDigestCommand(repository *repositorycheckout.Checkout, files []string, label string) ([]string, error) {
 	if repository == nil {
-		return nil, fmt.Errorf("portable dependency key-file validation requires a repository checkout")
+		return nil, fmt.Errorf("%s requires a repository checkout", label)
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("portable dependency key-file validation requires dependency key files")
+		return nil, fmt.Errorf("%s requires input files", label)
 	}
 	var script strings.Builder
 	script.WriteString("set -eu\n")

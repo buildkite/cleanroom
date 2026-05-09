@@ -446,6 +446,21 @@ func testRepositoryPortableDependencyPolicy() *cleanroomv1.Policy {
 	return policyProto
 }
 
+func writePortableDependencyValidationDigest(command []string, stream backend.OutputStream, keyFilesDigest, toolchainInputsDigest string) {
+	if stream.OnStdout == nil {
+		return
+	}
+	joined := strings.Join(command, "\n")
+	if !strings.Contains(joined, "sha256sum") {
+		return
+	}
+	if strings.Contains(joined, "mise.toml") || strings.Contains(joined, ".tool-versions") {
+		stream.OnStdout([]byte(toolchainInputsDigest + "\n"))
+		return
+	}
+	stream.OnStdout([]byte(keyFilesDigest + "\n"))
+}
+
 func testPolicyBlock(name string, command, inputFiles, outputDirs, outputFiles []string) *cleanroomv1.PolicyBlock {
 	return &cleanroomv1.PolicyBlock{
 		Name:    name,
@@ -3863,16 +3878,15 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	adapter := &stubAdapter{}
 	var snapshotReqs []backend.SnapshotRequest
 	var runCommands [][]string
-	validationDigest := ""
+	keyFilesDigest := ""
+	toolchainInputsDigest := ""
 	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 		snapshotReqs = append(snapshotReqs, req)
 		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
 	}
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		runCommands = append(runCommands, append([]string(nil), req.Command...))
-		if strings.Contains(strings.Join(req.Command, "\n"), "sha256sum") && stream.OnStdout != nil {
-			stream.OnStdout([]byte(validationDigest + "\n"))
-		}
+		writePortableDependencyValidationDigest(req.Command, stream, keyFilesDigest, toolchainInputsDigest)
 		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
@@ -3892,9 +3906,10 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryStore = mirrors
 	var err error
-	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, nil, []string{"go.mod", "go.sum"})
+	updatedRepository := repositorycheckout.FromProto(&updatedCheckout)
+	keyFilesDigest, toolchainInputsDigest, err = svc.dependencyStagePlanInputDigests(context.Background(), updatedRepository, nil, nil, []string{"go.mod", "go.sum"}, dependencyStageToolchainInputFiles)
 	if err != nil {
-		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
+		t.Fatalf("dependencyStagePlanInputDigests returned error: %v", err)
 	}
 
 	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
@@ -3928,8 +3943,8 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	if got, want := len(snapshotReqs), 2; got != want {
 		t.Fatalf("expected workspace and dependency snapshot publishes only, got %d want %d", got, want)
 	}
-	if got, want := len(runCommands), 4; got != want {
-		t.Fatalf("expected repository bootstrap, dependency bootstrap, and checkout refresh, got %d commands", got)
+	if got, want := len(runCommands), 5; got != want {
+		t.Fatalf("expected repository bootstrap, dependency bootstrap, checkout refresh, and validations, got %d commands", got)
 	}
 	refreshCommand := strings.Join(runCommands[2], "\n")
 	if !strings.Contains(refreshCommand, updatedCommit) || !strings.Contains(refreshCommand, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
@@ -3940,6 +3955,9 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	}
 	if validationCommand := strings.Join(runCommands[3], "\n"); !strings.Contains(validationCommand, "sha256sum") {
 		t.Fatalf("expected portable hit to validate dependency key files, got %q", validationCommand)
+	}
+	if validationCommand := strings.Join(runCommands[4], "\n"); !strings.Contains(validationCommand, "mise.toml") || !strings.Contains(validationCommand, ".tool-versions") {
+		t.Fatalf("expected portable hit to validate dependency toolchain inputs, got %q", validationCommand)
 	}
 
 	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
@@ -3985,6 +4003,68 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	}
 	if got, want := restoredState.Repository.CommitSHA, updatedCommit; got != want {
 		t.Fatalf("expected restored sandbox repository to be refreshed: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxDoesNotReusePortableDependencyStageAfterToolchainInputChange(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var runCommands [][]string
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		runCommands = append(runCommands, append([]string(nil), req.Command...))
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":    "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":    "example.com/test v0.0.0 h1:abc123\n",
+		"mise.toml": "[tools]\ngo = \"1.26.2\"\n",
+		"app.go":    "package main\n\nfunc main() {}\n",
+	})
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "mise.toml"), []byte("[tools]\ngo = \"1.27.0\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(mise.toml) returned error: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", ".")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "toolchain change")
+	updatedCommit := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+	updatedCheckout := *repositoryCheckout
+	updatedCheckout.CommitSha = updatedCommit
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPortableDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	secondResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPortableDependencyPolicy(),
+		RepositoryCheckout: &updatedCheckout,
+	})
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got := secondResp.GetSourceKind(); got == "portable dependency stage cache" {
+		t.Fatalf("unexpected portable dependency-stage hit after toolchain input changed")
+	}
+	if got, want := adapter.provisionCalls, 2; got != want {
+		t.Fatalf("expected toolchain input change to require a second cold provision, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 0; got != want {
+		t.Fatalf("expected no portable dependency-stage restore after toolchain input change, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 4; got != want {
+		t.Fatalf("expected both creates to publish workspace and dependency snapshots, got %d want %d", got, want)
+	}
+	for _, command := range runCommands {
+		if strings.Contains(strings.Join(command, "\n"), "sha256sum") {
+			t.Fatalf("did not expect portable dependency-stage validation command after toolchain input change, got %q", command)
+		}
 	}
 }
 
@@ -4123,7 +4203,8 @@ func TestCreateSandboxStoresCommitBundleAfterPortableDependencyStageRestore(t *t
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{}
 	var runCommands [][]string
-	validationDigest := ""
+	keyFilesDigest := ""
+	toolchainInputsDigest := ""
 	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
 	}
@@ -4155,9 +4236,7 @@ func TestCreateSandboxStoresCommitBundleAfterPortableDependencyStageRestore(t *t
 		mu.Lock()
 		runCommands = append(runCommands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		if strings.Contains(strings.Join(req.Command, "\n"), "sha256sum") && stream.OnStdout != nil {
-			stream.OnStdout([]byte(validationDigest + "\n"))
-		}
+		writePortableDependencyValidationDigest(req.Command, stream, keyFilesDigest, toolchainInputsDigest)
 		select {
 		case runCalled <- struct{}{}:
 		default:
@@ -4218,9 +4297,9 @@ func TestCreateSandboxStoresCommitBundleAfterPortableDependencyStageRestore(t *t
 
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryStore = mirrors
-	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), updatedRepository, changeset, commitBundle, []string{"go.mod", "go.sum"})
+	keyFilesDigest, toolchainInputsDigest, err = svc.dependencyStagePlanInputDigests(context.Background(), updatedRepository, changeset, commitBundle, []string{"go.mod", "go.sum"}, dependencyStageToolchainInputFiles)
 	if err != nil {
-		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
+		t.Fatalf("dependencyStagePlanInputDigests returned error: %v", err)
 	}
 
 	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
@@ -4295,16 +4374,15 @@ func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *t
 	adapter := &stubAdapter{}
 	var snapshotReqs []backend.SnapshotRequest
 	var runCommands [][]string
-	validationDigest := ""
+	keyFilesDigest := ""
+	toolchainInputsDigest := ""
 	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 		snapshotReqs = append(snapshotReqs, req)
 		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
 	}
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		runCommands = append(runCommands, append([]string(nil), req.Command...))
-		if strings.Contains(strings.Join(req.Command, "\n"), "sha256sum") && stream.OnStdout != nil {
-			stream.OnStdout([]byte(validationDigest + "\n"))
-		}
+		writePortableDependencyValidationDigest(req.Command, stream, keyFilesDigest, toolchainInputsDigest)
 		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
@@ -4325,9 +4403,10 @@ func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *t
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryStore = mirrors
 	var err error
-	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, nil, []string{"go.mod", "go.sum"})
+	updatedRepository := repositorycheckout.FromProto(&updatedCheckout)
+	keyFilesDigest, toolchainInputsDigest, err = svc.dependencyStagePlanInputDigests(context.Background(), updatedRepository, nil, nil, []string{"go.mod", "go.sum"}, dependencyStageToolchainInputFiles)
 	if err != nil {
-		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
+		t.Fatalf("dependencyStagePlanInputDigests returned error: %v", err)
 	}
 
 	portableServicesPolicy := testRepositoryDependencyAndServicesPolicy()
@@ -4360,13 +4439,13 @@ func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *t
 	if got, want := len(snapshotReqs), 4; got != want {
 		t.Fatalf("expected four snapshot publish requests, got %d want %d", got, want)
 	}
-	if got, want := len(runCommands), 6; got != want {
+	if got, want := len(runCommands), 7; got != want {
 		t.Fatalf("expected cold bootstraps plus portable refresh, validation, and services bootstrap, got %d want %d", got, want)
 	}
 	if refreshCommand := strings.Join(runCommands[3], "\n"); !strings.Contains(refreshCommand, updatedCommit) {
 		t.Fatalf("expected portable hit to refresh checkout to %s, got %q", updatedCommit, refreshCommand)
 	}
-	servicesBootstrap := strings.Join(runCommands[5], " ")
+	servicesBootstrap := strings.Join(runCommands[6], " ")
 	if !strings.Contains(servicesBootstrap, "docker") || !strings.Contains(servicesBootstrap, "compose") || !strings.Contains(servicesBootstrap, "postgres") {
 		t.Fatalf("expected services bootstrap after portable restore, got %q", servicesBootstrap)
 	}
@@ -4427,6 +4506,61 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 	}
 	if got, want := tamperedDigest, changesetDigest; got != want {
 		t.Fatalf("expected dependency key file digest to ignore tampered file hashes: got %q want %q", got, want)
+	}
+}
+
+func TestDependencyStageToolchainInputsDigestDerivesHashesFromRepositoryChangesetPatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":    "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":    "example.com/test v0.0.0 h1:abc123\n",
+		"mise.toml": "[tools]\ngo = \"1.26.2\"\n",
+	})
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	repoDir := mirrors.mirrorPath
+	if err := os.WriteFile(filepath.Join(repoDir, "mise.toml"), []byte("[tools]\ngo = \"1.27.0\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(mise.toml) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(repoDir, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset for modified toolchain input")
+	}
+
+	svc := newTestService(&stubAdapter{})
+	svc.RepositoryStore = mirrors
+
+	_, baseDigest, err := svc.dependencyStagePlanInputDigests(context.Background(), repository, nil, nil, []string{"go.mod", "go.sum"}, dependencyStageToolchainInputFiles)
+	if err != nil {
+		t.Fatalf("dependencyStagePlanInputDigests without changeset returned error: %v", err)
+	}
+	_, changesetDigest, err := svc.dependencyStagePlanInputDigests(context.Background(), repository, changeset, nil, []string{"go.mod", "go.sum"}, dependencyStageToolchainInputFiles)
+	if err != nil {
+		t.Fatalf("dependencyStagePlanInputDigests with changeset returned error: %v", err)
+	}
+	if changesetDigest == "" {
+		t.Fatal("expected dependency toolchain input digest with repository changeset")
+	}
+	if changesetDigest == baseDigest {
+		t.Fatalf("expected changeset-aware dependency toolchain input digest to differ from base digest %q", baseDigest)
+	}
+}
+
+func TestDependencyStagePlanNormalizesToolchainInputFilesForValidation(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := policy.FromProto(testRepositoryPortableDependencyPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	plan, ok := dependencyStagePlanForRepository(compiled, &repositorycheckout.Checkout{DestinationDir: "/workspace"})
+	if !ok {
+		t.Fatal("expected dependency stage plan")
+	}
+	if got, want := strings.Join(plan.ToolchainInputFiles, "\x00"), strings.Join(normalizeStageOptionalKeyFiles(dependencyStageToolchainInputFiles), "\x00"); got != want {
+		t.Fatalf("unexpected toolchain input file order: got %q want %q", got, want)
 	}
 }
 
