@@ -27,6 +27,8 @@ import (
 
 func main() {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("CLEANROOM_GUEST_TRANSPORT")), "stdio") {
+		guestBootTimings.recordOnce(vsockexec.GuestBootTimingAgentListenReady)
+		guestBootTimings.recordOnce(vsockexec.GuestBootTimingAgentFirstAccept)
 		handleConn(stdioConn{})
 		return
 	}
@@ -43,6 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer ln.Close()
+	guestBootTimings.record(vsockexec.GuestBootTimingAgentListenReady)
 
 	for {
 		conn, err := ln.Accept()
@@ -53,6 +56,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "accept: %v\n", err)
 			continue
 		}
+		guestBootTimings.recordOnce(vsockexec.GuestBootTimingAgentFirstAccept)
 		handleConn(conn)
 	}
 }
@@ -93,6 +97,7 @@ func handleConn(conn io.ReadWriteCloser) {
 		sendErrorResponse(conn, err)
 		return
 	}
+	guestBootTimings.recordOnce(vsockexec.GuestBootTimingAgentFirstRequestDecode)
 	if len(req.Command) == 0 {
 		sendErrorResponse(conn, errors.New("missing command"))
 		return
@@ -270,9 +275,10 @@ func sendErrorResponse(w io.Writer, err error) {
 		return
 	}
 	if sendErr := sender.Send(vsockexec.ExecStreamFrame{
-		Type:     "exit",
-		ExitCode: 1,
-		Error:    msg,
+		Type:          "exit",
+		ExitCode:      1,
+		Error:         msg,
+		GuestTimingMS: guestBootTimings.snapshot(),
 	}); sendErr != nil {
 		return
 	}
@@ -296,6 +302,7 @@ func sendExitResult(sender *frameSender, waitErr error, capture *vsockexec.Overl
 		ExitCode:       exitCode,
 		Error:          errMsg,
 		OverlayCapture: captureResult,
+		GuestTimingMS:  guestBootTimings.snapshot(),
 	}); err != nil {
 		return
 	}

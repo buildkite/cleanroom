@@ -30,6 +30,31 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
 
+guest_boot_time() {
+  if ! read -r uptime _ </proc/uptime; then
+    return 1
+  fi
+  printf '%s\n' "$uptime"
+}
+
+mark_guest_boot_timing() {
+  case " ${cmdline:-} " in
+    *" cleanroom_guest_boot_timing=1 "*) ;;
+    *) return 0 ;;
+  esac
+  timing_key="$1"
+  timing_value="$(guest_boot_time 2>/dev/null || true)"
+  if [ -z "$timing_value" ]; then
+    return 0
+  fi
+  if [ -n "${CLEANROOM_GUEST_BOOT_TIMINGS:-}" ]; then
+    CLEANROOM_GUEST_BOOT_TIMINGS="${CLEANROOM_GUEST_BOOT_TIMINGS},${timing_key}=${timing_value}"
+  else
+    CLEANROOM_GUEST_BOOT_TIMINGS="${timing_key}=${timing_value}"
+  fi
+  export CLEANROOM_GUEST_BOOT_TIMINGS
+}
+
 mkdir -p /etc 2>/dev/null || true
 touch /etc/hosts 2>/dev/null || true
 append_hosts_line_if_missing() {
@@ -181,6 +206,7 @@ if [ -n "$AGENT_DEV" ]; then
   ) &
 fi
 
+mark_guest_boot_timing guest_init_vsock_agent_exec
 while true; do
   /usr/local/bin/cleanroom-guest-agent || true
   sleep 1

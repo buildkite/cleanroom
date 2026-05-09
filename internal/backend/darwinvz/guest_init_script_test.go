@@ -3,9 +3,18 @@
 package darwinvz
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
+
+func TestGuestInitScriptSyntax(t *testing.T) {
+	t.Parallel()
+
+	if out, err := exec.Command("sh", "-n", "-c", guestInitScriptTemplate).CombinedOutput(); err != nil {
+		t.Fatalf("guest init script syntax check failed: %v\n%s", err, out)
+	}
+}
 
 func TestGuestInitScriptAlwaysStartsStdioAgentWhenSerialDeviceExists(t *testing.T) {
 	if strings.Contains(guestInitScriptTemplate, "CLEANROOM_USE_STDIO") {
@@ -24,6 +33,28 @@ func TestGuestInitScriptAlwaysStartsStdioAgentWhenSerialDeviceExists(t *testing.
 func TestGuestInitScriptBootstrapsNetwork(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, "setup_guest_network") {
 		t.Fatal("expected guest network setup function in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "CLEANROOM_GUEST_BOOT_TIMINGS") {
+		t.Fatal("expected init script to export guest boot timings")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "mark_guest_boot_timing()") {
+		t.Fatal("expected init script to define guest boot timing helper")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "cleanroom_guest_boot_timing=1") {
+		t.Fatal("expected init script to gate boot timing on kernel cmdline")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "guest_init_vsock_agent_exec") {
+		t.Fatal("expected init script to mark the vsock guest-agent handoff")
+	}
+	for _, marker := range []string{
+		"guest_init_core_mounts_done",
+		"guest_init_hosts_done",
+		"guest_init_network_done",
+		"guest_init_stdio_agent_exec",
+	} {
+		if strings.Contains(guestInitScriptTemplate, marker) {
+			t.Fatalf("expected init script not to mark %s in the hot path", marker)
+		}
 	}
 	if !strings.Contains(guestInitScriptTemplate, "127.0.0.1 localhost") {
 		t.Fatal("expected localhost IPv4 hosts entry in init script")

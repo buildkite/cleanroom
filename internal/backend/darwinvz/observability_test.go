@@ -145,6 +145,7 @@ func TestRecordLaunchPhaseObservabilityAddsTraceEvents(t *testing.T) {
 		VMReadyMS:    321,
 		HelperTimingMS: map[string]int64{
 			darwinVZTimingGuestExecReadyProbe: 401,
+			darwinVZTimingGuestAgentStartup:   35,
 			"zero":                            0,
 		},
 	})
@@ -157,7 +158,26 @@ func TestRecordLaunchPhaseObservabilityAddsTraceEvents(t *testing.T) {
 	requireLaunchPhaseEvent(t, spans[0], "rootfs_prepare", "27")
 	requireLaunchPhaseEvent(t, spans[0], "guest_wait_ready", "321")
 	requireLaunchPhaseEvent(t, spans[0], "helper_"+darwinVZTimingGuestExecReadyProbe, "401")
+	requireLaunchPhaseEvent(t, spans[0], darwinVZTimingGuestAgentStartup, "35")
 	requireNoLaunchPhaseEvent(t, spans[0], "helper_zero")
+	requireNoLaunchPhaseEvent(t, spans[0], "helper_"+darwinVZTimingGuestAgentStartup)
+}
+
+func TestDarwinVZGuestBootTimingBootArgRequiresRecordingSpan(t *testing.T) {
+	t.Parallel()
+
+	if got := darwinVZGuestBootTimingBootArg(context.Background()); got != "" {
+		t.Fatalf("expected no boot timing arg without recording span, got %q", got)
+	}
+
+	tracerProvider := sdktrace.NewTracerProvider()
+	defer func() { _ = tracerProvider.Shutdown(context.Background()) }()
+	ctx, span := tracerProvider.Tracer("test").Start(context.Background(), "cleanroom.test")
+	defer span.End()
+
+	if got, want := darwinVZGuestBootTimingBootArg(ctx), "cleanroom_guest_boot_timing=1"; got != want {
+		t.Fatalf("unexpected boot timing arg: got %q want %q", got, want)
+	}
 }
 
 func TestWriteDarwinVZRunObservationIncludesNetworkMetadata(t *testing.T) {
