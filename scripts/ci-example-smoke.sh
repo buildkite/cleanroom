@@ -56,6 +56,7 @@ for example_dir in \
   "$REPO_ROOT/examples/basic" \
   "$REPO_ROOT/examples/docker" \
   "$REPO_ROOT/examples/docker-cache-output" \
+  "$REPO_ROOT/examples/seeded-output-cache" \
   "$REPO_ROOT/examples/rails" \
   "$REPO_ROOT/examples/buildkite-agent"; do
   echo "--- :mag: Validate $(basename "$example_dir") example"
@@ -80,9 +81,17 @@ if ! grep -q '^docker-version-ok$' "$tmpdir/docker-version.out"; then
 fi
 
 echo "--- :whale: Docker cache-output regression smoke test ($BACKEND)"
-"$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$REPO_ROOT/examples/docker-cache-output" -- sh -lc 'docker version >/dev/null && echo docker-cached-ok' | tee "$tmpdir/docker-cached.out"
+# shellcheck disable=SC2016
+"$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$REPO_ROOT/examples/docker-cache-output" -- sh -lc 'docker image inspect "$1" >/dev/null && echo docker-cached-ok' sh "$docker_pull_image" | tee "$tmpdir/docker-cached.out"
 if ! grep -q '^docker-cached-ok$' "$tmpdir/docker-cached.out"; then
   echo "expected docker cache-output regression smoke output missing" >&2
+  exit 1
+fi
+
+echo "--- :package: Seeded cache-output smoke test ($BACKEND)"
+"$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$REPO_ROOT/examples/seeded-output-cache" -- sh -lc 'test -f examples/seeded-output-cache/public/assets/.keep && grep -q "^generated$" examples/seeded-output-cache/public/assets/generated.txt && echo seeded-cache-output-ok' | tee "$tmpdir/seeded-cache-output.out"
+if ! grep -q '^seeded-cache-output-ok$' "$tmpdir/seeded-cache-output.out"; then
+  echo "expected seeded cache-output smoke output missing" >&2
   exit 1
 fi
 

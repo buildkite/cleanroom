@@ -6,7 +6,7 @@ sandbox:
     required: true
   services:
     - name: docker-images
-      command: docker version >/dev/null
+      command: docker pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9 >/dev/null
       inputs:
         files:
           - examples/docker-cache-output/cleanroom.yaml
