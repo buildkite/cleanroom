@@ -57,6 +57,22 @@ type dependencyStageResolveResult struct {
 	replacedServices   *cachestore.Record
 }
 
+type workspaceStageResolveRequest struct {
+	stageCacheResolveContext
+	runtimeBaseKey      string
+	cacheKey            string
+	dependencyBootstrap bool
+	servicesBootstrap   bool
+	cacheOutputs        []backend.CacheOutputVolumeSpec
+}
+
+type workspaceStageResolveResult struct {
+	completed  *cleanroomv1.CreateSandboxResponse
+	restored   *cleanroomv1.CreateSandboxResponse
+	sourceKind string
+	replaced   *cachestore.Record
+}
+
 func (s *Service) resolveServicesStageCache(ctx context.Context, req servicesStageResolveRequest) (servicesStageResolveResult, error) {
 	emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_SERVICES_STAGE_CACHE, "checking services stage cache")
 	var record cachestore.Record
@@ -341,6 +357,76 @@ func (s *Service) resolvePortableDependencyStageCache(ctx context.Context, req d
 	}
 	result.restored = restoreResp
 	return result, nil
+}
+
+func (s *Service) resolveWorkspaceStageCache(ctx context.Context, req workspaceStageResolveRequest) (workspaceStageResolveResult, error) {
+	emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "checking workspace stage cache")
+	var record cachestore.Record
+	var found bool
+	var lookupReason string
+	err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_workspace_stage_cache", cachePhaseAttributes(
+		observability.CacheStageWorkspace,
+		observability.CacheOperationLookup,
+		req.repository,
+		attribute.String(observability.AttrBackend, req.backendName),
+	), func(ctx context.Context) error {
+		var lookupErr error
+		record, found, lookupReason, lookupErr = s.lookupWorkspaceStageCache(ctx, req.backendName, req.compiled, req.runtimeBaseKey, req.repository, req.changeset)
+		setCacheLookupSpanAttributes(ctx, found, lookupReason, lookupErr)
+		return lookupErr
+	})
+	if err != nil {
+		s.logWorkspaceStageWarning("lookup workspace stage cache", "", err)
+		return workspaceStageResolveResult{}, nil
+	}
+
+	if !found {
+		s.logWorkspaceStageCacheMiss(req.backendName, req.cacheKey)
+		emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "workspace stage cache miss")
+		return workspaceStageResolveResult{}, nil
+	}
+
+	s.logWorkspaceStageCacheHit(record)
+	emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "workspace stage cache hit")
+	emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
+	restoreReq := &cleanroomv1.CreateSandboxRequest{
+		Backend: req.backendName,
+		Options: req.options,
+	}
+	var restoreResp *cleanroomv1.CreateSandboxResponse
+	restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_workspace_stage_cache", cachePhaseAttributes(
+		observability.CacheStageWorkspace,
+		observability.CacheOperationRestore,
+		req.repository,
+		attribute.String(observability.AttrBackend, req.backendName),
+	), func(ctx context.Context) error {
+		var err error
+		restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, req.compiled, record, req.cacheOutputs, req.reporter)
+		setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
+		return err
+	})
+	if restoreErr == nil {
+		if cacheStore, err := s.cacheStoreOrErr(); err == nil {
+			if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
+				s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
+			}
+		}
+		s.retainRestoredSandboxRepositoryState(restoreResp, req.repository, req.commitBundle, req.changeset)
+		s.logWorkspaceStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
+		result := workspaceStageResolveResult{sourceKind: "workspace stage cache"}
+		if !req.dependencyBootstrap && !req.servicesBootstrap {
+			result.completed = restoreResp
+			return result, nil
+		}
+		result.restored = restoreResp
+		return result, nil
+	}
+	if errors.Is(restoreErr, errSandboxCreateAborted) {
+		return workspaceStageResolveResult{}, restoreErr
+	}
+	recordCopy := record
+	s.logWorkspaceStageRestoreWarning(record, restoreErr)
+	return workspaceStageResolveResult{replaced: &recordCopy}, nil
 }
 
 func (r servicesStageResolveRequest) lookupTraceName() string {
