@@ -91,6 +91,7 @@ func (s *Service) lookupServiceBlockVolumePlanForCreateSandbox(
 		plan, lookupErr = s.lookupServiceBlockVolumeCaches(ctx, backendName, compiled, plan)
 		hits, misses := serviceBlockVolumePlanHitMissCounts(plan)
 		setBlockVolumeLookupSpanAttributes(ctx, len(plan.Blocks), hits, misses, lookupErr)
+		addBlockVolumeLookupSpanEvents(ctx, observability.CacheStageServices, serviceBlockVolumeLookupSpanEventBlocks(plan), lookupErr)
 		return lookupErr
 	})
 	if err != nil {
@@ -236,6 +237,20 @@ func serviceBlockVolumePlanHitMissCounts(plan serviceBlockVolumePlan) (hits, mis
 		misses++
 	}
 	return hits, misses
+}
+
+func serviceBlockVolumeLookupSpanEventBlocks(plan serviceBlockVolumePlan) []blockVolumeLookupSpanEventBlock {
+	blocks := make([]blockVolumeLookupSpanEventBlock, 0, len(plan.Blocks))
+	for _, block := range plan.Blocks {
+		blocks = append(blocks, blockVolumeLookupSpanEventBlock{
+			BlockName:    block.BlockName,
+			CacheKey:     block.CacheKey,
+			Outputs:      block.Outputs,
+			CacheHit:     block.CacheHit,
+			LookupReason: block.LookupReason,
+		})
+	}
+	return blocks
 }
 
 func (s *Service) logServiceBlockVolumeCacheFallback(backendName string, blockCount int, reason string) {

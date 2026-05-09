@@ -2,6 +2,7 @@ package controlservice
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1038,6 +1039,13 @@ func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAcrossWarmCreates(t 
 	requireSpanAttributeValue(t, dependencyLookupSpan, observability.AttrCacheResult, observability.CacheResultHit)
 	requireSpanAttributeValue(t, dependencyLookupSpan, "cleanroom.cache.hit_count", "1")
 	requireSpanAttributeValue(t, dependencyLookupSpan, "cleanroom.cache.miss_count", "0")
+	requireSpanEventCount(t, dependencyLookupSpan, "cleanroom.cache.block_lookup", 1)
+	requireSpanEvent(t, dependencyLookupSpan, "cleanroom.cache.block_lookup", map[string]string{
+		observability.AttrCacheStage:      observability.CacheStageDependency,
+		observability.AttrCacheBlock:      "node-modules",
+		observability.AttrCacheResult:     observability.CacheResultHit,
+		observability.AttrCacheOutputDirs: "[/src/node_modules]",
+	})
 	serviceLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_service_block_volume_caches")
 	if serviceLookupSpan == nil {
 		t.Fatalf("expected service block-volume lookup span, got spans %#v", spans)
@@ -1045,6 +1053,19 @@ func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAcrossWarmCreates(t 
 	requireSpanAttributeValue(t, serviceLookupSpan, observability.AttrCacheResult, observability.CacheResultHit)
 	requireSpanAttributeValue(t, serviceLookupSpan, "cleanroom.cache.hit_count", "2")
 	requireSpanAttributeValue(t, serviceLookupSpan, "cleanroom.cache.miss_count", "0")
+	requireSpanEventCount(t, serviceLookupSpan, "cleanroom.cache.block_lookup", 2)
+	requireSpanEvent(t, serviceLookupSpan, "cleanroom.cache.block_lookup", map[string]string{
+		observability.AttrCacheStage:      observability.CacheStageServices,
+		observability.AttrCacheBlock:      "assets",
+		observability.AttrCacheResult:     observability.CacheResultHit,
+		observability.AttrCacheOutputDirs: "[/src/public/assets]",
+	})
+	requireSpanEvent(t, serviceLookupSpan, "cleanroom.cache.block_lookup", map[string]string{
+		observability.AttrCacheStage:      observability.CacheStageServices,
+		observability.AttrCacheBlock:      "docker-images",
+		observability.AttrCacheResult:     observability.CacheResultHit,
+		observability.AttrCacheOutputDirs: "[/var/lib/docker]",
+	})
 }
 
 func TestCreateSandboxInvalidatesDependencyAndServiceBlockVolumesAfterSourceOnlyChange(t *testing.T) {
@@ -1336,6 +1357,43 @@ func TestBootstrapServiceBlockVolumePlanUsesRepositoryDestinationForMisses(t *te
 	if got, want := gotReq.OverlayCapture.BaselinePaths, []string{"/src/node_modules", "/src/public/assets"}; !slices.Equal(got, want) {
 		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", got, want)
 	}
+}
+
+func TestBlockVolumeLookupSpanEventsIncludeMissReasonsAndOutputs(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	t.Cleanup(func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	})
+	ctx, span := tracerProvider.Tracer("cleanroom-test").Start(context.Background(), "lookup")
+
+	addBlockVolumeLookupSpanEvents(ctx, observability.CacheStageServices, []blockVolumeLookupSpanEventBlock{
+		{
+			BlockName:    "assets",
+			CacheKey:     "service-volume:assets",
+			Outputs:      policy.StageBlockOutputs{Dirs: []string{"/src/public/assets"}, Files: []string{"/src/public/assets/manifest.json"}},
+			LookupReason: observability.CacheLookupReasonRecordNotFound,
+		},
+	}, nil)
+	span.End()
+
+	spans := recorder.Ended()
+	if got, want := len(spans), 1; got != want {
+		t.Fatalf("unexpected ended span count: got %d want %d", got, want)
+	}
+	requireSpanEventCount(t, spans[0], "cleanroom.cache.block_lookup", 1)
+	requireSpanEvent(t, spans[0], "cleanroom.cache.block_lookup", map[string]string{
+		observability.AttrCacheStage:        observability.CacheStageServices,
+		observability.AttrCacheBlock:        "assets",
+		observability.AttrCacheKey:          "service-volume:assets",
+		observability.AttrCacheResult:       observability.CacheResultMiss,
+		observability.AttrCacheLookupReason: observability.CacheLookupReasonRecordNotFound,
+		observability.AttrCacheOutputDirs:   "[/src/public/assets]",
+		observability.AttrCacheOutputFiles:  "[/src/public/assets/manifest.json]",
+	})
 }
 
 func TestBootstrapServicesForCreateSandboxSkipsDependencyOutputBaselinesWhenUnmounted(t *testing.T) {
@@ -1817,6 +1875,58 @@ func requireCacheOutputDirMapping(t *testing.T, spec backend.CacheOutputVolumeSp
 	}) {
 		t.Fatalf("expected %s/%s spec to map %q, got %#v", stage, blockName, guestPath, spec.DirMappings)
 	}
+}
+
+func requireSpanEventCount(t *testing.T, span sdktrace.ReadOnlySpan, name string, want int) {
+	t.Helper()
+	if span == nil {
+		t.Fatal("expected span")
+	}
+	got := 0
+	for _, event := range span.Events() {
+		if event.Name == name {
+			got++
+		}
+	}
+	if got != want {
+		t.Fatalf("unexpected span %q event %q count: got %d want %d", span.Name(), name, got, want)
+	}
+}
+
+func requireSpanEvent(t *testing.T, span sdktrace.ReadOnlySpan, name string, attrs map[string]string) {
+	t.Helper()
+	if span == nil {
+		t.Fatal("expected span")
+	}
+	for _, event := range span.Events() {
+		if event.Name != name {
+			continue
+		}
+		if spanEventAttributesMatch(event, attrs) {
+			return
+		}
+	}
+	t.Fatalf("missing span %q event %q with attributes %v; events: %#v", span.Name(), name, attrs, span.Events())
+}
+
+func spanEventAttributesMatch(event sdktrace.Event, attrs map[string]string) bool {
+	for key, want := range attrs {
+		got, ok := spanEventAttributeValue(event, key)
+		if !ok || got != want {
+			return false
+		}
+	}
+	return true
+}
+
+func spanEventAttributeValue(event sdktrace.Event, key string) (string, bool) {
+	for _, kv := range event.Attributes {
+		if string(kv.Key) != key {
+			continue
+		}
+		return fmt.Sprint(kv.Value.AsInterface()), true
+	}
+	return "", false
 }
 
 func serviceBlockVolumeTestRecord(compiled *policy.CompiledPolicy, block serviceBlockVolumeBlockPlan) cachestore.Record {

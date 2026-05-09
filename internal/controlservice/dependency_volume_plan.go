@@ -68,6 +68,7 @@ func (s *Service) lookupDependencyBlockVolumePlanForCreateSandbox(
 		plan, lookupErr = s.lookupDependencyBlockVolumeCaches(ctx, backendName, compiled, plan)
 		hits, misses := dependencyBlockVolumePlanHitMissCounts(plan)
 		setBlockVolumeLookupSpanAttributes(ctx, len(plan.Blocks), hits, misses, lookupErr)
+		addBlockVolumeLookupSpanEvents(ctx, observability.CacheStageDependency, dependencyBlockVolumeLookupSpanEventBlocks(plan), lookupErr)
 		return lookupErr
 	})
 	if err != nil {
@@ -189,6 +190,20 @@ func dependencyBlockVolumePlanHitMissCounts(plan dependencyBlockVolumePlan) (hit
 		misses++
 	}
 	return hits, misses
+}
+
+func dependencyBlockVolumeLookupSpanEventBlocks(plan dependencyBlockVolumePlan) []blockVolumeLookupSpanEventBlock {
+	blocks := make([]blockVolumeLookupSpanEventBlock, 0, len(plan.Blocks))
+	for _, block := range plan.Blocks {
+		blocks = append(blocks, blockVolumeLookupSpanEventBlock{
+			BlockName:    block.BlockName,
+			CacheKey:     block.CacheKey,
+			Outputs:      block.Outputs,
+			CacheHit:     block.CacheHit,
+			LookupReason: block.LookupReason,
+		})
+	}
+	return blocks
 }
 
 func (s *Service) logDependencyBlockVolumeCacheFallback(backendName string, blockCount int, reason string) {
