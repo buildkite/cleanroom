@@ -120,6 +120,10 @@ phases.
 The current metric names are:
 
 - `cleanroom_sandbox_create_duration_seconds{backend,source,outcome}`
+- `cleanroom_sandbox_active_count{backend,status}`
+- `cleanroom_sandbox_effective_memory_bytes{backend,status}`
+- `cleanroom_sandbox_effective_vcpus{backend,status}`
+- `cleanroom_sandbox_effective_disk_bytes{backend,status}`
 - `cleanroom_execution_total{backend,kind,outcome}`
 - `cleanroom_execution_duration_seconds{backend,kind,outcome}`
 - `cleanroom_gateway_requests_total{service,action,reason_code,status_class}`
@@ -129,6 +133,11 @@ The current metric names are:
 Metric labels must stay low-cardinality. Execution IDs, sandbox IDs, image
 digests, and host IPs belong in traces, logs, or retained artefacts, not in
 metric labels.
+
+Sandbox resource metrics are aggregate gauges for active sandboxes grouped by
+backend and status. They report the effective launch envelope Cleanroom
+resolved for each sandbox, not guest runtime memory pressure or exact host
+reservations.
 
 ### Common attributes
 

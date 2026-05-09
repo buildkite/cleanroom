@@ -676,6 +676,30 @@ func requireInt64SumMetricValue(t *testing.T, metrics metricdata.ResourceMetrics
 	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
 }
 
+func requireInt64GaugeMetricValue(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want int64) {
+	t.Helper()
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != name {
+				continue
+			}
+			gauge, ok := metric.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("metric %q had unexpected data type %T", name, metric.Data)
+			}
+			for _, point := range gauge.DataPoints {
+				if metricAttributesMatch(point.Attributes, attrs) {
+					if point.Value != want {
+						t.Fatalf("metric %q had value %d, want %d", name, point.Value, want)
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
+}
+
 func requireHistogramMetricCount(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want uint64) {
 	t.Helper()
 	for _, scopeMetrics := range metrics.ScopeMetrics {
@@ -1062,6 +1086,47 @@ func TestServiceEmitsSandboxAndExecutionMetrics(t *testing.T) {
 		"kind":    "batch",
 		"outcome": "succeeded",
 	}, 1)
+}
+
+func TestServiceEmitsSandboxResourceMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	svc := newTestService(&stubAdapter{})
+	svc.Observability = obs
+
+	policyProto := testPolicy()
+	policyProto.Resources = &cleanroomv1.PolicyResources{
+		Vcpus:       4,
+		MemoryBytes: (3 << 30) + 1,
+		DiskBytes:   16 << 30,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  policyProto,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	attrs := map[string]string{
+		observability.MetricLabelBackend: "firecracker",
+		observability.MetricLabelStatus:  "ready",
+	}
+	metrics := collectResourceMetrics(t, reader)
+	requireInt64GaugeMetricValue(t, metrics, observability.MetricSandboxActiveCount, attrs, 1)
+	requireInt64GaugeMetricValue(t, metrics, observability.MetricSandboxEffectiveVCPUs, attrs, 4)
+	requireInt64GaugeMetricValue(t, metrics, observability.MetricSandboxEffectiveMemoryBytes, attrs, 3073<<20)
+	requireInt64GaugeMetricValue(t, metrics, observability.MetricSandboxEffectiveDiskBytes, attrs, 16<<30)
 }
 
 func TestServiceSandboxCreateMetricsTrackWorkspaceCacheFailureSource(t *testing.T) {
