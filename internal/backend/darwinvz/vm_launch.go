@@ -19,6 +19,7 @@ type darwinVZLaunchObservability struct {
 	RootFSCopyMS   int64
 	HelperTimingMS map[string]int64
 	Network        *darwinVZNetworkMetadata
+	Recorded       bool
 }
 
 const (

@@ -5,12 +5,16 @@ package darwinvz
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestDarwinVZTimingSummaryIncludesHelperTimings(t *testing.T) {
@@ -124,6 +128,36 @@ func TestApplyDarwinVZHelperTimingsMergesRootFSPhaseTimings(t *testing.T) {
 	if got, want := obs.VMReadyMS, int64(321); got != want {
 		t.Fatalf("unexpected VMReadyMS: got %v want %v", got, want)
 	}
+}
+
+func TestRecordLaunchPhaseObservabilityAddsTraceEvents(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() { _ = tracerProvider.Shutdown(context.Background()) }()
+
+	ctx, span := tracerProvider.Tracer("test").Start(context.Background(), "cleanroom.test")
+	adapter := &Adapter{}
+	adapter.recordLaunchPhaseObservability(ctx, darwinVZRunObservation{
+		RootFSCopyMS: 27,
+		VMReadyMS:    321,
+		HelperTimingMS: map[string]int64{
+			darwinVZTimingGuestExecReadyProbe: 401,
+			"zero":                            0,
+		},
+	})
+	span.End()
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected one ended span, got %d", len(spans))
+	}
+	requireLaunchPhaseEvent(t, spans[0], "rootfs_prepare", "27")
+	requireLaunchPhaseEvent(t, spans[0], "guest_wait_ready", "321")
+	requireLaunchPhaseEvent(t, spans[0], "helper_"+darwinVZTimingGuestExecReadyProbe, "401")
+	requireNoLaunchPhaseEvent(t, spans[0], "helper_zero")
 }
 
 func TestWriteDarwinVZRunObservationIncludesNetworkMetadata(t *testing.T) {
@@ -249,6 +283,39 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 	if got, want := payload["network_guest_ip"], "10.233.0.2"; got != want {
 		t.Fatalf("unexpected network_guest_ip: got %v want %v", got, want)
 	}
+}
+
+func requireLaunchPhaseEvent(t *testing.T, span sdktrace.ReadOnlySpan, phase, durationMS string) {
+	t.Helper()
+	for _, event := range span.Events() {
+		if event.Name != observability.EventLaunchPhase {
+			continue
+		}
+		if eventAttributeValue(event, observability.AttrLaunchPhase) == phase &&
+			eventAttributeValue(event, observability.AttrLaunchPhaseDurationMS) == durationMS &&
+			eventAttributeValue(event, observability.AttrBackend) == "darwin-vz" {
+			return
+		}
+	}
+	t.Fatalf("expected launch phase event phase=%q duration_ms=%q, got events %#v", phase, durationMS, span.Events())
+}
+
+func requireNoLaunchPhaseEvent(t *testing.T, span sdktrace.ReadOnlySpan, phase string) {
+	t.Helper()
+	for _, event := range span.Events() {
+		if event.Name == observability.EventLaunchPhase && eventAttributeValue(event, observability.AttrLaunchPhase) == phase {
+			t.Fatalf("unexpected launch phase event phase=%q", phase)
+		}
+	}
+}
+
+func eventAttributeValue(event sdktrace.Event, key string) string {
+	for _, attr := range event.Attributes {
+		if string(attr.Key) == key {
+			return fmt.Sprint(attr.Value.AsInterface())
+		}
+	}
+	return ""
 }
 
 func TestRunWritesObservabilityErrorWhenRequestedCommandWriteFails(t *testing.T) {

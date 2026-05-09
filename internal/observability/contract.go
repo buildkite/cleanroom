@@ -15,6 +15,8 @@ const (
 	SpanExecutionCreate = "cleanroom.execution.create"
 	SpanExecutionRun    = "cleanroom.execution.run"
 
+	EventLaunchPhase = "cleanroom.launch.phase"
+
 	MetricSandboxCreateDurationSeconds = "cleanroom_sandbox_create_duration_seconds"
 	MetricExecutionTotal               = "cleanroom_execution_total"
 	MetricExecutionDurationSeconds     = "cleanroom_execution_duration_seconds"
@@ -79,6 +81,8 @@ const (
 	AttrCachePeerBytes         = "cleanroom.cache.peer.bytes"
 	AttrCachePeerFallback      = "cleanroom.cache.peer.fallback_reason"
 	AttrVMLaunched             = "cleanroom.vm.launched"
+	AttrLaunchPhase            = "cleanroom.launch.phase"
+	AttrLaunchPhaseDurationMS  = "cleanroom.launch.phase.duration_ms"
 	AttrExitCode               = "cleanroom.exit_code"
 
 	LogFieldTraceID     = "trace_id"

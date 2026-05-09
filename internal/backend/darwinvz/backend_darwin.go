@@ -214,6 +214,60 @@ func (a *Adapter) recordLaunchPhaseMetrics(ctx context.Context, observation darw
 	}
 }
 
+func (a *Adapter) recordLaunchPhaseObservability(ctx context.Context, observation darwinVZRunObservation) {
+	a.recordLaunchPhaseMetrics(ctx, observation)
+	recordLaunchPhaseTraceEvents(ctx, a.Name(), observation)
+}
+
+type darwinVZLaunchPhaseDuration struct {
+	Phase      string
+	DurationMS int64
+}
+
+func recordLaunchPhaseTraceEvents(ctx context.Context, backendName string, observation darwinVZRunObservation) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	for _, phase := range darwinVZLaunchPhaseDurations(observation) {
+		span.AddEvent(
+			observability.EventLaunchPhase,
+			trace.WithAttributes(
+				attribute.String(observability.AttrBackend, backendName),
+				attribute.String(observability.AttrLaunchPhase, phase.Phase),
+				attribute.Int64(observability.AttrLaunchPhaseDurationMS, phase.DurationMS),
+			),
+		)
+	}
+}
+
+func darwinVZLaunchPhaseDurations(observation darwinVZRunObservation) []darwinVZLaunchPhaseDuration {
+	phases := make([]darwinVZLaunchPhaseDuration, 0, len(observation.HelperTimingMS)+2)
+	if observation.RootFSCopyMS > 0 {
+		phases = append(phases, darwinVZLaunchPhaseDuration{Phase: "rootfs_prepare", DurationMS: observation.RootFSCopyMS})
+	}
+	if observation.VMReadyMS > 0 {
+		phases = append(phases, darwinVZLaunchPhaseDuration{Phase: "guest_wait_ready", DurationMS: observation.VMReadyMS})
+	}
+	helperPhases := make([]string, 0, len(observation.HelperTimingMS))
+	for phase := range observation.HelperTimingMS {
+		helperPhases = append(helperPhases, phase)
+	}
+	sort.Strings(helperPhases)
+	for _, phase := range helperPhases {
+		durationMS := observation.HelperTimingMS[phase]
+		if durationMS <= 0 {
+			continue
+		}
+		phase = strings.TrimSpace(phase)
+		if phase == "" {
+			continue
+		}
+		phases = append(phases, darwinVZLaunchPhaseDuration{Phase: "helper_" + phase, DurationMS: durationMS})
+	}
+	return phases
+}
+
 func commandCombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
@@ -470,8 +524,12 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		PlanPath:    instance.ConfigPath,
 	}
 	applyDarwinVZNetworkMetadata(&observation, instance.NetworkMetadata)
+	launchObservabilityRecorded := false
 	a.sandboxMu.Lock()
 	if current, ok := a.sandboxes[sandboxID]; ok && current == instance {
+		if current.LaunchObservability != nil {
+			launchObservabilityRecorded = current.LaunchObservability.Recorded
+		}
 		applyDarwinVZLaunchObservability(&observation, current.LaunchObservability)
 		current.LaunchObservability = nil
 	}
@@ -481,7 +539,9 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
 			log.Warn("write darwin-vz run observability failed", "execution_id", req.ExecutionID, "error", err)
 		}
-		a.recordLaunchPhaseMetrics(ctx, observation)
+		if !launchObservabilityRecorded {
+			a.recordLaunchPhaseObservability(ctx, observation)
+		}
 	}()
 
 	connectSeconds := req.LaunchSeconds
@@ -984,6 +1044,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
 			log.Warn("write darwin-vz run observability failed", "execution_id", req.ExecutionID, "error", err)
 		}
+		a.recordLaunchPhaseObservability(ctx, observation)
 	}()
 
 	if req.VCPUs <= 0 {
@@ -1579,11 +1640,20 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingLaunchSandboxTotal, launchStart)
 	helperTimingMS := mergeHelperTimingMS(launchTimingMS, rootFSTimingMS)
 	helperTimingMS = mergeHelperTimingMS(helperTimingMS, startedVM.TimingMS)
-	instance.LaunchObservability = &darwinVZLaunchObservability{
+	launchObservability := &darwinVZLaunchObservability{
 		RootFSCopyMS:   rootFSCopyMS,
 		HelperTimingMS: helperTimingMS,
 		Network:        startedVM.NetworkMetadata,
 	}
+	a.recordLaunchPhaseObservability(ctx, darwinVZRunObservation{
+		Backend:        a.Name(),
+		LaunchedVM:     true,
+		RootFSCopyMS:   launchObservability.RootFSCopyMS,
+		VMReadyMS:      launchObservability.HelperTimingMS["vm_ready"],
+		HelperTimingMS: launchObservability.HelperTimingMS,
+	})
+	launchObservability.Recorded = true
+	instance.LaunchObservability = launchObservability
 
 	cacheOutputsNeedCleanup = false
 	helperNeedsClose = false
