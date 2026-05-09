@@ -52,6 +52,21 @@ func newGuestBootTimingStore(env string, now guestBootTimingClock) *guestBootTim
 	return store
 }
 
+func newGuestBootTimingStoreFromInitial(initial map[string]int64, now guestBootTimingClock) *guestBootTimingStore {
+	timings := map[string]int64{}
+	for key, value := range initial {
+		if strings.TrimSpace(key) != "" && value >= 0 {
+			timings[key] = value
+		}
+	}
+	store := &guestBootTimingStore{
+		timings: timings,
+		now:     now,
+	}
+	store.record(vsockexec.GuestBootTimingAgentStart)
+	return store
+}
+
 func parseGuestBootTimingEnv(env string) map[string]int64 {
 	out := map[string]int64{}
 	for _, entry := range strings.Split(env, ",") {

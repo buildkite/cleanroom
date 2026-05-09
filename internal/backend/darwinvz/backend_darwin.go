@@ -2379,13 +2379,7 @@ func validatePreparedRuntimeRootFS(path string) error {
 			return fmt.Errorf("required runtime file %q is missing or unreadable", requiredPath)
 		}
 	}
-	return validatePreparedRuntimeRootFSInitPathForLayout(
-		ext4PathExists(path, "/bin/sh"),
-		ext4PathType(path, "/sbin"),
-		func(requiredPath string) bool {
-			return ext4PathExists(path, requiredPath)
-		},
-	)
+	return nil
 }
 
 const preparedRuntimeRootFSMarkerVersion = "v2"
@@ -2498,7 +2492,7 @@ func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string, minimumBytes 
 }
 
 func runtimeRootFSCacheKey(imageDigest, guestAgentHash string, minimumBytes int64) string {
-	keyMaterial := strings.TrimSpace(imageDigest) + "|" + guestAgentHash + "|" + runtime.GOARCH + "|" + preparedRuntimeRootFSVersion + "|" + guestInitScriptTemplate + rootFSMinimumCacheKeySuffix(minimumBytes)
+	keyMaterial := strings.TrimSpace(imageDigest) + "|" + guestAgentHash + "|" + runtime.GOARCH + "|" + preparedRuntimeRootFSVersion + "|" + guestRuntimeInitVersion + rootFSMinimumCacheKeySuffix(minimumBytes)
 	sum := sha256.Sum256([]byte(keyMaterial))
 	return hex.EncodeToString(sum[:])
 }
@@ -2721,19 +2715,6 @@ func injectFileIntoExt4(imagePath, srcPath, dstPath string, mode os.FileMode) er
 
 func ext4PathExists(imagePath, path string) bool {
 	return ext4edit.PathExists(imagePath, path)
-}
-
-func ext4PathType(imagePath, path string) ext4PathKind {
-	switch ext4edit.PathType(imagePath, path) {
-	case ext4edit.PathKindDirectory:
-		return ext4PathKindDirectory
-	case ext4edit.PathKindRegular:
-		return ext4PathKindRegular
-	case ext4edit.PathKindSymlink:
-		return ext4PathKindSymlink
-	default:
-		return ext4PathKindUnknown
-	}
 }
 
 func validateRootFSInspectable(rootFSPath string) error {
