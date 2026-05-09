@@ -3735,6 +3735,91 @@ func TestCreateSandboxBootstrapsServicesAfterDependencyStageRestoreWithoutServic
 	}
 }
 
+func TestCreateSandboxPrefersExactDependencyStageOverPortableWhenServicesStageMissing(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	var restoreReqs []backend.ProvisionFromSnapshotRequest
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	adapter.provisionFromSnapshotFn = func(_ context.Context, req backend.ProvisionFromSnapshotRequest) error {
+		restoreReqs = append(restoreReqs, req)
+		return nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	portableServicesPolicy := testRepositoryDependencyAndServicesPolicy()
+	portableServicesPolicy.Dependencies.Reuse = policy.DependencyReusePortable
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             portableServicesPolicy,
+		RepositoryCheckout: repositoryCheckout,
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	records, err := svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	var exactDependencyRecord, portableDependencyRecord *cachestore.Record
+	for i := range records {
+		record := records[i]
+		switch {
+		case record.Stage == dependencyStageName && record.ReuseMode == dependencyStageReuseExact:
+			exactDependencyRecord = &record
+		case record.Stage == dependencyStageName && record.ReuseMode == dependencyStageReusePortable:
+			portableDependencyRecord = &record
+		case record.Stage == servicesStageName:
+			if err := svc.CacheStore.Delete(context.Background(), record.Stage, record.CacheKey); err != nil {
+				t.Fatalf("Delete services cache record returned error: %v", err)
+			}
+		}
+	}
+	if exactDependencyRecord == nil {
+		t.Fatal("expected published exact dependency stage cache record")
+	}
+	if portableDependencyRecord == nil {
+		t.Fatal("expected published portable dependency stage cache record")
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected exact dependency-stage hit to avoid second cold provision, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected only one exact dependency-stage restore, got %d want %d", got, want)
+	}
+	if got, want := len(restoreReqs), 1; got != want {
+		t.Fatalf("expected one restore request, got %d want %d", got, want)
+	}
+	if got, want := restoreReqs[0].SnapshotID, exactDependencyRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected restore snapshot id: got %q want %q", got, want)
+	}
+	if got, want := adapter.runCalls, 4; got != want {
+		t.Fatalf("expected only one extra services bootstrap after dependency restore, got %d want %d", got, want)
+	}
+	if got, want := len(snapshotReqs), 4; got != want {
+		t.Fatalf("expected one replacement services-stage snapshot publish, got %d want %d", got, want)
+	}
+}
+
 func TestCreateSandboxDependencyRestoreFailureUsesWorkspaceCache(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()

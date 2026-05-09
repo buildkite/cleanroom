@@ -559,23 +559,6 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				reporter:        reporter,
 			}
 
-			if servicesStageCachingEnabled {
-				servicesHit, err := s.resolveServicesStageCache(ctx, servicesStageResolveRequest{
-					stageCacheResolveContext: cacheResolveContext,
-					plan:                     servicesStagePlan,
-				})
-				if err != nil {
-					return nil, err
-				}
-				if servicesHit.restored != nil {
-					metricSourceKind = "services stage cache"
-					return servicesHit.restored, nil
-				}
-				if servicesHit.replaced != nil {
-					replacedServicesStageRecord = servicesHit.replaced
-				}
-			}
-
 			if dependencyStageBootstrapEnabled {
 				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
 				if dependencyBlockVolumePlanAvailable {
@@ -599,58 +582,37 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 			}
 
-			if dependencyStageCachingEnabled {
-				dependencyHit, err := s.resolveDependencyStageCache(ctx, dependencyStageResolveRequest{
-					stageCacheResolveContext: cacheResolveContext,
-					plan:                     dependencyStagePlan,
-					adapter:                  adapter,
-					servicesPlan:             servicesStagePlan,
-					servicesCaching:          servicesStageCachingEnabled,
-					servicesBootstrap:        servicesStageBootstrapEnabled,
-					serviceCacheOutputs:      serviceCacheOutputVolumes,
-				})
-				if err != nil {
-					return nil, err
-				}
-				if dependencyHit.replacedServices != nil {
-					replacedServicesStageRecord = dependencyHit.replacedServices
-				}
-				if dependencyHit.replacedDependency != nil {
-					replacedDependencyStageRecord = dependencyHit.replacedDependency
-				}
-				if dependencyHit.completed != nil {
-					metricSourceKind = dependencyHit.sourceKind
-					return dependencyHit.completed, nil
-				}
-				if dependencyHit.restored != nil {
-					metricSourceKind = dependencyHit.sourceKind
-					restoredDependencyResp = dependencyHit.restored
-				}
+			stageCacheHit, err := s.resolveStageCaches(ctx, stageCacheResolveRequest{
+				stageCacheResolveContext:     cacheResolveContext,
+				adapter:                      adapter,
+				workspaceStageRuntimeBaseKey: workspaceStageRuntimeBaseKey,
+				workspaceStageCacheKey:       workspaceStageKey,
+				dependencyStagePlan:          dependencyStagePlan,
+				dependencyStageCaching:       dependencyStageCachingEnabled,
+				dependencyStageBootstrap:     dependencyStageBootstrapEnabled,
+				dependencyCacheOutputVolumes: dependencyCacheOutputVolumes,
+				servicesStagePlan:            servicesStagePlan,
+				servicesStageCaching:         servicesStageCachingEnabled,
+				servicesStageBootstrap:       servicesStageBootstrapEnabled,
+				servicesCacheOutputVolumes:   serviceCacheOutputVolumes,
+			})
+			if err != nil {
+				return nil, err
 			}
-
-			if restoredDependencyResp == nil {
-				workspaceHit, err := s.resolveWorkspaceStageCache(ctx, workspaceStageResolveRequest{
-					stageCacheResolveContext: cacheResolveContext,
-					runtimeBaseKey:           workspaceStageRuntimeBaseKey,
-					cacheKey:                 workspaceStageKey,
-					dependencyBootstrap:      dependencyStageBootstrapEnabled,
-					servicesBootstrap:        servicesStageBootstrapEnabled,
-					cacheOutputs:             appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes),
-				})
-				if err != nil {
-					return nil, err
-				}
-				if workspaceHit.replaced != nil {
-					replacedWorkspaceStageRecord = workspaceHit.replaced
-				}
-				if workspaceHit.completed != nil {
-					metricSourceKind = workspaceHit.sourceKind
-					return workspaceHit.completed, nil
-				}
-				if workspaceHit.restored != nil {
-					metricSourceKind = workspaceHit.sourceKind
-					restoredWorkspaceResp = workspaceHit.restored
-				}
+			replacedWorkspaceStageRecord = stageCacheHit.replacedWorkspace
+			replacedDependencyStageRecord = stageCacheHit.replacedDependency
+			replacedServicesStageRecord = stageCacheHit.replacedServices
+			if stageCacheHit.completed != nil {
+				metricSourceKind = stageCacheHit.sourceKind
+				return stageCacheHit.completed, nil
+			}
+			if stageCacheHit.restoredDependency != nil {
+				metricSourceKind = stageCacheHit.sourceKind
+				restoredDependencyResp = stageCacheHit.restoredDependency
+			}
+			if stageCacheHit.restoredWorkspace != nil {
+				metricSourceKind = stageCacheHit.sourceKind
+				restoredWorkspaceResp = stageCacheHit.restoredWorkspace
 			}
 		}
 	}
