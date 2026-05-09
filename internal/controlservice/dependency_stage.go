@@ -163,6 +163,9 @@ func (s *Service) dependencyStagePlanInputDigests(
 		return "", "", fmt.Errorf("%s input files require a repository checkout", dependencyStageName)
 	}
 	if s.RepositoryStore == nil {
+		if len(keyFiles) == 0 {
+			return "", "", nil
+		}
 		return "", "", fmt.Errorf("%s input files require repository store", dependencyStageName)
 	}
 

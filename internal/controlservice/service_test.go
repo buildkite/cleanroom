@@ -4564,6 +4564,44 @@ func TestDependencyStagePlanNormalizesToolchainInputFilesForValidation(t *testin
 	}
 }
 
+func TestFinalizeDependencyStagePlanAllowsExactCacheWithoutRepositoryStoreWhenNoKeyFiles(t *testing.T) {
+	t.Parallel()
+
+	compiled := &policy.CompiledPolicy{
+		Hash: "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+		Dependencies: policy.Dependencies{
+			Command: []string{"true"},
+		},
+	}
+	repository := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		DestinationDir: "/workspace",
+	}
+	plan, ok := dependencyStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected dependency stage plan")
+	}
+
+	svc := newTestService(&stubAdapter{})
+	plan, ok, err := svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "workspace:v1:test", "runtime:v1:test", plan)
+	if err != nil {
+		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency stage cache plan")
+	}
+	if plan.CacheKey == "" {
+		t.Fatal("expected exact dependency stage cache key")
+	}
+	if plan.PortableCacheKey != "" {
+		t.Fatalf("expected no portable dependency stage cache key without dependency key files, got %q", plan.PortableCacheKey)
+	}
+	if plan.ToolchainInputsDigest != "" {
+		t.Fatalf("expected toolchain inputs to be skipped without repository store, got %q", plan.ToolchainInputsDigest)
+	}
+}
+
 func TestDependencyStageKeyFilesDigestExpandsGlobsDeterministically(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
