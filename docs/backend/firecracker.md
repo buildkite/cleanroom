@@ -21,6 +21,8 @@ supported layered-cache path.
 - Deny-by-default egress with explicit allow rules.
 - Stage-local network policies currently fail closed until Firecracker has
   active per-command egress rule updates.
+- Effective vCPUs are fixed at VM launch. Cleanroom reports the resolved CPU
+  ceiling but does not hotplug CPUs into a running Firecracker microVM.
 - Route git egress through the shared host gateway, with embedded
   `content-cache` for Git and OCI transport caching.
 - Keep secret values out of guest env and policy files.

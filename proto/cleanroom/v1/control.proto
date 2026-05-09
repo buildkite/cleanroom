@@ -63,6 +63,8 @@ message Sandbox {
   string backing_snapshot_id = 11;
   RepositoryCheckout repository_checkout = 12;
   map<string, bool> backend_capabilities = 13;
+  // Resolved backend resource ceilings for this sandbox.
+  SandboxResources effective_resources = 14;
 }
 
 message PortExposure {
@@ -165,9 +167,16 @@ message PolicyNetworkStages {
   PolicyNetwork execution = 4;
 }
 
+// PolicyResources declares backend-neutral minimum workload requirements.
+// These values are floors, not exact reservations: control-plane code raises
+// lower backend runtime settings to meet them and preserves larger runtime
+// defaults. Backends decide how those effective ceilings map to host resources.
 message PolicyResources {
+  // Minimum effective vCPU ceiling required by the workload.
   int64 vcpus = 1;
+  // Minimum effective memory ceiling required by the workload, in bytes.
   int64 memory_bytes = 2;
+  // Minimum writable root filesystem capacity required by the workload, in bytes.
   int64 disk_bytes = 3;
 }
 
@@ -685,4 +694,15 @@ message ExecutionStreamEvent {
 
 message SandboxPortOpenResult {
   string error = 1;
+}
+
+// SandboxResources reports backend-effective resource ceilings for a sandbox.
+//
+// Values are resolved after runtime config, backend defaults, and policy
+// resource floors are merged. They describe the sandbox's effective launch
+// envelope, not exact host reservations.
+message SandboxResources {
+  int64 vcpus = 1;
+  int64 memory_bytes = 2;
+  int64 disk_bytes = 3;
 }

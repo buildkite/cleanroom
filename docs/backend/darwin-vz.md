@@ -67,6 +67,10 @@ High-level flow:
 - `proxy_socket_path`
 - `console_log_path`
 
+`vcpus` and `memory_mib` are effective VM launch ceilings after runtime config
+and policy resource minimums are merged. They are not an exact host reservation
+contract.
+
 `StartVM` response fields:
 
 - `ok`
@@ -98,9 +102,10 @@ Rootfs:
 - inject guest runtime (`cleanroom-guest-agent` and `/usr/sbin/cleanroom-init`) into a prepared cached rootfs image
 - create a per-sandbox copy (`rootfs-persistent.ext4`) and attach it read-write to the VM
 - `/workspace` is not a separate volume on `darwin-vz`; it lives on the guest rootfs
-- `backends.darwin-vz.minimum_rootfs_bytes` lets the runtime grow the guest rootfs copy before boot for non-trivial workloads that need more writable space
+- `backends.darwin-vz.minimum_rootfs_bytes` lets the runtime grow the guest rootfs copy before boot for non-trivial workloads that need more writable space; policy `sandbox.resources.disk` raises this floor when it is larger
 - `minimum_rootfs_bytes` accepts either raw bytes (`2147483648`) or human-friendly sizes (`2GiB`, `700MiB`, `"2147483648"`)
 - the same setting is also honored under the legacy underscore config key: `backends.darwin_vz.minimum_rootfs_bytes`
+- effective vCPUs are fixed at VM launch; `darwin-vz` does not hotplug CPUs into a running VM
 
 Snapshot/rootfs volume drivers:
 

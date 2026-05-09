@@ -17,6 +17,7 @@ const (
 
 type PolicyAllowRule = cleanroomv1.PolicyAllowRule
 type PolicyResources = cleanroomv1.PolicyResources
+type SandboxResources = cleanroomv1.SandboxResources
 type Policy = cleanroomv1.Policy
 type Snapshot = cleanroomv1.Snapshot
 type SandboxOptions = cleanroomv1.SandboxOptions
