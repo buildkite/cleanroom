@@ -15,13 +15,33 @@ type ServiceMetrics struct {
 	sandboxCreateDuration     metric.Float64Histogram
 	executionTotal            metric.Int64Counter
 	executionDuration         metric.Float64Histogram
+	sandboxEffectiveMemory    metric.Int64ObservableGauge
+	sandboxEffectiveVCPUs     metric.Int64ObservableGauge
+	sandboxEffectiveDisk      metric.Int64ObservableGauge
+	sandboxActive             metric.Int64ObservableGauge
+	sandboxResourceCallback   metric.Registration
 	cachePeerLookupTotal      metric.Int64Counter
 	cachePeerTransferBytes    metric.Int64Counter
 	cachePeerTransferDuration metric.Float64Histogram
 	cachePeerImportTotal      metric.Int64Counter
 }
 
-func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
+// SandboxResourceMetricSnapshot is a low-cardinality aggregate of active
+// sandbox resource ceilings for one backend/status pair.
+type SandboxResourceMetricSnapshot struct {
+	Backend              string
+	Status               string
+	Count                int64
+	EffectiveMemoryBytes int64
+	EffectiveVCPUs       int64
+	EffectiveDiskBytes   int64
+}
+
+// SandboxResourceMetricObserver returns current sandbox resource aggregates for
+// service-level observable gauges.
+type SandboxResourceMetricObserver func(context.Context) []SandboxResourceMetricSnapshot
+
+func NewServiceMetrics(provider metric.MeterProvider, resourceObserver SandboxResourceMetricObserver) (*ServiceMetrics, error) {
 	meter := meterProviderOrNoop(provider).Meter("github.com/buildkite/cleanroom/internal/controlservice")
 	sandboxCreateDuration, err := meter.Float64Histogram(
 		MetricSandboxCreateDurationSeconds,
@@ -45,6 +65,63 @@ func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
 	)
 	if err != nil {
 		return nil, err
+	}
+	sandboxEffectiveMemory, err := meter.Int64ObservableGauge(
+		MetricSandboxEffectiveMemoryBytes,
+		metric.WithDescription("Aggregate effective memory launch envelope for active sandboxes by backend and status"),
+		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	sandboxEffectiveVCPUs, err := meter.Int64ObservableGauge(
+		MetricSandboxEffectiveVCPUs,
+		metric.WithDescription("Aggregate effective vCPU launch envelope for active sandboxes by backend and status"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	sandboxEffectiveDisk, err := meter.Int64ObservableGauge(
+		MetricSandboxEffectiveDiskBytes,
+		metric.WithDescription("Aggregate effective writable root filesystem capacity for active sandboxes by backend and status"),
+		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	sandboxActive, err := meter.Int64ObservableGauge(
+		MetricSandboxActiveCount,
+		metric.WithDescription("Active sandboxes by backend and status"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var sandboxResourceCallback metric.Registration
+	if resourceObserver != nil {
+		sandboxResourceCallback, err = meter.RegisterCallback(func(ctx context.Context, observer metric.Observer) error {
+			for _, snapshot := range resourceObserver(ctx) {
+				attrs := metric.WithAttributes(
+					attribute.String(MetricLabelBackend, normalizeMetricValue(snapshot.Backend, "unknown")),
+					attribute.String(MetricLabelStatus, normalizeMetricValue(snapshot.Status, "unknown")),
+				)
+				if snapshot.Count > 0 {
+					observer.ObserveInt64(sandboxActive, snapshot.Count, attrs)
+				}
+				if snapshot.EffectiveMemoryBytes > 0 {
+					observer.ObserveInt64(sandboxEffectiveMemory, snapshot.EffectiveMemoryBytes, attrs)
+				}
+				if snapshot.EffectiveVCPUs > 0 {
+					observer.ObserveInt64(sandboxEffectiveVCPUs, snapshot.EffectiveVCPUs, attrs)
+				}
+				if snapshot.EffectiveDiskBytes > 0 {
+					observer.ObserveInt64(sandboxEffectiveDisk, snapshot.EffectiveDiskBytes, attrs)
+				}
+			}
+			return nil
+		}, sandboxEffectiveMemory, sandboxEffectiveVCPUs, sandboxEffectiveDisk, sandboxActive)
+		if err != nil {
+			return nil, err
+		}
 	}
 	cachePeerLookupTotal, err := meter.Int64Counter(
 		MetricCachePeerLookupTotal,
@@ -80,6 +157,11 @@ func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
 		sandboxCreateDuration:     sandboxCreateDuration,
 		executionTotal:            executionTotal,
 		executionDuration:         executionDuration,
+		sandboxEffectiveMemory:    sandboxEffectiveMemory,
+		sandboxEffectiveVCPUs:     sandboxEffectiveVCPUs,
+		sandboxEffectiveDisk:      sandboxEffectiveDisk,
+		sandboxActive:             sandboxActive,
+		sandboxResourceCallback:   sandboxResourceCallback,
 		cachePeerLookupTotal:      cachePeerLookupTotal,
 		cachePeerTransferBytes:    cachePeerTransferBytes,
 		cachePeerTransferDuration: cachePeerTransferDuration,

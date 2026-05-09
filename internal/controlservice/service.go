@@ -233,12 +233,95 @@ func (s *Service) serviceMetrics() *observability.ServiceMetrics {
 		if s.Observability == nil {
 			return
 		}
-		s.metrics, s.metricsErr = observability.NewServiceMetrics(s.Observability.MeterProvider())
+		s.metrics, s.metricsErr = observability.NewServiceMetrics(s.Observability.MeterProvider(), s.sandboxResourceMetricSnapshots)
 		if s.metricsErr != nil && s.Logger != nil {
 			s.Logger.Warn("service metrics unavailable", "error", s.metricsErr)
 		}
 	})
 	return s.metrics
+}
+
+type sandboxResourceMetricKey struct {
+	Backend string
+	Status  string
+}
+
+func (s *Service) sandboxResourceMetricSnapshots(ctx context.Context) []observability.SandboxResourceMetricSnapshot {
+	if s == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	totals := make(map[sandboxResourceMetricKey]observability.SandboxResourceMetricSnapshot)
+	for _, sb := range s.sandboxes {
+		if sb == nil || !sandboxStatusHasActiveResources(sb.Status) {
+			continue
+		}
+		resources := effectiveSandboxResources(sb.Firecracker)
+		if resources == nil {
+			continue
+		}
+		key := sandboxResourceMetricKey{
+			Backend: strings.TrimSpace(sb.Backend),
+			Status:  sandboxStatusMetricValue(sb.Status),
+		}
+		snapshot := totals[key]
+		snapshot.Backend = key.Backend
+		snapshot.Status = key.Status
+		snapshot.Count++
+		snapshot.EffectiveMemoryBytes += resources.GetMemoryBytes()
+		snapshot.EffectiveVCPUs += resources.GetVcpus()
+		snapshot.EffectiveDiskBytes += resources.GetDiskBytes()
+		totals[key] = snapshot
+	}
+
+	keys := make([]sandboxResourceMetricKey, 0, len(totals))
+	for key := range totals {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Backend != keys[j].Backend {
+			return keys[i].Backend < keys[j].Backend
+		}
+		return keys[i].Status < keys[j].Status
+	})
+
+	out := make([]observability.SandboxResourceMetricSnapshot, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, totals[key])
+	}
+	return out
+}
+
+func sandboxStatusHasActiveResources(status cleanroomv1.SandboxStatus) bool {
+	switch status {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING:
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxStatusMetricValue(status cleanroomv1.SandboxStatus) string {
+	switch status {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING:
+		return "provisioning"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY:
+		return "ready"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING:
+		return "stopping"
+	default:
+		return "unknown"
+	}
 }
 
 func sandboxCreateSourceMetricValue(snapshotID, sourceKind string) string {

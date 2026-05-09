@@ -20,6 +20,10 @@ const (
 	MetricSandboxCreateDurationSeconds = "cleanroom_sandbox_create_duration_seconds"
 	MetricExecutionTotal               = "cleanroom_execution_total"
 	MetricExecutionDurationSeconds     = "cleanroom_execution_duration_seconds"
+	MetricSandboxEffectiveMemoryBytes  = "cleanroom_sandbox_effective_memory_bytes"
+	MetricSandboxEffectiveVCPUs        = "cleanroom_sandbox_effective_vcpus"
+	MetricSandboxEffectiveDiskBytes    = "cleanroom_sandbox_effective_disk_bytes"
+	MetricSandboxActiveCount           = "cleanroom_sandbox_active_count"
 	MetricGatewayRequestsTotal         = "cleanroom_gateway_requests_total"
 	MetricGatewayRequestDuration       = "cleanroom_gateway_request_duration_seconds"
 	MetricLaunchPhaseDurationSeconds   = "cleanroom_launch_phase_duration_seconds"
@@ -39,6 +43,7 @@ const (
 	MetricLabelAction      = "action"
 	MetricLabelReasonCode  = "reason_code"
 	MetricLabelStatusClass = "status_class"
+	MetricLabelStatus      = "status"
 	MetricLabelPhase       = "phase"
 
 	AttrBackend                = "cleanroom.backend"
