@@ -26,23 +26,41 @@ import (
 )
 
 func main() {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("CLEANROOM_GUEST_TRANSPORT")), "stdio") {
+	if isStdioTransport() {
 		guestBootTimings.recordOnce(vsockexec.GuestBootTimingAgentListenReady)
 		guestBootTimings.recordOnce(vsockexec.GuestBootTimingAgentFirstAccept)
 		handleConn(stdioConn{})
 		return
 	}
 
+	if shouldRunGuestInit() {
+		runGuestInit()
+		return
+	}
+
+	if err := runGuestAgentServer(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+}
+
+func isStdioTransport() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("CLEANROOM_GUEST_TRANSPORT")), "stdio")
+}
+
+func shouldRunGuestInit() bool {
+	return os.Getpid() == 1
+}
+
+func runGuestAgentServer() error {
 	port, err := resolveGuestAgentPort(vsockexec.DefaultPort, os.Getenv("CLEANROOM_VSOCK_PORT"), readKernelCmdline())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(2)
+		return err
 	}
 
 	ln, err := listenVsock(port)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "listen vsock: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("listen vsock: %w", err)
 	}
 	defer ln.Close()
 	guestBootTimings.record(vsockexec.GuestBootTimingAgentListenReady)
@@ -51,7 +69,7 @@ func main() {
 		conn, err := ln.Accept()
 		if err != nil {
 			if errorsIsClosed(err) {
-				return
+				return nil
 			}
 			fmt.Fprintf(os.Stderr, "accept: %v\n", err)
 			continue

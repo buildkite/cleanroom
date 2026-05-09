@@ -11,79 +11,27 @@ import (
 	"github.com/buildkite/cleanroom/internal/hosttools"
 )
 
-func TestGuestInitExecutableForShellPresenceUsesInitScriptWhenShellExists(t *testing.T) {
+func TestGuestInitExecutableForRootFSUsesGuestAgentInit(t *testing.T) {
 	t.Parallel()
 
-	path, notice := guestInitExecutableForShellPresence(true, guestInitScriptPathUsrSbin)
-	if got, want := path, "/usr/sbin/cleanroom-init"; got != want {
+	path, notice := guestInitExecutableForRootFS("/tmp/rootfs.ext4")
+	if got, want := path, "/usr/local/bin/cleanroom-guest-agent"; got != want {
 		t.Fatalf("unexpected init path: got %q want %q", got, want)
 	}
 	if notice != "" {
-		t.Fatalf("expected empty notice for shell-enabled rootfs, got %q", notice)
+		t.Fatalf("expected empty notice, got %q", notice)
 	}
 }
 
-func TestGuestInitExecutableForShellPresenceFallsBackToGuestAgentWhenShellMissing(t *testing.T) {
+func TestValidatePreparedRuntimeRootFSRequiresGuestAgent(t *testing.T) {
 	t.Parallel()
 
-	path, notice := guestInitExecutableForShellPresence(false, guestInitScriptPathUsrSbin)
-	if got, want := path, "/usr/local/bin/cleanroom-guest-agent"; got != want {
-		t.Fatalf("unexpected fallback init path: got %q want %q", got, want)
-	}
-	if notice == "" {
-		t.Fatal("expected shell-less fallback notice")
-	}
-}
-
-func TestPreferredGuestInitScriptPathForSbinKindUsesSbinForRealDirectory(t *testing.T) {
-	t.Parallel()
-
-	if got, want := preferredGuestInitScriptPathForSbinKind(ext4PathKindDirectory), guestInitScriptPathSbin; got != want {
-		t.Fatalf("unexpected init path: got %q want %q", got, want)
-	}
-}
-
-func TestPreferredGuestInitScriptPathForSbinKindUsesUsrSbinForSymlinkLayout(t *testing.T) {
-	t.Parallel()
-
-	if got, want := preferredGuestInitScriptPathForSbinKind(ext4PathKindSymlink), guestInitScriptPathUsrSbin; got != want {
-		t.Fatalf("unexpected init path: got %q want %q", got, want)
-	}
-}
-
-func TestValidatePreparedRuntimeRootFSInitPathForLayoutRejectsStaleUsrSbinOnlyCache(t *testing.T) {
-	t.Parallel()
-
-	err := validatePreparedRuntimeRootFSInitPathForLayout(true, ext4PathKindDirectory, func(path string) bool {
-		return path == guestInitScriptPathUsrSbin
-	})
+	err := validatePreparedRuntimeRootFS(filepath.Join(t.TempDir(), "missing.ext4"))
 	if err == nil {
-		t.Fatal("expected validation error for missing /sbin init path")
+		t.Fatal("expected validation error for missing guest agent")
 	}
-	if !strings.Contains(err.Error(), guestInitScriptPathSbin) {
-		t.Fatalf("expected missing /sbin init path error, got %v", err)
-	}
-}
-
-func TestValidatePreparedRuntimeRootFSInitPathForLayoutAcceptsUsrSbinForSymlinkLayout(t *testing.T) {
-	t.Parallel()
-
-	err := validatePreparedRuntimeRootFSInitPathForLayout(true, ext4PathKindSymlink, func(path string) bool {
-		return path == guestInitScriptPathUsrSbin
-	})
-	if err != nil {
-		t.Fatalf("expected /usr/sbin init path to validate for symlink layout, got %v", err)
-	}
-}
-
-func TestValidatePreparedRuntimeRootFSInitPathForLayoutAllowsShelllessRootFS(t *testing.T) {
-	t.Parallel()
-
-	err := validatePreparedRuntimeRootFSInitPathForLayout(false, ext4PathKindDirectory, func(path string) bool {
-		return false
-	})
-	if err != nil {
-		t.Fatalf("expected shell-less rootfs to rely on guest agent validation, got %v", err)
+	if !strings.Contains(err.Error(), guestAgentPath) {
+		t.Fatalf("expected guest agent path in validation error, got %v", err)
 	}
 }
 
