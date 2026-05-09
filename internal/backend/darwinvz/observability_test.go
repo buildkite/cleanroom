@@ -5,12 +5,16 @@ package darwinvz
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestDarwinVZTimingSummaryIncludesHelperTimings(t *testing.T) {
@@ -31,16 +35,22 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 	t.Parallel()
 
 	runDir := t.TempDir()
+	helperTimingMS := map[string]int64{
+		"vm_ready":    321,
+		"proxy_ready": 45,
+	}
+	helperTimingMS[darwinVZTimingRootFSBaseVolumePrepare] = 11
+	helperTimingMS[darwinVZTimingRootFSWritableVolumeCreateClone] = 12
+	helperTimingMS[darwinVZTimingRootFSMinimumSizeResize] = 13
+	helperTimingMS[darwinVZTimingRootFSInspectValidate] = 14
+
 	obs := darwinVZRunObservation{
-		ExecutionID:  "run-123",
-		Backend:      "darwin-vz",
-		LaunchedVM:   true,
-		RunDir:       runDir,
-		RootFSCopyMS: 27,
-		HelperTimingMS: map[string]int64{
-			"vm_ready":    321,
-			"proxy_ready": 45,
-		},
+		ExecutionID:    "run-123",
+		Backend:        "darwin-vz",
+		LaunchedVM:     true,
+		RunDir:         runDir,
+		RootFSCopyMS:   27,
+		HelperTimingMS: helperTimingMS,
 	}
 	applyDarwinVZHelperTimings(&obs, obs.HelperTimingMS)
 
@@ -80,6 +90,74 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 	if got, want := helperTimingPayload["vm_ready"], float64(321); got != want {
 		t.Fatalf("unexpected helper_timing_ms.vm_ready: got %v want %v", got, want)
 	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSBaseVolumePrepare], float64(11); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSBaseVolumePrepare, got, want)
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSWritableVolumeCreateClone], float64(12); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSWritableVolumeCreateClone, got, want)
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSMinimumSizeResize], float64(13); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSMinimumSizeResize, got, want)
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSInspectValidate], float64(14); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSInspectValidate, got, want)
+	}
+}
+
+func TestApplyDarwinVZHelperTimingsMergesRootFSPhaseTimings(t *testing.T) {
+	t.Parallel()
+
+	obs := darwinVZRunObservation{}
+	rootFSTimingMS := map[string]int64{
+		darwinVZTimingRootFSBaseVolumePrepare: 11,
+	}
+	applyDarwinVZHelperTimings(&obs, rootFSTimingMS)
+
+	helperTimingMS := map[string]int64{
+		"vm_ready": 321,
+	}
+	applyDarwinVZHelperTimings(&obs, helperTimingMS)
+	helperTimingMS["vm_ready"] = 1
+
+	if got, want := obs.HelperTimingMS[darwinVZTimingRootFSBaseVolumePrepare], int64(11); got != want {
+		t.Fatalf("unexpected rootfs phase timing: got %v want %v", got, want)
+	}
+	if got, want := obs.HelperTimingMS["vm_ready"], int64(321); got != want {
+		t.Fatalf("unexpected vm_ready helper timing: got %v want %v", got, want)
+	}
+	if got, want := obs.VMReadyMS, int64(321); got != want {
+		t.Fatalf("unexpected VMReadyMS: got %v want %v", got, want)
+	}
+}
+
+func TestRecordLaunchPhaseObservabilityAddsTraceEvents(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() { _ = tracerProvider.Shutdown(context.Background()) }()
+
+	ctx, span := tracerProvider.Tracer("test").Start(context.Background(), "cleanroom.test")
+	adapter := &Adapter{}
+	adapter.recordLaunchPhaseObservability(ctx, darwinVZRunObservation{
+		RootFSCopyMS: 27,
+		VMReadyMS:    321,
+		HelperTimingMS: map[string]int64{
+			darwinVZTimingGuestExecReadyProbe: 401,
+			"zero":                            0,
+		},
+	})
+	span.End()
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected one ended span, got %d", len(spans))
+	}
+	requireLaunchPhaseEvent(t, spans[0], "rootfs_prepare", "27")
+	requireLaunchPhaseEvent(t, spans[0], "guest_wait_ready", "321")
+	requireLaunchPhaseEvent(t, spans[0], "helper_"+darwinVZTimingGuestExecReadyProbe, "401")
+	requireNoLaunchPhaseEvent(t, spans[0], "helper_zero")
 }
 
 func TestWriteDarwinVZRunObservationIncludesNetworkMetadata(t *testing.T) {
@@ -153,7 +231,8 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 				LaunchObservability: &darwinVZLaunchObservability{
 					RootFSCopyMS: 27,
 					HelperTimingMS: map[string]int64{
-						"vm_ready": 321,
+						"vm_ready":                            321,
+						darwinVZTimingRootFSBaseVolumePrepare: 11,
 					},
 					Network: &darwinVZNetworkMetadata{
 						Mode:       darwinVZNetworkModeFileHandle,
@@ -194,9 +273,49 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 	if got, want := payload["rootfs_copy_ms"], float64(27); got != want {
 		t.Fatalf("unexpected rootfs_copy_ms: got %v want %v", got, want)
 	}
+	helperTimingPayload, ok := payload["helper_timing_ms"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected helper_timing_ms object, got %T", payload["helper_timing_ms"])
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSBaseVolumePrepare], float64(11); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSBaseVolumePrepare, got, want)
+	}
 	if got, want := payload["network_guest_ip"], "10.233.0.2"; got != want {
 		t.Fatalf("unexpected network_guest_ip: got %v want %v", got, want)
 	}
+}
+
+func requireLaunchPhaseEvent(t *testing.T, span sdktrace.ReadOnlySpan, phase, durationMS string) {
+	t.Helper()
+	for _, event := range span.Events() {
+		if event.Name != observability.EventLaunchPhase {
+			continue
+		}
+		if eventAttributeValue(event, observability.AttrLaunchPhase) == phase &&
+			eventAttributeValue(event, observability.AttrLaunchPhaseDurationMS) == durationMS &&
+			eventAttributeValue(event, observability.AttrBackend) == "darwin-vz" {
+			return
+		}
+	}
+	t.Fatalf("expected launch phase event phase=%q duration_ms=%q, got events %#v", phase, durationMS, span.Events())
+}
+
+func requireNoLaunchPhaseEvent(t *testing.T, span sdktrace.ReadOnlySpan, phase string) {
+	t.Helper()
+	for _, event := range span.Events() {
+		if event.Name == observability.EventLaunchPhase && eventAttributeValue(event, observability.AttrLaunchPhase) == phase {
+			t.Fatalf("unexpected launch phase event phase=%q", phase)
+		}
+	}
+}
+
+func eventAttributeValue(event sdktrace.Event, key string) string {
+	for _, attr := range event.Attributes {
+		if string(attr.Key) == key {
+			return fmt.Sprint(attr.Value.AsInterface())
+		}
+	}
+	return ""
 }
 
 func TestRunWritesObservabilityErrorWhenRequestedCommandWriteFails(t *testing.T) {

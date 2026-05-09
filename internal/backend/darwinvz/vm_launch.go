@@ -19,7 +19,28 @@ type darwinVZLaunchObservability struct {
 	RootFSCopyMS   int64
 	HelperTimingMS map[string]int64
 	Network        *darwinVZNetworkMetadata
+	Recorded       bool
 }
+
+const (
+	darwinVZTimingLaunchPolicyValidate            = "launch_policy_validate"
+	darwinVZTimingKernelResolve                   = "kernel_resolve"
+	darwinVZTimingRootFSResolve                   = "rootfs_resolve"
+	darwinVZTimingRunDirPrepare                   = "run_dir_prepare"
+	darwinVZTimingRootFSPreflight                 = "rootfs_preflight"
+	darwinVZTimingRootFSBaseVolumePrepare         = "rootfs_base_volume_prepare"
+	darwinVZTimingRootFSWritableVolumeCreateClone = "rootfs_writable_volume_create_clone"
+	darwinVZTimingRootFSMinimumSizeResize         = "rootfs_minimum_size_resize"
+	darwinVZTimingRootFSInspectValidate           = "rootfs_inspect_validate"
+	darwinVZTimingGuestBootConfig                 = "guest_boot_config"
+	darwinVZTimingHelperSessionStart              = "helper_session_start"
+	darwinVZTimingCacheOutputPrepare              = "cache_output_prepare"
+	darwinVZTimingHelperStartVM                   = "helper_start_vm"
+	darwinVZTimingVirtualizationPIDLookup         = "virtualization_pid_lookup"
+	darwinVZTimingGuestExecReadyProbe             = "guest_exec_ready_probe"
+	darwinVZTimingLaunchSandboxTotal              = "launch_sandbox_total"
+	darwinVZRootFSTimingExpectedPhaseCount        = 4
+)
 
 type darwinVZNetworkMetadata struct {
 	Mode       string
@@ -233,7 +254,7 @@ func applyDarwinVZHelperTimings(observation *darwinVZRunObservation, timingMS ma
 	if observation == nil || len(timingMS) == 0 {
 		return
 	}
-	observation.HelperTimingMS = cloneHelperTimingMS(timingMS)
+	observation.HelperTimingMS = mergeHelperTimingMS(observation.HelperTimingMS, timingMS)
 	if vmReadyMS, ok := timingMS["vm_ready"]; ok {
 		observation.VMReadyMS = vmReadyMS
 	}
@@ -290,6 +311,34 @@ func cloneHelperTimingMS(timingMS map[string]int64) map[string]int64 {
 		out[key] = value
 	}
 	return out
+}
+
+func mergeHelperTimingMS(dst, src map[string]int64) map[string]int64 {
+	if len(src) == 0 {
+		return cloneHelperTimingMS(dst)
+	}
+	out := make(map[string]int64, len(dst)+len(src))
+	for key, value := range dst {
+		out[key] = value
+	}
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
+}
+
+func recordDarwinVZPhaseTiming(timingMS map[string]int64, phase string, start time.Time) {
+	if timingMS == nil {
+		return
+	}
+	timingMS[phase] = time.Since(start).Milliseconds()
+}
+
+func recordDarwinVZPhaseTimingDuration(timingMS map[string]int64, phase string, duration time.Duration) {
+	if timingMS == nil {
+		return
+	}
+	timingMS[phase] = duration.Milliseconds()
 }
 
 func writeJSON(path string, v any) error {

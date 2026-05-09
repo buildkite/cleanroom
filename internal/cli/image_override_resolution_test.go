@@ -168,7 +168,7 @@ func TestResolveReferenceForImageOverrideReturnsExplicitRegistryDigestWithoutRes
 	}
 }
 
-func TestResolveReferenceForImageOverrideValidatesExplicitRegistryDigestPlatform(t *testing.T) {
+func TestResolveReferenceForImageOverrideSkipsExplicitRegistryDigestPlatformValidation(t *testing.T) {
 	localCalls := 0
 	remoteCalls := 0
 	platformCalls := 0
@@ -189,18 +189,15 @@ func TestResolveReferenceForImageOverrideValidatesExplicitRegistryDigestPlatform
 		if got, want := ref.Name(), pinnedRef; got != want {
 			t.Fatalf("unexpected platform resolver ref: got %q want %q", got, want)
 		}
-		if runtime.GOARCH == "arm64" {
-			return "linux", "amd64", nil
-		}
-		return "linux", "arm64", nil
+		return "", "", errors.New("platform resolver should not be called")
 	}
 
-	_, err := resolveReferenceForImageOverride(context.Background(), pinnedRef, true)
-	if err == nil {
-		t.Fatal("expected resolveReferenceForImageOverride to reject mismatched platform")
+	got, err := resolveReferenceForImageOverride(context.Background(), pinnedRef, true)
+	if err != nil {
+		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "incompatible") {
-		t.Fatalf("expected platform mismatch error, got %v", err)
+	if got != pinnedRef {
+		t.Fatalf("unexpected resolved ref: got %q want %q", got, pinnedRef)
 	}
 	if localCalls != 0 {
 		t.Fatalf("expected local resolver call count 0, got %d", localCalls)
@@ -208,8 +205,8 @@ func TestResolveReferenceForImageOverrideValidatesExplicitRegistryDigestPlatform
 	if remoteCalls != 0 {
 		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
 	}
-	if platformCalls != 1 {
-		t.Fatalf("expected platform resolver call count 1, got %d", platformCalls)
+	if platformCalls != 0 {
+		t.Fatalf("expected platform resolver call count 0, got %d", platformCalls)
 	}
 }
 

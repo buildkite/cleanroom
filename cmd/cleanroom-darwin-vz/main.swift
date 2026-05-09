@@ -519,9 +519,9 @@ private final class VMRuntime {
         }
         lock.unlock()
 
+        let startedAt = DispatchTime.now()
         let vmQueue = DispatchQueue(label: "cleanroom.darwin-vz.vm")
         let vmID = UUID().uuidString
-        let startedAt = Date()
 
         let (vm, serialChannel, networkDetails, fileHandleNetworkAttachment) = try buildVM(
             runDir: runDir,
@@ -542,13 +542,17 @@ private final class VMRuntime {
             consoleLogPath: consoleLogPath,
             queue: vmQueue
         )
+        let configBuiltAt = DispatchTime.now()
         var releaseFileHandleAttachmentOnFailure = fileHandleNetworkAttachment
         defer {
             releaseFileHandleAttachmentOnFailure?.stop()
         }
 
+        let vzStartStartedAt = DispatchTime.now()
         try startVM(vm, queue: vmQueue, timeoutSeconds: launchSeconds)
+        let vzStartedAt = DispatchTime.now()
 
+        let proxyReadyStartedAt = DispatchTime.now()
         let proxy = try ProxyServer(path: proxySocketPath)
         self.guestPort = guestPort
         self.launchTimeout = TimeInterval(launchSeconds)
@@ -565,8 +569,14 @@ private final class VMRuntime {
             }
             return try self.connectGuestChannel()
         }
+        let proxyReadyAt = DispatchTime.now()
 
-        let vmReadyMS = Int64(Date().timeIntervalSince(startedAt) * 1000)
+        let timingMS = [
+            "config_build": elapsedMilliseconds(from: startedAt, to: configBuiltAt),
+            "vz_start": elapsedMilliseconds(from: vzStartStartedAt, to: vzStartedAt),
+            "proxy_ready": elapsedMilliseconds(from: proxyReadyStartedAt, to: proxyReadyAt),
+            "vm_ready": elapsedMilliseconds(from: startedAt, to: proxyReadyAt),
+        ]
         return ControlResponse(
             ok: true,
             error: nil,
@@ -576,7 +586,7 @@ private final class VMRuntime {
             vmnetGuestIPv4: networkDetails?.guestIPv4,
             vmnetGatewayIPv4: networkDetails?.gatewayIPv4,
             vmnetPrefixLen: networkDetails?.prefixLength,
-            timingMS: ["vm_ready": vmReadyMS]
+            timingMS: timingMS
         )
     }
 
@@ -1247,6 +1257,13 @@ private func ensureDirectory(_ path: String) throws {
         throw HelperError.invalidRequest("directory path is empty")
     }
     try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+}
+
+private func elapsedMilliseconds(from start: DispatchTime, to end: DispatchTime) -> Int64 {
+    guard end.uptimeNanoseconds >= start.uptimeNanoseconds else {
+        return 0
+    }
+    return Int64((end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
 }
 
 private func pumpBytes(src: Int32, dst: Int32) throws {

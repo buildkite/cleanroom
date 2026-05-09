@@ -117,11 +117,6 @@ var (
 	}
 	resolveReferenceForImageOverride = func(ctx context.Context, source string, allowLocal bool) (string, error) {
 		if digestRef, err := ociref.ParseDigestReference(source); err == nil && digestReferenceHasExplicitRegistryHost(digestRef) {
-			if allowLocal {
-				if err := validateImageOverridePlatform(ctx, source, digestRef.Original); err != nil {
-					return "", err
-				}
-			}
 			return digestRef.Original, nil
 		}
 
