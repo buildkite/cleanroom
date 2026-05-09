@@ -71,6 +71,7 @@ func TestDependencyStageKey(t *testing.T) {
 		WorkspaceKey:          "workspace:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		CompiledPolicyHash:    "sha256:7777777777777777777777777777777777777777777777777777777777777777",
 		KeyFilesDigest:        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ToolchainInputsDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		BootstrapRecipeDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 	}
 
@@ -90,6 +91,12 @@ func TestDependencyStageKey(t *testing.T) {
 	if gotMutated := DependencyStageKey(mutated); got == gotMutated {
 		t.Fatalf("dependency stage key did not change after input mutation: %q", got)
 	}
+
+	mutated = inputs
+	mutated.ToolchainInputsDigest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if gotMutated := DependencyStageKey(mutated); got == gotMutated {
+		t.Fatalf("dependency stage key did not change after toolchain input mutation: %q", got)
+	}
 }
 
 func TestPortableDependencyStageKey(t *testing.T) {
@@ -102,6 +109,7 @@ func TestPortableDependencyStageKey(t *testing.T) {
 		DestinationDir:              "/workspace",
 		CheckoutRefreshRecipeDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		KeyFilesDigest:              "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ToolchainInputsDigest:       "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		BootstrapRecipeDigest:       "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		OutputMode:                  "outside-workspace",
 		ProducerVersion:             "cleanroom/portable-dependency-stage-v1",
@@ -122,6 +130,12 @@ func TestPortableDependencyStageKey(t *testing.T) {
 	mutated.KeyFilesDigest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	if gotMutated := PortableDependencyStageKey(mutated); got == gotMutated {
 		t.Fatalf("portable dependency stage key did not change after key-file mutation: %q", got)
+	}
+
+	mutated = inputs
+	mutated.ToolchainInputsDigest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if gotMutated := PortableDependencyStageKey(mutated); got == gotMutated {
+		t.Fatalf("portable dependency stage key did not change after toolchain input mutation: %q", got)
 	}
 
 	mutated = inputs

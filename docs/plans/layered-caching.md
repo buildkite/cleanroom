@@ -172,6 +172,8 @@ This phase now means:
   configured dependency bootstrap command
 - portable dependency-stage reuse as an explicit
   `sandbox.dependencies.reuse: portable` mode for declared key-file inputs
+- dependency-stage keys include well-known toolchain manifest files such as
+  `mise.toml`, `.mise.toml`, `mise.lock`, and `.tool-versions`
 - services-stage publish, lookup, restore, and republish on top of the selected
   workspace or dependency stage
 
@@ -180,8 +182,8 @@ This phase now means:
 - Firecracker hot-path materialization is wired through the volume-store path,
   but clone-based behavior still depends on the configured storage driver
 - dependency-stage keying has the first explicit input model, but richer
-  toolchain-derived inputs, lockfile parser inputs, and artifact allowlists are
-  still pending
+  lockfile parser inputs, artifact allowlists, and resolved tool-version inputs
+  are still pending
 - explicit local changes are still supplied through each create request today;
   the durable `changesetstore` records the replay payload and identity, but a
   user-facing `--changeset <id>` reuse surface has not been added yet
@@ -207,8 +209,9 @@ Today that means:
   repository bootstrap can create either a detached checkout or a named local
   branch
 - the dependency-stage key intentionally starts from the workspace-stage key
-  plus policy hash, dependency bootstrap recipe digest, and declared key-file
-  digests; richer toolchain and lockfile-parser inputs are still to come
+  plus policy hash, dependency bootstrap recipe digest, declared key-file
+  digests, and a small set of well-known toolchain manifest digests; richer
+  lockfile-parser inputs and resolved tool-version inputs are still to come
 - because dependency-stage snapshots are full rootfs snapshots, decoupling them
   from exact workspace identity requires a checkout refresh and validation step
   after restore; it is not live layer composition
@@ -1144,16 +1147,16 @@ This metadata should live in a dedicated `changesetstore`, not in
 
 The stage-cache flow is architecturally landed, but the full performance win
 still depends on clone-capable storage instead of the default `file` driver,
-and the dependency stage still needs richer lockfile/toolchain inputs.
+and the dependency stage still needs richer lockfile and resolved-toolchain
+inputs.
 
 ### Remaining
 
-1. Add richer toolchain input digests for dependency-stage keys beyond the
-   current workspace-plus-command-plus-key-files slice.
-2. Add lockfile parser inputs and artifact allowlists so dependency-stage keys
+1. Add lockfile parser inputs and artifact allowlists so dependency-stage keys
    can move beyond manually declared key files.
-3. Broaden block-volume output semantics only after the declared block model is
+2. Broaden block-volume output semantics only after the declared block model is
    stable in real workloads.
+3. Add resolved tool-version inputs beyond checked-in manifest files.
 4. Add additional ecosystems only after the first explicit dependency-stage
    flow is solid.
 5. Add a user-facing `--changeset <id>` or equivalent reuse surface if durable

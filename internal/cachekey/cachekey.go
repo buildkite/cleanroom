@@ -43,6 +43,7 @@ type DependencyStageInputs struct {
 	WorkspaceKey          string
 	CompiledPolicyHash    string
 	KeyFilesDigest        string
+	ToolchainInputsDigest string
 	BootstrapRecipeDigest string
 }
 
@@ -65,6 +66,7 @@ type PortableDependencyStageInputs struct {
 	DestinationDir              string
 	CheckoutRefreshRecipeDigest string
 	KeyFilesDigest              string
+	ToolchainInputsDigest       string
 	BootstrapRecipeDigest       string
 	OutputMode                  string
 	ProducerVersion             string
@@ -144,6 +146,7 @@ func DependencyStageKey(in DependencyStageInputs) string {
 		{name: "workspace_key", value: canonicalReference(in.WorkspaceKey)},
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
 		{name: "key_files_digest", value: canonicalDigest(in.KeyFilesDigest)},
+		{name: "toolchain_inputs_digest", value: canonicalDigest(in.ToolchainInputsDigest)},
 		{name: "bootstrap_recipe_digest", value: canonicalDigest(in.BootstrapRecipeDigest)},
 	})
 }
@@ -171,6 +174,7 @@ func PortableDependencyStageKey(in PortableDependencyStageInputs) string {
 		{name: "destination_dir", value: canonicalAbsolutePath(in.DestinationDir)},
 		{name: "checkout_refresh_recipe_digest", value: canonicalDigest(in.CheckoutRefreshRecipeDigest)},
 		{name: "key_files_digest", value: canonicalDigest(in.KeyFilesDigest)},
+		{name: "toolchain_inputs_digest", value: canonicalDigest(in.ToolchainInputsDigest)},
 		{name: "bootstrap_recipe_digest", value: canonicalDigest(in.BootstrapRecipeDigest)},
 		{name: "output_mode", value: canonicalIdentifier(in.OutputMode)},
 		{name: "producer_version", value: canonicalIdentifier(in.ProducerVersion)},

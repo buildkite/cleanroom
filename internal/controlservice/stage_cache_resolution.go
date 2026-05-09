@@ -330,7 +330,7 @@ func (s *Service) resolvePortableDependencyStageCache(ctx context.Context, req d
 		attribute.String(observability.AttrBackend, req.backendName),
 	), func(ctx context.Context) error {
 		var err error
-		restoreResp, err = s.restorePortableDependencyStageCache(ctx, req.adapter, req.backendName, req.compiled, req.firecrackerCfg, req.repository, req.changeset, req.commitBundle, req.options, record, req.serviceCacheOutputs, req.reporter)
+		restoreResp, err = s.restorePortableDependencyStageCache(ctx, req.adapter, req.backendName, req.compiled, req.firecrackerCfg, req.repository, req.changeset, req.commitBundle, req.options, req.plan, record, req.serviceCacheOutputs, req.reporter)
 		setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 		return err
 	})
