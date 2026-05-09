@@ -63,6 +63,14 @@ type blockVolumeRuntimeDecision struct {
 	FallbackReason string
 }
 
+type blockVolumeLookupSpanEventBlock struct {
+	BlockName    string
+	CacheKey     string
+	Outputs      policy.StageBlockOutputs
+	CacheHit     bool
+	LookupReason string
+}
+
 type dependencyBlockVolumeRuntimeDecision = blockVolumeRuntimeDecision
 
 func dependencyBlockVolumeRuntimeDecisionForAdapter(adapter backend.Adapter) dependencyBlockVolumeRuntimeDecision {
@@ -196,6 +204,48 @@ func setBlockVolumeLookupSpanAttributes(ctx context.Context, blockCount, hits, m
 		attribute.Int("cleanroom.cache.hit_count", hits),
 		attribute.Int("cleanroom.cache.miss_count", misses),
 	)
+}
+
+func addBlockVolumeLookupSpanEvents(ctx context.Context, stage string, blocks []blockVolumeLookupSpanEventBlock, err error) {
+	if err != nil || len(blocks) == 0 {
+		return
+	}
+	span := trace.SpanFromContext(ctx)
+	for _, block := range blocks {
+		attrs := []attribute.KeyValue{
+			attribute.String(observability.AttrCacheStage, strings.TrimSpace(stage)),
+			attribute.String(observability.AttrCacheBlock, strings.TrimSpace(block.BlockName)),
+			attribute.String(observability.AttrCacheKey, strings.TrimSpace(block.CacheKey)),
+			attribute.String(observability.AttrCacheResult, blockVolumeLookupResult(block)),
+		}
+		if reason := strings.TrimSpace(block.LookupReason); reason != "" {
+			attrs = append(attrs, attribute.String(observability.AttrCacheLookupReason, reason))
+		}
+		if dirs := trimmedStringSlice(block.Outputs.Dirs); len(dirs) > 0 {
+			attrs = append(attrs, attribute.StringSlice(observability.AttrCacheOutputDirs, dirs))
+		}
+		if files := trimmedStringSlice(block.Outputs.Files); len(files) > 0 {
+			attrs = append(attrs, attribute.StringSlice(observability.AttrCacheOutputFiles, files))
+		}
+		span.AddEvent("cleanroom.cache.block_lookup", trace.WithAttributes(attrs...))
+	}
+}
+
+func blockVolumeLookupResult(block blockVolumeLookupSpanEventBlock) string {
+	if block.CacheHit {
+		return observability.CacheResultHit
+	}
+	return observability.CacheResultMiss
+}
+
+func trimmedStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func blockVolumeRecordMissReason(record cachestore.Record, backendName string, compiled *policy.CompiledPolicy, block blockVolumeBlockPlan) string {

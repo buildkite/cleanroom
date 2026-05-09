@@ -204,11 +204,20 @@ Recommended cache telemetry attributes are:
 - `cleanroom.cache.operation=lookup|restore|publish|invalidate`
 - `cleanroom.cache.result=hit|miss|restored|published|fallback|failed`
 - `cleanroom.cache.lookup_reason=cache_record_not_found|backend_mismatch|policy_hash_mismatch|repository_changed|parent_stage_changed`
+- `cleanroom.cache.block=<dependency-or-service-block-name>` on per-block trace events
+- `cleanroom.cache.output.dirs=[<guest output dir>, ...]` on per-block trace events
+- `cleanroom.cache.output.files=[<guest output file>, ...]` on per-block trace events
 - `cleanroom.repository.commit_sha=<git commit sha>`
 
 Use these fields in traces and structured logs for cache-specific work. Use
 them in metrics only for cache-specific series, not for generic execution
 metrics.
+
+Block-volume cache lookup spans emit one `cleanroom.cache.block_lookup` trace
+event per dependency or service block after a successful lookup. Each event
+records the block name, cache key, hit or miss result, miss reason when present,
+and the declared output paths. This keeps the lookup span readable while making
+partial block-volume hits debuggable.
 
 Recommended cache-specific metric naming is:
 
