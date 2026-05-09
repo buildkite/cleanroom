@@ -31,16 +31,22 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 	t.Parallel()
 
 	runDir := t.TempDir()
+	helperTimingMS := map[string]int64{
+		"vm_ready":    321,
+		"proxy_ready": 45,
+	}
+	helperTimingMS[darwinVZTimingRootFSBaseVolumePrepare] = 11
+	helperTimingMS[darwinVZTimingRootFSWritableVolumeCreateClone] = 12
+	helperTimingMS[darwinVZTimingRootFSMinimumSizeResize] = 13
+	helperTimingMS[darwinVZTimingRootFSInspectValidate] = 14
+
 	obs := darwinVZRunObservation{
-		ExecutionID:  "run-123",
-		Backend:      "darwin-vz",
-		LaunchedVM:   true,
-		RunDir:       runDir,
-		RootFSCopyMS: 27,
-		HelperTimingMS: map[string]int64{
-			"vm_ready":    321,
-			"proxy_ready": 45,
-		},
+		ExecutionID:    "run-123",
+		Backend:        "darwin-vz",
+		LaunchedVM:     true,
+		RunDir:         runDir,
+		RootFSCopyMS:   27,
+		HelperTimingMS: helperTimingMS,
 	}
 	applyDarwinVZHelperTimings(&obs, obs.HelperTimingMS)
 
@@ -79,6 +85,44 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 	}
 	if got, want := helperTimingPayload["vm_ready"], float64(321); got != want {
 		t.Fatalf("unexpected helper_timing_ms.vm_ready: got %v want %v", got, want)
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSBaseVolumePrepare], float64(11); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSBaseVolumePrepare, got, want)
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSWritableVolumeCreateClone], float64(12); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSWritableVolumeCreateClone, got, want)
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSMinimumSizeResize], float64(13); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSMinimumSizeResize, got, want)
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSInspectValidate], float64(14); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSInspectValidate, got, want)
+	}
+}
+
+func TestApplyDarwinVZHelperTimingsMergesRootFSPhaseTimings(t *testing.T) {
+	t.Parallel()
+
+	obs := darwinVZRunObservation{}
+	rootFSTimingMS := map[string]int64{
+		darwinVZTimingRootFSBaseVolumePrepare: 11,
+	}
+	applyDarwinVZHelperTimings(&obs, rootFSTimingMS)
+
+	helperTimingMS := map[string]int64{
+		"vm_ready": 321,
+	}
+	applyDarwinVZHelperTimings(&obs, helperTimingMS)
+	helperTimingMS["vm_ready"] = 1
+
+	if got, want := obs.HelperTimingMS[darwinVZTimingRootFSBaseVolumePrepare], int64(11); got != want {
+		t.Fatalf("unexpected rootfs phase timing: got %v want %v", got, want)
+	}
+	if got, want := obs.HelperTimingMS["vm_ready"], int64(321); got != want {
+		t.Fatalf("unexpected vm_ready helper timing: got %v want %v", got, want)
+	}
+	if got, want := obs.VMReadyMS, int64(321); got != want {
+		t.Fatalf("unexpected VMReadyMS: got %v want %v", got, want)
 	}
 }
 
@@ -153,7 +197,8 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 				LaunchObservability: &darwinVZLaunchObservability{
 					RootFSCopyMS: 27,
 					HelperTimingMS: map[string]int64{
-						"vm_ready": 321,
+						"vm_ready":                            321,
+						darwinVZTimingRootFSBaseVolumePrepare: 11,
 					},
 					Network: &darwinVZNetworkMetadata{
 						Mode:       darwinVZNetworkModeFileHandle,
@@ -193,6 +238,13 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 	}
 	if got, want := payload["rootfs_copy_ms"], float64(27); got != want {
 		t.Fatalf("unexpected rootfs_copy_ms: got %v want %v", got, want)
+	}
+	helperTimingPayload, ok := payload["helper_timing_ms"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected helper_timing_ms object, got %T", payload["helper_timing_ms"])
+	}
+	if got, want := helperTimingPayload[darwinVZTimingRootFSBaseVolumePrepare], float64(11); got != want {
+		t.Fatalf("unexpected helper_timing_ms.%s: got %v want %v", darwinVZTimingRootFSBaseVolumePrepare, got, want)
 	}
 	if got, want := payload["network_guest_ip"], "10.233.0.2"; got != want {
 		t.Fatalf("unexpected network_guest_ip: got %v want %v", got, want)

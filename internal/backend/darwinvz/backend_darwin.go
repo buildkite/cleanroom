@@ -69,7 +69,7 @@ type Adapter struct {
 	executeInSandboxFn func(context.Context, context.Context, *sandboxInstance, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error)
 	helperRequestFn    func(context.Context, *helperSession, helperControlRequest) (helperControlResponse, error)
 
-	ensurePreparedRootFSFn func(context.Context, string) (preparedRootFS, error)
+	ensurePreparedRootFSFn func(context.Context, string, int64) (preparedRootFS, error)
 
 	GatewayRegistry  gatewayRegistry
 	GatewayPort      int
@@ -165,6 +165,17 @@ var (
 	networkProcessLookupPollInterval = 50 * time.Millisecond
 )
 
+type virtualizationProcessPIDLookup struct {
+	cancel   context.CancelFunc
+	resultCh <-chan virtualizationProcessPIDLookupResult
+}
+
+type virtualizationProcessPIDLookupResult struct {
+	pid      int
+	err      error
+	duration time.Duration
+}
+
 func New() *Adapter {
 	return &Adapter{
 		newImageManager: defaultImageManagerFactory,
@@ -257,6 +268,39 @@ func resolveVirtualizationProcessPID(ctx context.Context, rootFSPath string) (in
 	}
 
 	return 0, fmt.Errorf("resolve virtualization network process pid for %s: %w", rootFSPath, lastErr)
+}
+
+func startVirtualizationProcessPIDLookup(ctx context.Context, rootFSPath string) *virtualizationProcessPIDLookup {
+	lookupCtx, cancel := context.WithTimeout(ctx, networkProcessLookupTimeout)
+	resultCh := make(chan virtualizationProcessPIDLookupResult, 1)
+	start := time.Now()
+	go func() {
+		pid, err := resolveVirtualizationProcessPID(lookupCtx, rootFSPath)
+		resultCh <- virtualizationProcessPIDLookupResult{
+			pid:      pid,
+			err:      err,
+			duration: time.Since(start),
+		}
+	}()
+	return &virtualizationProcessPIDLookup{
+		cancel:   cancel,
+		resultCh: resultCh,
+	}
+}
+
+func (l *virtualizationProcessPIDLookup) wait() virtualizationProcessPIDLookupResult {
+	if l == nil {
+		return virtualizationProcessPIDLookupResult{}
+	}
+	result := <-l.resultCh
+	l.cancel()
+	return result
+}
+
+func (l *virtualizationProcessPIDLookup) stop() {
+	if l != nil {
+		l.cancel()
+	}
 }
 
 func lookupPIDsForOpenFile(ctx context.Context, lsofPath, filePath string) ([]int, error) {
@@ -1037,32 +1081,45 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	if err != nil {
 		return nil, err
 	}
+	rootFSTimingMS := make(map[string]int64, darwinVZRootFSTimingExpectedPhaseCount)
+	observation.HelperTimingMS = rootFSTimingMS
+	baseVolumeStart := time.Now()
 	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
-		BaseID:     strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
-		SourcePath: rootFSPath,
+		BaseID:       strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
+		SourcePath:   rootFSPath,
+		MinimumBytes: req.MinimumRootFSBytes,
 	})
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSBaseVolumePrepare, baseVolumeStart)
 	if err != nil {
 		return nil, fmt.Errorf("prepare base volume: %w", err)
 	}
 	vmRootFSPath := filepath.Join(runDir, "rootfs-ephemeral.ext4")
 	copyStart := time.Now()
+	writableVolumeStart := time.Now()
 	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
 		VolumeID:       req.ExecutionID,
 		BaseRef:        baseVolume.Ref,
 		AttachmentPath: vmRootFSPath,
 	})
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSWritableVolumeCreateClone, writableVolumeStart)
 	if err != nil {
 		observation.Error = err.Error()
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
 	vmRootFSPath = writableVolume.AttachmentPath
-	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, req.MinimumRootFSBytes); err != nil {
-		observation.Error = err.Error()
-		return nil, fmt.Errorf("resize writable rootfs: %w", err)
+	resizeStart := time.Now()
+	resizeErr := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, req.MinimumRootFSBytes)
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSMinimumSizeResize, resizeStart)
+	if resizeErr != nil {
+		observation.Error = resizeErr.Error()
+		return nil, fmt.Errorf("resize writable rootfs: %w", resizeErr)
 	}
-	if err := validateRootFSInspectable(vmRootFSPath); err != nil {
-		observation.Error = err.Error()
-		return nil, fmt.Errorf("validate writable rootfs: %w", err)
+	validateStart := time.Now()
+	validateErr := validateRootFSInspectable(vmRootFSPath)
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSInspectValidate, validateStart)
+	if validateErr != nil {
+		observation.Error = validateErr.Error()
+		return nil, fmt.Errorf("validate writable rootfs: %w", validateErr)
 	}
 	observation.RootFSCopyMS = time.Since(copyStart).Milliseconds()
 	defer func() {
@@ -1246,6 +1303,9 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 }
 
 func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+	launchStart := time.Now()
+	launchTimingMS := make(map[string]int64, 12+darwinVZRootFSTimingExpectedPhaseCount)
+	policyValidateStart := time.Now()
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -1262,6 +1322,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if runtime.GOOS != "darwin" {
 		return nil, fmt.Errorf("darwin-vz backend is darwin-only, current OS is %s", runtime.GOOS)
 	}
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingLaunchPolicyValidate, policyValidateStart)
 
 	if cfg.VCPUs <= 0 {
 		cfg.VCPUs = 1
@@ -1280,7 +1341,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		"configured_kernel_path", strings.TrimSpace(cfg.KernelImagePath),
 	)
 
+	kernelResolveStart := time.Now()
 	kernelPath, _, err := a.resolveKernelPath(ctx, cfg.KernelImagePath)
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingKernelResolve, kernelResolveStart)
 	if err != nil {
 		return nil, err
 	}
@@ -1288,14 +1351,17 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		"sandbox_id", sandboxID,
 		"image_ref", strings.TrimSpace(compiled.ImageRef),
 	)
+	rootFSResolveStart := time.Now()
 	rootFSPath, imageRef, imageDigest, _, err := a.resolveRootFSPath(ctx, backend.ExecutionRequest{
 		Policy:            compiled,
 		FirecrackerConfig: cfg,
 	})
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingRootFSResolve, rootFSResolveStart)
 	if err != nil {
 		return nil, err
 	}
 
+	runDirPrepareStart := time.Now()
 	runBaseDir, err := sandboxRuntimeBaseDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox runtime base directory: %w", err)
@@ -1310,7 +1376,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create sandbox runtime directory: %w", err)
 	}
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingRunDirPrepare, runDirPrepareStart)
 
+	rootFSPreflightStart := time.Now()
 	rootFSPath, err = filepath.Abs(rootFSPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve rootfs path: %w", err)
@@ -1321,6 +1389,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err := backend.ValidateDockerServiceRootFS(rootFSPath, imageRef, compiled.RequiresDockerService()); err != nil {
 		return nil, err
 	}
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingRootFSPreflight, rootFSPreflightStart)
 
 	driver, err := rootFSVolumeDriver(cfg)
 	if err != nil {
@@ -1332,32 +1401,45 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		"image_ref", imageRef,
 		"image_digest", imageDigest,
 	)
+	rootFSTimingMS := make(map[string]int64, darwinVZRootFSTimingExpectedPhaseCount)
+	baseVolumeStart := time.Now()
 	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
-		BaseID:     strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
-		SourcePath: rootFSPath,
+		BaseID:       strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
+		SourcePath:   rootFSPath,
+		MinimumBytes: cfg.MinimumRootFSBytes,
 	})
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSBaseVolumePrepare, baseVolumeStart)
 	if err != nil {
 		return nil, fmt.Errorf("prepare base volume: %w", err)
 	}
 	vmRootFSPath := filepath.Join(runDir, "rootfs-persistent.ext4")
 	copyStart := time.Now()
+	writableVolumeStart := time.Now()
 	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
 		VolumeID:       sandboxID,
 		BaseRef:        baseVolume.Ref,
 		AttachmentPath: vmRootFSPath,
 	})
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSWritableVolumeCreateClone, writableVolumeStart)
 	if err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
 	vmRootFSPath = writableVolume.AttachmentPath
-	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, cfg.MinimumRootFSBytes); err != nil {
-		return nil, fmt.Errorf("resize persistent rootfs: %w", err)
+	resizeStart := time.Now()
+	resizeErr := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, cfg.MinimumRootFSBytes)
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSMinimumSizeResize, resizeStart)
+	if resizeErr != nil {
+		return nil, fmt.Errorf("resize persistent rootfs: %w", resizeErr)
 	}
-	if err := validateRootFSInspectable(vmRootFSPath); err != nil {
-		return nil, fmt.Errorf("validate persistent rootfs: %w", err)
+	validateStart := time.Now()
+	validateErr := validateRootFSInspectable(vmRootFSPath)
+	recordDarwinVZPhaseTiming(rootFSTimingMS, darwinVZTimingRootFSInspectValidate, validateStart)
+	if validateErr != nil {
+		return nil, fmt.Errorf("validate persistent rootfs: %w", validateErr)
 	}
 	rootFSCopyMS := time.Since(copyStart).Milliseconds()
 
+	guestBootConfigStart := time.Now()
 	guestInitPath, _ := guestInitExecutableForRootFS(vmRootFSPath)
 	networkCfg, err := resolveDarwinVZNetwork(cfg)
 	if err != nil {
@@ -1372,8 +1454,11 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
 	configPath := filepath.Join(runDir, "darwin-vz-config.json")
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingGuestBootConfig, guestBootConfigStart)
 
+	helperSessionStart := time.Now()
 	helper, err := startHelperSession(ctx, runDir, cfg.LaunchSeconds)
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingHelperSessionStart, helperSessionStart)
 	if err != nil {
 		return nil, fmt.Errorf("start darwin-vz helper: %w", err)
 	}
@@ -1388,7 +1473,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		}
 	}()
 
+	cacheOutputPrepareStart := time.Now()
 	cacheOutputVolumes, cleanupCacheOutputs, err := prepareDarwinVZCacheOutputVolumes(ctx, cfg, sandboxID, runDir, cacheOutputVolumeSpecs)
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingCacheOutputPrepare, cacheOutputPrepareStart)
 	if err != nil {
 		return nil, err
 	}
@@ -1404,6 +1491,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		"network_mode", strings.TrimSpace(networkCfg.Mode),
 		"launch_seconds", cfg.LaunchSeconds,
 	)
+	helperStartVMStart := time.Now()
 	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
 		SandboxID:        sandboxID,
 		ConfigPath:       configPath,
@@ -1423,6 +1511,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		GuestPort:        cfg.GuestPort,
 		LaunchSeconds:    cfg.LaunchSeconds,
 	})
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingHelperStartVM, helperStartVMStart)
 	if err != nil {
 		return nil, err
 	}
@@ -1438,27 +1527,19 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		}
 	}()
 
-	networkProcessPID := 0
-	lookupCtx, cancelLookup := context.WithTimeout(ctx, networkProcessLookupTimeout)
-	networkProcessPID, _ = resolveVirtualizationProcessPID(lookupCtx, vmRootFSPath)
-	cancelLookup()
+	pidLookup := startVirtualizationProcessPIDLookup(ctx, vmRootFSPath)
+	defer pidLookup.stop()
 
 	instance := &sandboxInstance{
-		SandboxID:         sandboxID,
-		RunDir:            runDir,
-		ConfigPath:        configPath,
-		ProxySocketPath:   startedVM.ProxySocketPath,
-		GuestPort:         cfg.GuestPort,
-		NetworkProcessPID: networkProcessPID,
-		Policy:            compiled,
-		FirecrackerConfig: cfg,
-		ImageRef:          imageRef,
-		ImageDigest:       imageDigest,
-		LaunchObservability: &darwinVZLaunchObservability{
-			RootFSCopyMS:   rootFSCopyMS,
-			HelperTimingMS: startedVM.TimingMS,
-			Network:        startedVM.NetworkMetadata,
-		},
+		SandboxID:           sandboxID,
+		RunDir:              runDir,
+		ConfigPath:          configPath,
+		ProxySocketPath:     startedVM.ProxySocketPath,
+		GuestPort:           cfg.GuestPort,
+		Policy:              compiled,
+		FirecrackerConfig:   cfg,
+		ImageRef:            imageRef,
+		ImageDigest:         imageDigest,
 		NetworkMetadata:     startedVM.NetworkMetadata,
 		FileHandleGateway:   startedVM.FileHandleGW,
 		CommandTimeout:      cfg.LaunchSeconds,
@@ -1486,8 +1567,22 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 
 	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
 	defer cancel()
+	guestReadyProbeStart := time.Now()
 	if err := probeGuestExecReadyWithExit(bootCtx, helper, startedVM.ProxySocketPath, instance.exitedCh, instance.exitedErrOrNil); err != nil {
+		pidLookup.stop()
 		return nil, err
+	}
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingGuestExecReadyProbe, guestReadyProbeStart)
+	pidLookupResult := pidLookup.wait()
+	instance.NetworkProcessPID = pidLookupResult.pid
+	recordDarwinVZPhaseTimingDuration(launchTimingMS, darwinVZTimingVirtualizationPIDLookup, pidLookupResult.duration)
+	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingLaunchSandboxTotal, launchStart)
+	helperTimingMS := mergeHelperTimingMS(launchTimingMS, rootFSTimingMS)
+	helperTimingMS = mergeHelperTimingMS(helperTimingMS, startedVM.TimingMS)
+	instance.LaunchObservability = &darwinVZLaunchObservability{
+		RootFSCopyMS:   rootFSCopyMS,
+		HelperTimingMS: helperTimingMS,
+		Network:        startedVM.NetworkMetadata,
 	}
 
 	cacheOutputsNeedCleanup = false
@@ -2010,7 +2105,7 @@ func (a *Adapter) resolveRootFSPath(ctx context.Context, req backend.ExecutionRe
 	if ensurePrepared == nil {
 		ensurePrepared = a.ensurePreparedRuntimeRootFSFromImage
 	}
-	prepared, err := ensurePrepared(ctx, ref)
+	prepared, err := ensurePrepared(ctx, ref, req.MinimumRootFSBytes)
 	if err != nil {
 		return "", "", "", "", err
 	}
@@ -2033,7 +2128,7 @@ func (a *Adapter) RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledP
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("configured-rootfs:%s|%d|%d", absPath, info.Size(), info.ModTime().UTC().UnixNano()), nil
+			return fmt.Sprintf("configured-rootfs:%s|%d|%d%s", absPath, info.Size(), info.ModTime().UTC().UnixNano(), rootFSMinimumCacheKeySuffix(cfg.MinimumRootFSBytes)), nil
 		}
 	}
 
@@ -2055,14 +2150,14 @@ func (a *Adapter) RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledP
 		return "", err
 	}
 
-	preparedPath, err := preparedRuntimeRootFSPath(imageDigest, guestAgentHash)
+	preparedPath, err := preparedRuntimeRootFSPath(imageDigest, guestAgentHash, cfg.MinimumRootFSBytes)
 	if err != nil {
 		return "", err
 	}
 	return "prepared-rootfs:" + preparedPath, nil
 }
 
-func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imageRef string) (preparedRootFS, error) {
+func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imageRef string, minimumBytes int64) (preparedRootFS, error) {
 	artifact, err := a.ensureImageArtifact(ctx, imageRef)
 	if err != nil {
 		return preparedRootFS{}, err
@@ -2079,12 +2174,12 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		return preparedRootFS{}, err
 	}
 
-	preparedPath, err := preparedRuntimeRootFSPath(artifact.Digest, guestAgentHash)
+	preparedPath, err := preparedRuntimeRootFSPath(artifact.Digest, guestAgentHash, minimumBytes)
 	if err != nil {
 		return preparedRootFS{}, err
 	}
 	if _, err := os.Stat(preparedPath); err == nil {
-		if preparedRuntimeRootFSCacheHitIsValid(preparedPath) {
+		if preparedRuntimeRootFSCacheHitIsValid(preparedPath, minimumBytes) {
 			return preparedRootFS{
 				Ref:    artifact.Ref,
 				Digest: artifact.Digest,
@@ -2103,7 +2198,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 	defer a.runtimeImageMu.Unlock()
 
 	if _, err := os.Stat(preparedPath); err == nil {
-		if preparedRuntimeRootFSCacheHitIsValid(preparedPath) {
+		if preparedRuntimeRootFSCacheHitIsValid(preparedPath, minimumBytes) {
 			return preparedRootFS{
 				Ref:    artifact.Ref,
 				Digest: artifact.Digest,
@@ -2132,6 +2227,10 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		_ = os.Remove(tmpPath)
 		return preparedRootFS{}, err
 	}
+	if err := ensurePreparedRuntimeRootFSMinimumSize(ctx, tmpPath, minimumBytes); err != nil {
+		_ = os.Remove(tmpPath)
+		return preparedRootFS{}, fmt.Errorf("resize prepared runtime rootfs %q: %w", tmpPath, err)
+	}
 	if err := validatePreparedRuntimeRootFS(tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return preparedRootFS{}, fmt.Errorf("validate prepared runtime rootfs %q: %w", tmpPath, err)
@@ -2139,7 +2238,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 	if err := os.Rename(tmpPath, preparedPath); err != nil {
 		_ = os.Remove(tmpPath)
 		if _, statErr := os.Stat(preparedPath); statErr == nil {
-			if validateErr := validatePreparedRuntimeRootFS(preparedPath); validateErr == nil {
+			if preparedRuntimeRootFSCacheHitIsValid(preparedPath, minimumBytes) {
 				_ = writePreparedRuntimeRootFSMarker(preparedPath)
 				return preparedRootFS{
 					Ref:    artifact.Ref,
@@ -2166,7 +2265,10 @@ var preparedRuntimeRootFSRequiredPaths = []string{
 	guestAgentPath,
 }
 
-var validatePreparedRuntimeRootFSFn = validatePreparedRuntimeRootFS
+var (
+	validatePreparedRuntimeRootFSFn        = validatePreparedRuntimeRootFS
+	ensurePreparedRuntimeRootFSMinimumSize = ext4image.EnsureMinimumSize
+)
 
 func validatePreparedRuntimeRootFS(path string) error {
 	for _, requiredPath := range preparedRuntimeRootFSRequiredPaths {
@@ -2191,7 +2293,10 @@ type preparedRuntimeRootFSMarkerState struct {
 	changeTimeNanos int64
 }
 
-func preparedRuntimeRootFSCacheHitIsValid(path string) bool {
+func preparedRuntimeRootFSCacheHitIsValid(path string, minimumBytes int64) bool {
+	if !preparedRuntimeRootFSMeetsMinimum(path, minimumBytes) {
+		return false
+	}
 	if preparedRuntimeRootFSMarkerMatches(path) {
 		return true
 	}
@@ -2200,6 +2305,17 @@ func preparedRuntimeRootFSCacheHitIsValid(path string) bool {
 	}
 	_ = writePreparedRuntimeRootFSMarker(path)
 	return true
+}
+
+func preparedRuntimeRootFSMeetsMinimum(path string, minimumBytes int64) bool {
+	if minimumBytes <= 0 {
+		return true
+	}
+	currentBytes, _, err := ext4image.PathSizeBytes(path)
+	if err != nil {
+		return false
+	}
+	return currentBytes >= minimumBytes
 }
 
 func preparedRuntimeRootFSMarkerPath(path string) string {
@@ -2269,18 +2385,34 @@ func writePreparedRuntimeRootFSMarker(path string) error {
 	return nil
 }
 
-func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
+func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string, minimumBytes int64) (string, error) {
 	cacheBase, err := paths.CacheBaseDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve cache base directory: %w", err)
 	}
-	key := runtimeRootFSCacheKey(imageDigest, guestAgentHash)
+	key := runtimeRootFSCacheKey(imageDigest, guestAgentHash, minimumBytes)
 	return filepath.Join(cacheBase, "darwin-vz", "runtime-rootfs", key+".ext4"), nil
 }
 
-func runtimeRootFSCacheKey(imageDigest, guestAgentHash string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(imageDigest) + "|" + guestAgentHash + "|" + runtime.GOARCH + "|" + preparedRuntimeRootFSVersion + "|" + guestInitScriptTemplate))
+func runtimeRootFSCacheKey(imageDigest, guestAgentHash string, minimumBytes int64) string {
+	keyMaterial := strings.TrimSpace(imageDigest) + "|" + guestAgentHash + "|" + runtime.GOARCH + "|" + preparedRuntimeRootFSVersion + "|" + guestInitScriptTemplate + rootFSMinimumCacheKeySuffix(minimumBytes)
+	sum := sha256.Sum256([]byte(keyMaterial))
 	return hex.EncodeToString(sum[:])
+}
+
+func rootFSMinimumCacheKeySuffix(minimumBytes int64) string {
+	normalized := normalizedRootFSMinimumBytes(minimumBytes)
+	if normalized <= 0 {
+		return ""
+	}
+	return "|minimum_rootfs_bytes:" + strconv.FormatInt(normalized, 10)
+}
+
+func normalizedRootFSMinimumBytes(minimumBytes int64) int64 {
+	if minimumBytes <= 0 {
+		return 0
+	}
+	return ext4image.AlignBytes(minimumBytes)
 }
 
 func (a *Adapter) ensureImageArtifact(ctx context.Context, imageRef string) (imageArtifact, error) {

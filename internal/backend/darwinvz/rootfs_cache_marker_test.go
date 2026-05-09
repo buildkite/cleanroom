@@ -24,7 +24,7 @@ func TestPreparedRuntimeRootFSCacheHitUsesValidMarkerWithoutExt4Validation(t *te
 	})
 	defer restore()
 
-	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath) {
+	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath, 0) {
 		t.Fatal("expected prepared rootfs cache hit to be valid")
 	}
 	if validateCalls != 0 {
@@ -42,7 +42,7 @@ func TestPreparedRuntimeRootFSCacheHitValidatesAndMarksWhenMarkerMissing(t *test
 	})
 	defer restore()
 
-	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath) {
+	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath, 0) {
 		t.Fatal("expected prepared rootfs cache hit to be valid after validation")
 	}
 	if validateCalls != 1 {
@@ -52,7 +52,7 @@ func TestPreparedRuntimeRootFSCacheHitValidatesAndMarksWhenMarkerMissing(t *test
 		t.Fatalf("expected prepared rootfs marker to be written: %v", err)
 	}
 
-	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath) {
+	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath, 0) {
 		t.Fatal("expected marked prepared rootfs cache hit to remain valid")
 	}
 	if validateCalls != 1 {
@@ -76,7 +76,7 @@ func TestPreparedRuntimeRootFSCacheHitRevalidatesStaleMarker(t *testing.T) {
 	})
 	defer restore()
 
-	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath) {
+	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath, 0) {
 		t.Fatal("expected stale marker to be refreshed after validation")
 	}
 	if validateCalls != 1 {
@@ -110,7 +110,7 @@ func TestPreparedRuntimeRootFSCacheHitRevalidatesWhenContentsChangeWithPreserved
 	})
 	defer restore()
 
-	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath) {
+	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath, 0) {
 		t.Fatal("expected marker with changed contents to be refreshed after validation")
 	}
 	if validateCalls != 1 {
@@ -162,7 +162,7 @@ func TestPreparedRuntimeRootFSCacheHitRejectsInvalidPreparedRootFS(t *testing.T)
 	})
 	defer restore()
 
-	if preparedRuntimeRootFSCacheHitIsValid(rootFSPath) {
+	if preparedRuntimeRootFSCacheHitIsValid(rootFSPath, 0) {
 		t.Fatal("expected invalid prepared rootfs cache hit to be rejected")
 	}
 	if validateCalls != 1 {
@@ -170,6 +170,27 @@ func TestPreparedRuntimeRootFSCacheHitRejectsInvalidPreparedRootFS(t *testing.T)
 	}
 	if _, err := os.Stat(preparedRuntimeRootFSMarkerPath(rootFSPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected marker not to be written, got err=%v", err)
+	}
+}
+
+func TestPreparedRuntimeRootFSCacheHitRejectsRootFSBelowMinimum(t *testing.T) {
+	rootFSPath := writeTestPreparedRootFS(t, "prepared-rootfs")
+	if err := writePreparedRuntimeRootFSMarker(rootFSPath); err != nil {
+		t.Fatalf("write prepared rootfs marker: %v", err)
+	}
+
+	validateCalls := 0
+	restore := stubPreparedRuntimeRootFSValidator(t, func(string) error {
+		validateCalls++
+		return nil
+	})
+	defer restore()
+
+	if preparedRuntimeRootFSCacheHitIsValid(rootFSPath, 1<<20) {
+		t.Fatal("expected prepared rootfs below minimum to be rejected")
+	}
+	if validateCalls != 0 {
+		t.Fatalf("expected size check to reject before validation, got %d validation calls", validateCalls)
 	}
 }
 

@@ -978,17 +978,21 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		)
 	}
 	emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PROVISION_SANDBOX, "provisioning sandbox")
+	provisionStarted := s.clock().Now()
+	var provisionDuration time.Duration
 	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 		SandboxID:          sandboxID,
 		Policy:             compiled,
 		CacheOutputVolumes: appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes),
 		FirecrackerConfig:  firecrackerCfg,
 	}); err != nil {
+		provisionDuration = s.clock().Now().Sub(provisionStarted)
 		if stateErr := s.dropProvisioningSandboxAfterCreateError(sandboxID); stateErr != nil {
 			return nil, stateErr
 		}
 		return nil, fmt.Errorf("provision sandbox: %w", err)
 	}
+	provisionDuration = s.clock().Now().Sub(provisionStarted)
 	if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
 		return nil, err
 	}
@@ -1148,6 +1152,8 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			observability.LogFieldSandboxID, sandboxID,
 			observability.LogFieldBackend, backendName,
 			"policy_hash", compiled.Hash,
+			"duration_ms", s.clock().Now().Sub(createStarted).Milliseconds(),
+			"provision_ms", provisionDuration.Milliseconds(),
 		)
 	}
 
