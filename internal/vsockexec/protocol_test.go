@@ -259,6 +259,33 @@ func TestDecodeStreamResponseIncludesOverlayCapture(t *testing.T) {
 	}
 }
 
+func TestDecodeStreamResponseIncludesGuestTiming(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := EncodeStreamFrame(&buf, ExecStreamFrame{
+		Type:     "exit",
+		ExitCode: 0,
+		GuestTimingMS: map[string]int64{
+			GuestBootTimingInitVSOCKAgentExec: 42,
+			GuestBootTimingAgentStart:         57,
+		},
+	}); err != nil {
+		t.Fatalf("EncodeStreamFrame exit: %v", err)
+	}
+
+	res, err := DecodeStreamResponse(&buf, StreamCallbacks{})
+	if err != nil {
+		t.Fatalf("DecodeStreamResponse: %v", err)
+	}
+	if got, want := res.GuestTimingMS[GuestBootTimingInitVSOCKAgentExec], int64(42); got != want {
+		t.Fatalf("unexpected guest init timing: got %d want %d", got, want)
+	}
+	if got, want := res.GuestTimingMS[GuestBootTimingAgentStart], int64(57); got != want {
+		t.Fatalf("unexpected guest agent timing: got %d want %d", got, want)
+	}
+}
+
 func TestDecodeStreamResponseRejectsUntypedPayload(t *testing.T) {
 	t.Parallel()
 

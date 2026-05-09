@@ -210,7 +210,11 @@ func (a *Adapter) recordLaunchPhaseMetrics(ctx context.Context, observation darw
 		if durationMS <= 0 {
 			continue
 		}
-		metrics.RecordLaunchPhase(ctx, a.Name(), "helper_"+strings.TrimSpace(phase), time.Duration(durationMS)*time.Millisecond)
+		phase = darwinVZLaunchObservationPhaseName(phase)
+		if phase == "" {
+			continue
+		}
+		metrics.RecordLaunchPhase(ctx, a.Name(), phase, time.Duration(durationMS)*time.Millisecond)
 	}
 }
 
@@ -263,9 +267,31 @@ func darwinVZLaunchPhaseDurations(observation darwinVZRunObservation) []darwinVZ
 		if phase == "" {
 			continue
 		}
-		phases = append(phases, darwinVZLaunchPhaseDuration{Phase: "helper_" + phase, DurationMS: durationMS})
+		phase = darwinVZLaunchObservationPhaseName(phase)
+		if phase == "" {
+			continue
+		}
+		phases = append(phases, darwinVZLaunchPhaseDuration{Phase: phase, DurationMS: durationMS})
 	}
 	return phases
+}
+
+func darwinVZLaunchObservationPhaseName(phase string) string {
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		return ""
+	}
+	if strings.HasPrefix(phase, "guest_init_") || strings.HasPrefix(phase, "guest_agent_") {
+		return phase
+	}
+	return "helper_" + phase
+}
+
+func darwinVZGuestBootTimingBootArg(ctx context.Context) string {
+	if trace.SpanFromContext(ctx).IsRecording() {
+		return "cleanroom_guest_boot_timing=1"
+	}
+	return ""
 }
 
 func commandCombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -1195,10 +1221,11 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		return nil, err
 	}
 	bootArgs := fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
+		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s %s",
 		guestInitPath,
 		req.GuestPort,
 		dockerServiceBootArgs(networkPolicy, req.FirecrackerConfig, a.GatewayPort, a.GatewayRoutes),
+		darwinVZGuestBootTimingBootArg(ctx),
 	)
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
@@ -1339,6 +1366,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		observation.Error = err.Error()
 		return nil, helper.decorateError(fmt.Errorf("decode guest exec response over darwin-vz proxy: %w", err))
 	}
+	applyDarwinVZHelperTimings(&observation, darwinVZGuestBootPhaseTimings(guestRes.GuestTimingMS))
 
 	message := darwinVZResultMessage(guestRes.Error)
 	if timingSummary := darwinVZTimingSummary(startedVM.TimingMS); timingSummary != "" {
@@ -1507,10 +1535,11 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, err
 	}
 	bootArgs := fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
+		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s %s",
 		guestInitPath,
 		cfg.GuestPort,
 		dockerServiceBootArgs(compiled, cfg, a.GatewayPort, a.GatewayRoutes),
+		darwinVZGuestBootTimingBootArg(ctx),
 	)
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
@@ -1629,7 +1658,8 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
 	defer cancel()
 	guestReadyProbeStart := time.Now()
-	if err := probeGuestExecReadyWithExit(bootCtx, helper, startedVM.ProxySocketPath, instance.exitedCh, instance.exitedErrOrNil); err != nil {
+	guestPhaseTimingMS, err := probeGuestExecReadyWithExit(bootCtx, helper, startedVM.ProxySocketPath, instance.exitedCh, instance.exitedErrOrNil)
+	if err != nil {
 		pidLookup.stop()
 		return nil, err
 	}
@@ -1640,6 +1670,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingLaunchSandboxTotal, launchStart)
 	helperTimingMS := mergeHelperTimingMS(launchTimingMS, rootFSTimingMS)
 	helperTimingMS = mergeHelperTimingMS(helperTimingMS, startedVM.TimingMS)
+	helperTimingMS = mergeHelperTimingMS(helperTimingMS, guestPhaseTimingMS)
 	launchObservability := &darwinVZLaunchObservability{
 		RootFSCopyMS:   rootFSCopyMS,
 		HelperTimingMS: helperTimingMS,
@@ -2003,32 +2034,34 @@ func snapshotVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, er
 }
 
 func probeGuestExecReady(ctx context.Context, helper *helperSession, socketPath string) error {
-	return probeGuestExecReadyWithExit(ctx, helper, socketPath, nil, nil)
+	_, err := probeGuestExecReadyWithExit(ctx, helper, socketPath, nil, nil)
+	return err
 }
 
-func probeGuestExecReadyWithExit(ctx context.Context, helper *helperSession, socketPath string, exitedCh <-chan struct{}, exitedErrOrNil func() error) error {
+func probeGuestExecReadyWithExit(ctx context.Context, helper *helperSession, socketPath string, exitedCh <-chan struct{}, exitedErrOrNil func() error) (map[string]int64, error) {
 	conn, err := dialUnixSocketWithExit(ctx, socketPath, exitedCh, exitedErrOrNil)
 	if err != nil {
 		if helper != nil {
-			return helper.decorateError(fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err))
+			return nil, helper.decorateError(fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err))
 		}
-		return fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err)
+		return nil, fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err)
 	}
 	defer conn.Close()
 
 	if err := vsockexec.EncodeRequest(conn, vsockexec.ExecRequest{}); err != nil {
 		if helper != nil {
-			return helper.decorateError(fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err))
+			return nil, helper.decorateError(fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err))
 		}
-		return fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err)
+		return nil, fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err)
 	}
-	if _, err := guestexec.DecodeResponse(conn, backend.OutputStream{}); err != nil {
+	res, err := guestexec.DecodeResponse(conn, backend.OutputStream{})
+	if err != nil {
 		if helper != nil {
-			return helper.decorateError(fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err))
+			return nil, helper.decorateError(fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err))
 		}
-		return fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err)
+		return nil, fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err)
 	}
-	return nil
+	return darwinVZGuestBootPhaseTimings(res.GuestTimingMS), nil
 }
 
 func dialUnixSocketWithExit(ctx context.Context, socketPath string, exitedCh <-chan struct{}, exitedErrOrNil func() error) (net.Conn, error) {

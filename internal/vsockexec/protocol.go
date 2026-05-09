@@ -13,6 +13,14 @@ const (
 	DefaultPort uint32 = 10700
 )
 
+const (
+	GuestBootTimingInitVSOCKAgentExec      = "guest_init_vsock_agent_exec"
+	GuestBootTimingAgentStart              = "guest_agent_start"
+	GuestBootTimingAgentListenReady        = "guest_agent_listen_ready"
+	GuestBootTimingAgentFirstAccept        = "guest_agent_first_accept"
+	GuestBootTimingAgentFirstRequestDecode = "guest_agent_first_request_decode"
+)
+
 type ExecRequest struct {
 	Command                 []string                 `json:"command"`
 	Dir                     string                   `json:"dir,omitempty"`
@@ -82,6 +90,7 @@ type ExecResponse struct {
 	ExitCode       int                   `json:"exit_code"`
 	Error          string                `json:"error,omitempty"`
 	OverlayCapture *OverlayCaptureResult `json:"overlay_capture,omitempty"`
+	GuestTimingMS  map[string]int64      `json:"guest_timing_ms,omitempty"`
 }
 
 // ExecStreamFrame is sent from guest to host. Types: stdout|stderr|exit.
@@ -91,6 +100,7 @@ type ExecStreamFrame struct {
 	ExitCode       int                   `json:"exit_code,omitempty"`
 	Error          string                `json:"error,omitempty"`
 	OverlayCapture *OverlayCaptureResult `json:"overlay_capture,omitempty"`
+	GuestTimingMS  map[string]int64      `json:"guest_timing_ms,omitempty"`
 }
 
 func DecodeRequest(r io.Reader) (ExecRequest, error) {
@@ -193,6 +203,11 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 			}
 			if captureRaw, ok := raw["overlay_capture"]; ok {
 				if err := json.Unmarshal(captureRaw, &out.OverlayCapture); err != nil {
+					return ExecResponse{}, err
+				}
+			}
+			if timingRaw, ok := raw["guest_timing_ms"]; ok {
+				if err := json.Unmarshal(timingRaw, &out.GuestTimingMS); err != nil {
 					return ExecResponse{}, err
 				}
 			}

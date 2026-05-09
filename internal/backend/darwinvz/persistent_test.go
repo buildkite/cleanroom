@@ -544,13 +544,27 @@ func TestProbeGuestExecReadyWaitsForGuestResponse(t *testing.T) {
 			Type:     "exit",
 			ExitCode: 1,
 			Error:    "missing command",
+			GuestTimingMS: map[string]int64{
+				vsockexec.GuestBootTimingInitVSOCKAgentExec:      190,
+				vsockexec.GuestBootTimingAgentStart:              225,
+				vsockexec.GuestBootTimingAgentListenReady:        250,
+				vsockexec.GuestBootTimingAgentFirstAccept:        280,
+				vsockexec.GuestBootTimingAgentFirstRequestDecode: 285,
+			},
 		}); encodeErr != nil {
 			t.Errorf("encode probe exit frame: %v", encodeErr)
 		}
 	}()
 
-	if err := probeGuestExecReady(context.Background(), nil, socketPath); err != nil {
+	timingMS, err := probeGuestExecReadyWithExit(context.Background(), nil, socketPath, nil, nil)
+	if err != nil {
 		t.Fatalf("probeGuestExecReady returned error: %v", err)
+	}
+	if got, want := timingMS[darwinVZTimingGuestInitAgentExec], int64(190); got != want {
+		t.Fatalf("unexpected guest init agent exec timing: got %d want %d in %#v", got, want, timingMS)
+	}
+	if got, want := timingMS[darwinVZTimingGuestAgentRequestDecode], int64(5); got != want {
+		t.Fatalf("unexpected guest request decode timing: got %d want %d in %#v", got, want, timingMS)
 	}
 	<-done
 }
