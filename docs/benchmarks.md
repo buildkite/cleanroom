@@ -9,11 +9,12 @@ The goal is consistency, not perfect synthetic accuracy.
 
 ## Scope
 
-We currently track three benchmark categories:
+We currently track four benchmark categories:
 
 - TTI (time-to-interactive): sandbox create -> first successful command
 - repository bootstrap: repo-aware sandbox create under cold/warm host-cache scenarios
 - in-sandbox workloads: IOPS-like file throughput, git clone latency, CPU hashing throughput
+- darwin-vz lower-bound boot probes: minimal Virtualization.framework VM -> first guest exec response
 
 ## Methodology
 
@@ -95,6 +96,37 @@ Example:
 Output:
 
 - `benchmarks/results/<timestamp>-sandbox-workloads.json`
+
+### 4) Minimal darwin-vz benchmark
+
+Script: `scripts/benchmark-darwin-vz-minimal.sh`
+
+- Builds a standalone Virtualization.framework runner
+- Boots a supplied Linux kernel with either a minimal initrd or a supplied rootfs
+- Connects to the guest over vsock
+- Runs `/bin/true`
+- Reports VM start, vsock readiness, and first exec response timings as JSONL
+
+This is a lower-bound probe for darwin-vz experiments. It intentionally bypasses the Cleanroom control plane, image materialization, policy setup, cache lookup, and full guest runtime.
+
+Example:
+
+```bash
+scripts/benchmark-darwin-vz-minimal.sh \
+  --kernel dist/darwin-vz-minimal-initrd-arm64-kernel-6.1.155-Image \
+  --iterations 30
+```
+
+To build the minimal kernel first:
+
+```bash
+scripts/benchmark-darwin-vz-minimal.sh --build-kernel --iterations 30
+```
+
+Output:
+
+- `benchmarks/results/<timestamp>-darwin-vz-minimal.jsonl`
+- console logs under `benchmarks/results/<timestamp>-darwin-vz-minimal-console/`
 
 ## Host Baseline (Latest Run)
 
