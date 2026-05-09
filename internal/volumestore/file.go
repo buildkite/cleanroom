@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +37,11 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if err := copySparseFile(out, in, info.Size()); err != nil {
 		return err
 	}
 	if err := out.Chmod(0o644); err != nil {
