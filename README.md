@@ -18,6 +18,8 @@ Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on
 
 **Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`docker.required: true`). Docker Hub pulls are mirrored through the host gateway cache, and you can build and run containers inside the microVM.
 
+**Deterministic setup caches.** Declare dependency and service inputs and outputs in policy. Cleanroom runs setup commands during sandbox creation, captures the paths tools naturally write, and restores matching outputs on later sandboxes.
+
 **Coming soon:** broader guest-side package-manager rewrites with lockfile enforcement, broader non-Docker-Hub registry caching, hermetic offline build flows, and richer audit surfaces. See the [spec](docs/spec.md) for the full roadmap.
 
 ## Install
@@ -152,7 +154,7 @@ sandbox:
       inputs:
         files: [docker-compose.yml, db/schema.rb]
       outputs:
-        dirs: [/var/lib/cleanroom/services/database]
+        dirs: [/var/lib/docker]
   run:
     before: docker compose up -d postgres valkey
 ```
@@ -162,6 +164,14 @@ Use `sandbox.dependencies` blocks for deterministic repo-local bootstrap,
 `sandbox.run.before` for live startup that must happen before each execution.
 Set `sandbox.docker.required: true` when the sandbox needs the guest Docker
 daemon.
+
+Dependency and service outputs are guest paths. Use the path the tool normally
+writes: `node_modules` for npm, `vendor/bundle` for Bundler, `/var/lib/docker`
+for Docker daemon state, or another real data directory from your service.
+Relative outputs resolve against `repository.path`, so `node_modules` defaults
+to `/workspace/node_modules`. Existing output directories in the repository,
+such as `public/assets/.keep`, are copied into the output store on cache misses
+before the setup command runs.
 
 Dependency and service block commands support either a shell string or an argv
 sequence. Prefer the string form unless you specifically need exact argv
