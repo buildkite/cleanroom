@@ -426,6 +426,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	var restoredDependencyResp *cleanroomv1.CreateSandboxResponse
 	snapshotAdapter, snapshotCapable := adapter.(backend.SnapshottingAdapter)
 	cacheOutputSnapshotAdapter, _ := adapter.(backend.CacheOutputVolumeSnapshottingAdapter)
+	stageMaterialization := createSandboxStageMaterializationConfig{
+		BackendName:  backendName,
+		Compiled:     compiled,
+		Repository:   repository,
+		CommitBundle: commitBundle,
+		Changeset:    changeset,
+		Options:      opts,
+		Reporter:     reporter,
+	}
 	if repository != nil {
 		dependencyStagePlan, dependencyStageBootstrapEnabled = dependencyStagePlanForRepository(compiled, repository)
 		servicesStagePlan, servicesStageBootstrapEnabled = servicesStagePlanForRepository(compiled, repository)
@@ -508,40 +517,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					if found {
 						s.logServicesStageCacheHit(record)
 						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_SERVICES_STAGE_CACHE, "services stage cache hit")
-						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_SERVICES_STAGE_CACHE, "restoring services stage cache")
-						restoreReq := &cleanroomv1.CreateSandboxRequest{
-							Backend: backendName,
-							Options: req.GetOptions(),
-						}
-						var restoreResp *cleanroomv1.CreateSandboxResponse
-						restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_services_stage_cache", cachePhaseAttributes(
-							observability.CacheStageServices,
-							observability.CacheOperationRestore,
-							repository,
-							attribute.String(observability.AttrBackend, backendName),
-						), func(ctx context.Context) error {
-							var err error
-							restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, nil, reporter)
-							setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
-							return err
-						})
-						if restoreErr == nil {
+						restoreResult := s.restoreServicesStageCacheForCreateSandbox(ctx, stageMaterialization, record)
+						if restoreResult.Response != nil {
 							metricSourceKind = "services stage cache"
-							if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-								if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
-									s.logServicesStageWarning("touch services stage cache", "", err)
-								}
-							}
-							s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
-							s.logServicesStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
-							return restoreResp, nil
+							return restoreResult.Response, nil
 						}
-						if errors.Is(restoreErr, errSandboxCreateAborted) {
-							return nil, restoreErr
+						if restoreResult.Err != nil {
+							return nil, restoreResult.Err
 						}
-						recordCopy := record
-						replacedServicesStageRecord = &recordCopy
-						s.logServicesStageRestoreWarning(record, restoreErr)
+						replacedServicesStageRecord = restoreResult.ReplacedRecord
 					} else {
 						s.logServicesStageCacheMiss(backendName, servicesStagePlan.CacheKey)
 						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_SERVICES_STAGE_CACHE, "services stage cache miss")
@@ -660,82 +644,32 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								if servicesFound {
 									s.logServicesStageCacheHit(servicesRecord)
 									emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_SERVICES_STAGE_CACHE, "services stage cache hit")
-									emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_SERVICES_STAGE_CACHE, "restoring services stage cache")
-									restoreReq := &cleanroomv1.CreateSandboxRequest{
-										Backend: backendName,
-										Options: req.GetOptions(),
-									}
-									var restoreResp *cleanroomv1.CreateSandboxResponse
-									restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_services_stage_cache", cachePhaseAttributes(
-										observability.CacheStageServices,
-										observability.CacheOperationRestore,
-										repository,
-										attribute.String(observability.AttrBackend, backendName),
-									), func(ctx context.Context) error {
-										var err error
-										restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, servicesRecord, nil, reporter)
-										setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
-										return err
-									})
-									if restoreErr == nil {
+									restoreResult := s.restoreServicesStageCacheForCreateSandbox(ctx, stageMaterialization, servicesRecord)
+									if restoreResult.Response != nil {
 										metricSourceKind = "services stage cache"
-										if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-											if err := cacheStore.Touch(ctx, servicesRecord.Stage, servicesRecord.CacheKey); err != nil {
-												s.logServicesStageWarning("touch services stage cache", "", err)
-											}
-										}
-										s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
-										s.logServicesStageRestore(servicesRecord, restoreResp.GetSandbox().GetSandboxId())
-										return restoreResp, nil
+										return restoreResult.Response, nil
 									}
-									if errors.Is(restoreErr, errSandboxCreateAborted) {
-										return nil, restoreErr
+									if restoreResult.Err != nil {
+										return nil, restoreResult.Err
 									}
-									recordCopy := servicesRecord
-									replacedServicesStageRecord = &recordCopy
-									s.logServicesStageRestoreWarning(servicesRecord, restoreErr)
+									replacedServicesStageRecord = restoreResult.ReplacedRecord
 								}
 							}
 						}
 
 						s.logDependencyStageCacheHit(record)
 						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "dependency stage cache hit")
-						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE, "restoring dependency stage cache")
-						restoreReq := &cleanroomv1.CreateSandboxRequest{
-							Backend: backendName,
-							Options: req.GetOptions(),
-						}
-						var restoreResp *cleanroomv1.CreateSandboxResponse
-						restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_dependency_stage_cache", cachePhaseAttributes(
-							observability.CacheStageDependency,
-							observability.CacheOperationRestore,
-							repository,
-							attribute.String(observability.AttrBackend, backendName),
-						), func(ctx context.Context) error {
-							var err error
-							restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, serviceCacheOutputVolumes, reporter)
-							setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
-							return err
-						})
-						if restoreErr == nil {
+						restoreResult := s.restoreDependencyStageCacheForCreateSandbox(ctx, stageMaterialization, record, serviceCacheOutputVolumes)
+						if restoreResult.Response != nil {
 							metricSourceKind = "dependency stage cache"
-							if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-								if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
-									s.logDependencyStageWarning("touch dependency stage cache", "", err)
-								}
-							}
-							s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
-							s.logDependencyStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 							if !servicesStageBootstrapEnabled {
-								return restoreResp, nil
+								return restoreResult.Response, nil
 							}
-							restoredDependencyResp = restoreResp
-						} else if errors.Is(restoreErr, errSandboxCreateAborted) {
-							return nil, restoreErr
+							restoredDependencyResp = restoreResult.Response
+						} else if restoreResult.Err != nil {
+							return nil, restoreResult.Err
 						} else {
-							recordCopy := record
-							replacedDependencyStageRecord = &recordCopy
-							s.logDependencyStageRestoreWarning(record, restoreErr)
+							replacedDependencyStageRecord = restoreResult.ReplacedRecord
 						}
 					} else {
 						s.logDependencyStageCacheMiss(backendName, dependencyStagePlan.CacheKey)
@@ -821,42 +755,17 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				} else if found {
 					s.logWorkspaceStageCacheHit(record)
 					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "workspace stage cache hit")
-					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
-					restoreReq := &cleanroomv1.CreateSandboxRequest{
-						Backend: backendName,
-						Options: req.GetOptions(),
-					}
-					var restoreResp *cleanroomv1.CreateSandboxResponse
-					restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_workspace_stage_cache", cachePhaseAttributes(
-						observability.CacheStageWorkspace,
-						observability.CacheOperationRestore,
-						repository,
-						attribute.String(observability.AttrBackend, backendName),
-					), func(ctx context.Context) error {
-						var err error
-						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes), reporter)
-						setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
-						return err
-					})
-					if restoreErr == nil {
+					restoreResult := s.restoreWorkspaceStageCacheForCreateSandbox(ctx, stageMaterialization, record, appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes))
+					if restoreResult.Response != nil {
 						metricSourceKind = "workspace stage cache"
-						if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-							if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
-								s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
-							}
-						}
-						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
-						s.logWorkspaceStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						if !dependencyStageBootstrapEnabled && !servicesStageBootstrapEnabled {
-							return restoreResp, nil
+							return restoreResult.Response, nil
 						}
-						restoredWorkspaceResp = restoreResp
-					} else if errors.Is(restoreErr, errSandboxCreateAborted) {
-						return nil, restoreErr
+						restoredWorkspaceResp = restoreResult.Response
+					} else if restoreResult.Err != nil {
+						return nil, restoreResult.Err
 					} else {
-						recordCopy := record
-						replacedWorkspaceStageRecord = &recordCopy
-						s.logWorkspaceStageRestoreWarning(record, restoreErr)
+						replacedWorkspaceStageRecord = restoreResult.ReplacedRecord
 					}
 				} else {
 					s.logWorkspaceStageCacheMiss(backendName, workspaceStageKey)
