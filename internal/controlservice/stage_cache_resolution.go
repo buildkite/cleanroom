@@ -39,12 +39,35 @@ type servicesStageResolveResult struct {
 	replaced *cachestore.Record
 }
 
+type stageCacheResolveRequest struct {
+	stageCacheResolveContext
+	adapter                      backend.Adapter
+	workspaceStageRuntimeBaseKey string
+	workspaceStageCacheKey       string
+	dependencyStagePlan          dependencyStagePlan
+	dependencyStageCaching       bool
+	dependencyStageBootstrap     bool
+	dependencyCacheOutputVolumes []backend.CacheOutputVolumeSpec
+	servicesStagePlan            servicesStagePlan
+	servicesStageCaching         bool
+	servicesStageBootstrap       bool
+	servicesCacheOutputVolumes   []backend.CacheOutputVolumeSpec
+}
+
+type stageCacheResolveResult struct {
+	completed          *cleanroomv1.CreateSandboxResponse
+	restoredWorkspace  *cleanroomv1.CreateSandboxResponse
+	restoredDependency *cleanroomv1.CreateSandboxResponse
+	sourceKind         string
+	replacedWorkspace  *cachestore.Record
+	replacedDependency *cachestore.Record
+	replacedServices   *cachestore.Record
+}
+
 type dependencyStageResolveRequest struct {
 	stageCacheResolveContext
 	plan                dependencyStagePlan
 	adapter             backend.Adapter
-	servicesPlan        servicesStagePlan
-	servicesCaching     bool
 	servicesBootstrap   bool
 	serviceCacheOutputs []backend.CacheOutputVolumeSpec
 }
@@ -54,7 +77,6 @@ type dependencyStageResolveResult struct {
 	restored           *cleanroomv1.CreateSandboxResponse
 	sourceKind         string
 	replacedDependency *cachestore.Record
-	replacedServices   *cachestore.Record
 }
 
 type workspaceStageResolveRequest struct {
@@ -71,6 +93,123 @@ type workspaceStageResolveResult struct {
 	restored   *cleanroomv1.CreateSandboxResponse
 	sourceKind string
 	replaced   *cachestore.Record
+}
+
+type dependencyStageLookupResult struct {
+	record cachestore.Record
+	found  bool
+}
+
+func (s *Service) resolveStageCaches(ctx context.Context, req stageCacheResolveRequest) (stageCacheResolveResult, error) {
+	result := stageCacheResolveResult{}
+
+	if req.servicesStageCaching {
+		servicesHit, err := s.resolveServicesStageCache(ctx, servicesStageResolveRequest{
+			stageCacheResolveContext: req.stageCacheResolveContext,
+			plan:                     req.servicesStagePlan,
+		})
+		if err != nil {
+			return stageCacheResolveResult{}, err
+		}
+		if servicesHit.restored != nil {
+			result.completed = servicesHit.restored
+			result.sourceKind = "services stage cache"
+			return result, nil
+		}
+		result.replacedServices = servicesHit.replaced
+	}
+
+	if req.dependencyStageCaching {
+		dependencyReq := dependencyStageResolveRequest{
+			stageCacheResolveContext: req.stageCacheResolveContext,
+			plan:                     req.dependencyStagePlan,
+			adapter:                  req.adapter,
+			servicesBootstrap:        req.servicesStageBootstrap,
+			serviceCacheOutputs:      req.servicesCacheOutputVolumes,
+		}
+		dependencyLookup, err := s.lookupDependencyStageCacheForResolution(ctx, dependencyReq)
+		if err != nil {
+			return stageCacheResolveResult{}, err
+		}
+
+		if dependencyLookup.found {
+			if req.servicesStageCaching {
+				servicesHit, err := s.resolveServicesStageCacheAfterDependency(ctx, servicesStageResolveRequest{
+					stageCacheResolveContext: req.stageCacheResolveContext,
+					plan:                     req.servicesStagePlan,
+				})
+				if err != nil {
+					return stageCacheResolveResult{}, err
+				}
+				if servicesHit.restored != nil {
+					result.completed = servicesHit.restored
+					result.sourceKind = "services stage cache"
+					return result, nil
+				}
+				if servicesHit.replaced != nil {
+					result.replacedServices = servicesHit.replaced
+				}
+			}
+
+			dependencyHit, err := s.restoreDependencyStageCache(ctx, dependencyReq, dependencyLookup.record)
+			if err != nil {
+				return stageCacheResolveResult{}, err
+			}
+			if dependencyHit.replacedDependency != nil {
+				result.replacedDependency = dependencyHit.replacedDependency
+			}
+			if dependencyHit.completed != nil {
+				result.completed = dependencyHit.completed
+				result.sourceKind = dependencyHit.sourceKind
+				return result, nil
+			}
+			if dependencyHit.restored != nil {
+				result.restoredDependency = dependencyHit.restored
+				result.sourceKind = dependencyHit.sourceKind
+				return result, nil
+			}
+		}
+
+		portableHit, err := s.resolvePortableDependencyStageCache(ctx, dependencyReq)
+		if err != nil {
+			return stageCacheResolveResult{}, err
+		}
+		if portableHit.completed != nil {
+			result.completed = portableHit.completed
+			result.sourceKind = portableHit.sourceKind
+			return result, nil
+		}
+		if portableHit.restored != nil {
+			result.restoredDependency = portableHit.restored
+			result.sourceKind = portableHit.sourceKind
+			return result, nil
+		}
+	}
+
+	workspaceHit, err := s.resolveWorkspaceStageCache(ctx, workspaceStageResolveRequest{
+		stageCacheResolveContext: req.stageCacheResolveContext,
+		runtimeBaseKey:           req.workspaceStageRuntimeBaseKey,
+		cacheKey:                 req.workspaceStageCacheKey,
+		dependencyBootstrap:      req.dependencyStageBootstrap,
+		servicesBootstrap:        req.servicesStageBootstrap,
+		cacheOutputs:             appendCacheOutputVolumeSpecs(req.dependencyCacheOutputVolumes, req.servicesCacheOutputVolumes),
+	})
+	if err != nil {
+		return stageCacheResolveResult{}, err
+	}
+	if workspaceHit.replaced != nil {
+		result.replacedWorkspace = workspaceHit.replaced
+	}
+	if workspaceHit.completed != nil {
+		result.completed = workspaceHit.completed
+		result.sourceKind = workspaceHit.sourceKind
+		return result, nil
+	}
+	if workspaceHit.restored != nil {
+		result.restoredWorkspace = workspaceHit.restored
+		result.sourceKind = workspaceHit.sourceKind
+	}
+	return result, nil
 }
 
 func (s *Service) resolveServicesStageCache(ctx context.Context, req servicesStageResolveRequest) (servicesStageResolveResult, error) {
@@ -168,7 +307,7 @@ func (s *Service) resolveServicesStageCacheAfterDependency(ctx context.Context, 
 	return s.resolveServicesStageCache(ctx, req)
 }
 
-func (s *Service) resolveDependencyStageCache(ctx context.Context, req dependencyStageResolveRequest) (dependencyStageResolveResult, error) {
+func (s *Service) lookupDependencyStageCacheForResolution(ctx context.Context, req dependencyStageResolveRequest) (dependencyStageLookupResult, error) {
 	emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "checking dependency stage cache")
 	var record cachestore.Record
 	var found bool
@@ -186,7 +325,7 @@ func (s *Service) resolveDependencyStageCache(ctx context.Context, req dependenc
 	})
 	if err != nil {
 		s.logDependencyStageWarning("lookup dependency stage cache", "", err)
-		return s.resolvePortableDependencyStageCache(ctx, req)
+		return dependencyStageLookupResult{}, nil
 	}
 
 	if !found {
@@ -213,80 +352,57 @@ func (s *Service) resolveDependencyStageCache(ctx context.Context, req dependenc
 		}
 	}
 
-	result := dependencyStageResolveResult{}
 	if !found {
 		s.logDependencyStageCacheMiss(req.backendName, req.plan.CacheKey)
 		emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "dependency stage cache miss")
-	} else {
-		if req.servicesCaching {
-			servicesHit, err := s.resolveServicesStageCacheAfterDependency(ctx, servicesStageResolveRequest{
-				stageCacheResolveContext: req.stageCacheResolveContext,
-				plan:                     req.servicesPlan,
-			})
-			if err != nil {
-				return dependencyStageResolveResult{}, err
-			}
-			if servicesHit.restored != nil {
-				result.completed = servicesHit.restored
-				result.sourceKind = "services stage cache"
-				return result, nil
-			}
-			result.replacedServices = servicesHit.replaced
-		}
-
-		s.logDependencyStageCacheHit(record)
-		emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "dependency stage cache hit")
-		emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE, "restoring dependency stage cache")
-		restoreReq := &cleanroomv1.CreateSandboxRequest{
-			Backend: req.backendName,
-			Options: req.options,
-		}
-		var restoreResp *cleanroomv1.CreateSandboxResponse
-		restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_dependency_stage_cache", cachePhaseAttributes(
-			observability.CacheStageDependency,
-			observability.CacheOperationRestore,
-			req.repository,
-			attribute.String(observability.AttrBackend, req.backendName),
-		), func(ctx context.Context) error {
-			var err error
-			restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, req.compiled, record, req.serviceCacheOutputs, req.reporter)
-			setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
-			return err
-		})
-		if restoreErr == nil {
-			if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-				if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
-					s.logDependencyStageWarning("touch dependency stage cache", "", err)
-				}
-			}
-			s.retainRestoredSandboxRepositoryState(restoreResp, req.repository, req.commitBundle, req.changeset)
-			s.logDependencyStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
-			result.sourceKind = "dependency stage cache"
-			if !req.servicesBootstrap {
-				result.completed = restoreResp
-				return result, nil
-			}
-			result.restored = restoreResp
-		} else {
-			if errors.Is(restoreErr, errSandboxCreateAborted) {
-				return dependencyStageResolveResult{}, restoreErr
-			}
-			recordCopy := record
-			s.logDependencyStageRestoreWarning(record, restoreErr)
-			result.replacedDependency = &recordCopy
-		}
+		return dependencyStageLookupResult{}, nil
 	}
 
-	portableHit, err := s.resolvePortableDependencyStageCache(ctx, req)
-	if err != nil {
-		return dependencyStageResolveResult{}, err
+	return dependencyStageLookupResult{record: record, found: true}, nil
+}
+
+func (s *Service) restoreDependencyStageCache(ctx context.Context, req dependencyStageResolveRequest, record cachestore.Record) (dependencyStageResolveResult, error) {
+	s.logDependencyStageCacheHit(record)
+	emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "dependency stage cache hit")
+	emitCreateSandboxMessage(req.reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE, "restoring dependency stage cache")
+	restoreReq := &cleanroomv1.CreateSandboxRequest{
+		Backend: req.backendName,
+		Options: req.options,
 	}
-	if portableHit.completed != nil || portableHit.restored != nil {
-		portableHit.replacedDependency = result.replacedDependency
-		portableHit.replacedServices = result.replacedServices
-		return portableHit, nil
+	var restoreResp *cleanroomv1.CreateSandboxResponse
+	restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_dependency_stage_cache", cachePhaseAttributes(
+		observability.CacheStageDependency,
+		observability.CacheOperationRestore,
+		req.repository,
+		attribute.String(observability.AttrBackend, req.backendName),
+	), func(ctx context.Context) error {
+		var err error
+		restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, req.compiled, record, req.serviceCacheOutputs, req.reporter)
+		setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
+		return err
+	})
+	if restoreErr == nil {
+		if cacheStore, err := s.cacheStoreOrErr(); err == nil {
+			if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
+				s.logDependencyStageWarning("touch dependency stage cache", "", err)
+			}
+		}
+		s.retainRestoredSandboxRepositoryState(restoreResp, req.repository, req.commitBundle, req.changeset)
+		s.logDependencyStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
+		result := dependencyStageResolveResult{sourceKind: "dependency stage cache"}
+		if !req.servicesBootstrap {
+			result.completed = restoreResp
+			return result, nil
+		}
+		result.restored = restoreResp
+		return result, nil
 	}
-	return result, nil
+	if errors.Is(restoreErr, errSandboxCreateAborted) {
+		return dependencyStageResolveResult{}, restoreErr
+	}
+	recordCopy := record
+	s.logDependencyStageRestoreWarning(record, restoreErr)
+	return dependencyStageResolveResult{replacedDependency: &recordCopy}, nil
 }
 
 func (s *Service) resolvePortableDependencyStageCache(ctx context.Context, req dependencyStageResolveRequest) (dependencyStageResolveResult, error) {
