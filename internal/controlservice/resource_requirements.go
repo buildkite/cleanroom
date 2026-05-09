@@ -7,7 +7,24 @@ import (
 
 const mibBytes int64 = 1 << 20
 
-func withPolicyResourceRequirements(cfg backend.FirecrackerConfig, resources *policy.Resources) backend.FirecrackerConfig {
+func withBackendLaunchResourceDefaults(cfg backend.FirecrackerConfig) backend.FirecrackerConfig {
+	if cfg.VCPUs <= 0 {
+		cfg.VCPUs = backend.DefaultVCPUs
+	}
+	if cfg.MemoryMiB <= 0 {
+		cfg.MemoryMiB = backend.DefaultMemoryMiB
+	}
+	return cfg
+}
+
+// withPolicyResourceMinimums translates sandbox.resources floors into the
+// backend launch envelope.
+//
+// Policy resources are minimum workload requirements, not exact allocations.
+// The selected runtime config may already provide larger effective ceilings; in
+// that case the larger runtime values are preserved. Backends may expose those
+// ceilings as fixed launch config or another backend-specific mechanism.
+func withPolicyResourceMinimums(cfg backend.FirecrackerConfig, resources *policy.Resources) backend.FirecrackerConfig {
 	if resources == nil {
 		return cfg
 	}

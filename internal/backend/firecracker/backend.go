@@ -1065,10 +1065,10 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	defer writeObservation()
 
 	if req.VCPUs <= 0 {
-		req.VCPUs = 1
+		req.VCPUs = backend.DefaultVCPUs
 	}
 	if req.MemoryMiB <= 0 {
-		req.MemoryMiB = 512
+		req.MemoryMiB = backend.DefaultMemoryMiB
 	}
 	if req.GuestCID == 0 {
 		req.GuestCID = randomGuestCID()
@@ -1719,10 +1719,10 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		return nil, fmt.Errorf("firecracker backend is linux-only, current OS is %s", runtime.GOOS)
 	}
 	if cfg.VCPUs <= 0 {
-		cfg.VCPUs = 1
+		cfg.VCPUs = backend.DefaultVCPUs
 	}
 	if cfg.MemoryMiB <= 0 {
-		cfg.MemoryMiB = 512
+		cfg.MemoryMiB = backend.DefaultMemoryMiB
 	}
 	if cfg.GuestCID == 0 {
 		cfg.GuestCID = randomGuestCID()

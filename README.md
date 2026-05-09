@@ -320,10 +320,13 @@ sandbox:
 ```
 
 `sandbox.resources` is optional and declares backend-neutral minimum workload
-requirements. `vcpus` is a positive integer, while `memory` and `disk` accept
-raw bytes or human-friendly sizes such as `4096MiB`, `8GiB`, or `16GiB`.
-Cleanroom raises the selected backend runtime config to meet these minimums,
-but does not lower larger host defaults.
+requirements. These are resource floors, not exact host reservations. `vcpus`
+is a positive integer, while `memory` and `disk` accept raw bytes or
+human-friendly sizes such as `4096MiB`, `8GiB`, or `16GiB`. Cleanroom raises the
+selected backend runtime config to meet these minimums, but does not lower
+larger host defaults. Backends expose the resulting effective ceilings in their
+own backend-specific way. CPU remains a launch-time ceiling; Cleanroom reports
+the effective vCPU count but does not hotplug CPUs into a running sandbox.
 
 Enable Docker as a guest service:
 

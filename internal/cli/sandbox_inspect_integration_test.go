@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func runSandboxInspectWithCapture(cmd SandboxInspectCommand, ctx runtimeContext) execOutcome {
@@ -57,6 +58,53 @@ func TestSandboxInspectIntegrationShowsExecutionPointers(t *testing.T) {
 	if !strings.Contains(outcome.stdout, "inspect_last_execution: cleanroom execution inspect "+executionID) {
 		t.Fatalf("expected inspect hint in output, got %q", outcome.stdout)
 	}
+}
+
+func TestSandboxInspectIntegrationShowsEffectiveResources(t *testing.T) {
+	host, _ := startIntegrationServerWithConfig(t, &integrationAdapter{}, runtimeconfig.Config{
+		DefaultBackend: "firecracker",
+		Backends: runtimeconfig.Backends{
+			Firecracker: runtimeconfig.FirecrackerConfig{
+				VCPUs:     2,
+				MemoryMiB: 1024,
+			},
+		},
+	})
+	cwd := t.TempDir()
+
+	client := mustNewControlClient(t, host)
+	compiled, _, err := integrationLoader{}.LoadAndCompile(cwd)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	policyProto := compiled.ToProto()
+	policyProto.Resources = &cleanroomv1.PolicyResources{
+		Vcpus:       4,
+		MemoryBytes: (3 << 30) + 1,
+		DiskBytes:   16 << 30,
+	}
+	createResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: policyProto})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	outcome := runSandboxInspectWithCapture(SandboxInspectCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+	}, runtimeContext{CWD: cwd})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("SandboxInspectCommand.Run returned error: %v", outcome.err)
+	}
+	assertContainsAll(t, outcome.stdout,
+		"effective_resources:",
+		"  vcpus: 4",
+		"  memory: 3073 MiB",
+		"  disk: 16.0 GiB",
+	)
 }
 
 func TestSandboxInspectIntegrationJSON(t *testing.T) {

@@ -6577,7 +6577,7 @@ func TestCreateSandboxAppliesPolicyResourceMinimums(t *testing.T) {
 		DiskBytes:   16 << 30,
 	}
 
-	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Policy: policyProto,
 	})
 	if err != nil {
@@ -6593,6 +6593,20 @@ func TestCreateSandboxAppliesPolicyResourceMinimums(t *testing.T) {
 	}
 	if got, want := gotCfg.MinimumRootFSBytes, int64(16<<30); got != want {
 		t.Fatalf("unexpected minimum_rootfs_bytes: got %d want %d", got, want)
+	}
+
+	resources := resp.GetSandbox().GetEffectiveResources()
+	if resources == nil {
+		t.Fatal("expected sandbox effective resources")
+	}
+	if got, want := resources.GetVcpus(), int64(4); got != want {
+		t.Fatalf("unexpected effective vcpus: got %d want %d", got, want)
+	}
+	if got, want := resources.GetMemoryBytes(), int64(3073<<20); got != want {
+		t.Fatalf("unexpected effective memory_bytes: got %d want %d", got, want)
+	}
+	if got, want := resources.GetDiskBytes(), int64(16<<30); got != want {
+		t.Fatalf("unexpected effective disk_bytes: got %d want %d", got, want)
 	}
 }
 

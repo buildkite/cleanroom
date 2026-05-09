@@ -204,6 +204,9 @@ type StageBlockOutputs struct {
 	Files []string `json:"files,omitempty"`
 }
 
+// Resources declares backend-neutral workload floors. The control plane raises
+// backend launch settings to satisfy these values but preserves larger runtime
+// defaults and leaves the exact allocation strategy to each backend.
 type Resources struct {
 	VCPUs       int64 `json:"vcpus,omitempty"`
 	MemoryBytes int64 `json:"memory_bytes,omitempty"`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -176,6 +177,9 @@ func (c *SandboxInspectCommand) Run(ctx *runtimeContext) error {
 			return err
 		}
 	}
+	if err := writeSandboxEffectiveResources(ctx.Stdout, sandbox.GetEffectiveResources()); err != nil {
+		return err
+	}
 	if sourceKind := strings.TrimSpace(sandbox.GetSourceKind()); sourceKind != "" {
 		if _, err := fmt.Fprintf(ctx.Stdout, "source_kind: %s\n", sourceKind); err != nil {
 			return err
@@ -218,6 +222,42 @@ func (c *SandboxInspectCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 	return nil
+}
+
+func writeSandboxEffectiveResources(w io.Writer, resources *cleanroomv1.SandboxResources) error {
+	if resources == nil {
+		return nil
+	}
+	if resources.GetVcpus() == 0 && resources.GetMemoryBytes() == 0 && resources.GetDiskBytes() == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(w, "effective_resources:"); err != nil {
+		return err
+	}
+	if vcpus := resources.GetVcpus(); vcpus > 0 {
+		if _, err := fmt.Fprintf(w, "  vcpus: %d\n", vcpus); err != nil {
+			return err
+		}
+	}
+	if memoryBytes := resources.GetMemoryBytes(); memoryBytes > 0 {
+		if _, err := fmt.Fprintf(w, "  memory: %s\n", formatMemoryBytes(memoryBytes)); err != nil {
+			return err
+		}
+	}
+	if diskBytes := resources.GetDiskBytes(); diskBytes > 0 {
+		if _, err := fmt.Fprintf(w, "  disk: %s\n", formatStorageBytes(diskBytes)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatMemoryBytes(bytes int64) string {
+	const bytesPerMiB int64 = 1024 * 1024
+	if bytes > 0 && bytes%bytesPerMiB == 0 {
+		return fmt.Sprintf("%d MiB", bytes/bytesPerMiB)
+	}
+	return formatStorageBytes(bytes)
 }
 
 func filterSandboxList(sandboxes []*cleanroomv1.Sandbox, includeStopped bool) []*cleanroomv1.Sandbox {

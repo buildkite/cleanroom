@@ -1074,10 +1074,10 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}()
 
 	if req.VCPUs <= 0 {
-		req.VCPUs = 1
+		req.VCPUs = backend.DefaultVCPUs
 	}
 	if req.MemoryMiB <= 0 {
-		req.MemoryMiB = 512
+		req.MemoryMiB = backend.DefaultMemoryMiB
 	}
 	if req.GuestPort == 0 {
 		req.GuestPort = vsockexec.DefaultPort
@@ -1414,10 +1414,10 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingLaunchPolicyValidate, policyValidateStart)
 
 	if cfg.VCPUs <= 0 {
-		cfg.VCPUs = 1
+		cfg.VCPUs = backend.DefaultVCPUs
 	}
 	if cfg.MemoryMiB <= 0 {
-		cfg.MemoryMiB = 512
+		cfg.MemoryMiB = backend.DefaultMemoryMiB
 	}
 	if cfg.GuestPort == 0 {
 		cfg.GuestPort = vsockexec.DefaultPort

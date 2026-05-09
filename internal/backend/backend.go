@@ -396,10 +396,18 @@ type OverlayCaptureEntry struct {
 	Mode fs.FileMode
 }
 
+const (
+	DefaultVCPUs     int64 = 1
+	DefaultMemoryMiB int64 = 512
+)
+
 type FirecrackerConfig struct {
-	BinaryPath                                string
-	KernelImagePath                           string
-	RootFSPath                                string
+	BinaryPath      string
+	KernelImagePath string
+	RootFSPath      string
+	// MinimumRootFSBytes is a writable rootfs capacity floor. Backends may
+	// provide this as logical capacity or a larger backend default; it is not an
+	// exact host-disk allocation promise.
 	MinimumRootFSBytes                        int64
 	DarwinVZNetworkMode                       string
 	DarwinVZNetworkSubnet                     string
@@ -415,12 +423,15 @@ type FirecrackerConfig struct {
 	PrivilegedMode                            string
 	PrivilegedHelperPath                      string
 	RunDir                                    string
-	VCPUs                                     int64
-	MemoryMiB                                 int64
-	GuestCID                                  uint32
-	GuestPort                                 uint32
-	Launch                                    bool
-	LaunchSeconds                             int64
+	// VCPUs and MemoryMiB are effective VM launch ceilings after runtime config,
+	// policy floors, and backend defaults are merged. They are not exact workload
+	// reservations.
+	VCPUs         int64
+	MemoryMiB     int64
+	GuestCID      uint32
+	GuestPort     uint32
+	Launch        bool
+	LaunchSeconds int64
 }
 
 type SnapshotConfig struct {

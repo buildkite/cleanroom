@@ -170,10 +170,13 @@ explicit request-time changeset input.
 - `repository.remote` defaults to `origin`.
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
-- `sandbox.resources` defaults to unset. When present, it declares backend-neutral minimum workload requirements.
+- `sandbox.resources` defaults to unset. When present, it declares backend-neutral minimum workload requirements, not exact host reservations.
 - `sandbox.resources.vcpus` must be a positive integer.
 - `sandbox.resources.memory` and `sandbox.resources.disk` must be positive byte sizes. They accept raw bytes or size strings such as `4096MiB`, `8GiB`, or `16GiB`.
-- Resource requirements raise the effective backend runtime settings when the host runtime config is lower; they do not lower larger host defaults.
+- Resource floors raise the effective backend runtime settings when the host runtime config is lower; they do not lower larger host defaults.
+- Backends decide how effective resource ceilings map to host resources.
+- Sandbox API responses include `effective_resources`, which reports the resolved vCPU, memory, and disk ceilings after backend config, defaults, and policy resource floors are merged.
+- `effective_resources.vcpus` is a launch-time CPU ceiling; Cleanroom does not hotplug CPUs into an already running sandbox.
 - `sandbox.docker.required` defaults to `false`; when true, Cleanroom starts the guest Docker daemon for the sandbox.
 - `sandbox.dependencies` defaults to an empty block list; each block has `name`, `command`, `inputs.files`, and `outputs.dirs` or `outputs.files`. It may be a block list directly, or an object with `reuse` and `blocks` when dependency-stage options are needed.
 - `sandbox.dependencies.reuse` may be `portable` when `sandbox.dependencies.blocks` declares at least one input file; omitted or `exact` means exact checkout reuse only.
@@ -407,7 +410,7 @@ Minimum required fields:
 - `run`
   - optional pre-run command
 - `resources`
-  - optional `vcpus`, `memory_bytes`, and `disk_bytes`
+  - optional minimum `vcpus`, `memory_bytes`, and `disk_bytes` resource floors
 - `hash` (digest of the compiled policy payload)
 
 Requirements:

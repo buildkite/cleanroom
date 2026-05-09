@@ -143,7 +143,25 @@ func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
 		BackingSnapshotId:   state.BackingSnapshotID,
 		RepositoryCheckout:  cloneRepositoryCheckout(state.Repository).ToProto(),
 		BackendCapabilities: backend.CloneCapabilities(state.Capabilities),
+		EffectiveResources:  effectiveSandboxResources(state.Firecracker),
 	}
+}
+
+func effectiveSandboxResources(cfg backend.FirecrackerConfig) *cleanroomv1.SandboxResources {
+	resources := &cleanroomv1.SandboxResources{}
+	if cfg.VCPUs > 0 {
+		resources.Vcpus = cfg.VCPUs
+	}
+	if cfg.MemoryMiB > 0 {
+		resources.MemoryBytes = cfg.MemoryMiB * mibBytes
+	}
+	if cfg.MinimumRootFSBytes > 0 {
+		resources.DiskBytes = cfg.MinimumRootFSBytes
+	}
+	if resources.GetVcpus() == 0 && resources.GetMemoryBytes() == 0 && resources.GetDiskBytes() == 0 {
+		return nil
+	}
+	return resources
 }
 
 func cloneExecutionLocked(state *executionState) *cleanroomv1.Execution {
