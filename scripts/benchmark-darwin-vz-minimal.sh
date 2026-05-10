@@ -198,20 +198,20 @@ else
   mode_args=(--initrd "${initrd_path}")
 fi
 
-boot_arg_flags=()
-if [[ -n "${boot_args}" ]]; then
-  boot_arg_flags=(--boot-args "${boot_args}")
-fi
-
 for i in $(seq 1 "${iterations}"); do
   console_log="${console_dir}/run-${i}.log"
-  "${runner_path}" \
-    --kernel "${kernel_path}" \
-    "${mode_args[@]}" \
-    --vcpus "${vcpus}" \
-    --memory-mib "${memory_mib}" \
-    --console-log "${console_log}" \
-    "${boot_arg_flags[@]}" | tee -a "${output_path}"
+  runner_args=(
+    --kernel "${kernel_path}"
+    "${mode_args[@]}"
+    --vcpus "${vcpus}"
+    --memory-mib "${memory_mib}"
+    --console-log "${console_log}"
+  )
+  if [[ -n "${boot_args}" ]]; then
+    runner_args+=(--boot-args "${boot_args}")
+  fi
+
+  "${runner_path}" "${runner_args[@]}" | tee -a "${output_path}"
 done
 
 printf 'wrote %s\n' "${output_path}"
