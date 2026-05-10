@@ -1,15 +1,20 @@
 # Cleanroom Specification
 
+This is a historical internal specification. For user-facing behavior, start
+with [Policy](policy.md), [Workspaces](workspaces.md),
+[Networking](networking.md), and [Backends](backends.md).
+
 ## 1) Vision
-Cleanroom provides repository-scoped sandbox profiles that define exactly what outbound network access and package registries a build/test run may use. A sandbox can be instantiated from these rules, enforcing deny-by-default egress while still allowing required external dependencies. Package registry traffic is routed through and filtered by a content cache layer (`https://github.com/wolfeidau/content-cache`) to improve hermeticity, repeatability, and policy enforcement.
+Cleanroom provides repository-scoped sandbox profiles that define exactly what outbound network access and package registries a build/test run may use. A sandbox can be instantiated from these rules, enforcing deny-by-default egress while still allowing required external dependencies. Package registry traffic is routed through and filtered by a content cache layer (`https://github.com/buildkite/content-cache`) to improve hermeticity, repeatability, and policy enforcement.
 
 Trust boundary for v1:
 - The cleanroom creator (developer, CI, or trusted outer-ring agent) is trusted.
 - Workload code executed inside the sandbox is untrusted.
 - Security guarantees apply to enforcement inside the cleanroom boundary, not to review/approval workflows for policy changes.
 
-Initial execution backend:
-- **Local sandbox:** Firecracker microVM on Linux/KVM
+Initial local execution backends:
+- **Linux:** Firecracker microVM on KVM
+- **macOS:** Apple Virtualization.framework through `darwin-vz`
 
 ## 2) Objectives
 1. Repository-owned configuration defines all allowed network egress and registries.
@@ -22,7 +27,7 @@ Initial execution backend:
 ## 3) Scope
 ### In scope
 - Policy schema, validation, and policy-driven sandbox creation.
-- Sandbox backend with a common adapter interface (Firecracker on Linux/KVM for v1).
+- Sandbox backend with a common adapter interface (Firecracker on Linux/KVM and `darwin-vz` on macOS).
 - Host-level network allowlisting + package-registry mediation via content-cache.
 - Client/server control plane with local CLI client for creating and managing sandboxes and executions.
 - Logs, metrics, and audit metadata capture.
