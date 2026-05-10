@@ -19,6 +19,9 @@ func TestBuildKernelVerifiesCachedSourceWithChecksumStamp(t *testing.T) {
 		`rm -rf "${src}" "${source_stamp}"`,
 		`echo "${KERNEL_TARBALL_SHA256}  ${tarball}" | sha256sum -c -`,
 		`printf "%s\n" "${KERNEL_TARBALL_SHA256}" > "${source_stamp}"`,
+		`-e ADVISE_SYSCALLS \`,
+		`-e VIRTIO_BALLOON \`,
+		`-e PAGE_REPORTING \`,
 	}
 	for _, want := range required {
 		if !strings.Contains(script, want) {

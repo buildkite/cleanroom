@@ -40,6 +40,39 @@ func TestBenchmarkDarwinVZMinimalRejectsInitrdKernelForRootFSBoot(t *testing.T) 
 	requireBenchmarkDarwinVZMinimalFailure(t, out, err, callLog, "--kernel-profile initrd does not match the selected boot medium; expected rootfs")
 }
 
+func TestBenchmarkDarwinVZMinimalAllowsZeroProbeDelays(t *testing.T) {
+	tmpDir := t.TempDir()
+	kernelPath := filepath.Join(tmpDir, "Image")
+	initrdPath := filepath.Join(tmpDir, "initrd.cpio.gz")
+	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o600); err != nil {
+		t.Fatalf("write kernel placeholder: %v", err)
+	}
+	if err := os.WriteFile(initrdPath, []byte("initrd"), 0o600); err != nil {
+		t.Fatalf("write initrd placeholder: %v", err)
+	}
+
+	out, callLog, err := runBenchmarkDarwinVZMinimalExpectingEarlyFailure(t,
+		"--kernel", kernelPath,
+		"--initrd", initrdPath,
+		"--iterations", "1",
+		"--probe", "memory-reporting",
+		"--probe-pre-touch-ms", "0",
+		"--probe-hold-ms", "0",
+		"--probe-post-free-ms", "0",
+		"--pre-probe-balloon-target-mib", "1024",
+		"--pre-probe-balloon-settle-ms", "0",
+	)
+	if err == nil {
+		t.Fatalf("expected fake runner build to fail")
+	}
+	if strings.Contains(string(out), "must be a positive integer") || strings.Contains(string(out), "must be a non-negative integer") {
+		t.Fatalf("expected zero probe delays to pass validation, got:\n%s", out)
+	}
+	if _, err := os.Stat(callLog); err != nil {
+		t.Fatalf("expected runner build to start after zero delay validation, stat xcrun log: %v\n%s", err, out)
+	}
+}
+
 func runBenchmarkDarwinVZMinimalExpectingEarlyFailure(t *testing.T, args ...string) ([]byte, string, error) {
 	t.Helper()
 
@@ -54,6 +87,16 @@ func runBenchmarkDarwinVZMinimalExpectingEarlyFailure(t *testing.T, args ...stri
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_XCRUN_LOG"
 exit 99
+`)
+	writeLocalExecutable(t, binDir, "mise", `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "exec" ]]; then
+  shift
+fi
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
+exec "$@"
 `)
 
 	cmdArgs := append([]string{"benchmark-darwin-vz-minimal.sh"}, args...)

@@ -30,7 +30,13 @@ GOOS=linux GOARCH="${host_arch}" CGO_ENABLED=0 go build \
   -o "${ROOT_DIR}/bin/true" \
   "${SCRIPT_DIR}/initrd-true"
 
-chmod 0755 "${ROOT_DIR}/init" "${ROOT_DIR}/bin/true"
+GOOS=linux GOARCH="${host_arch}" CGO_ENABLED=0 go build \
+  -trimpath \
+  -ldflags "-s -w" \
+  -o "${ROOT_DIR}/bin/memprobe" \
+  "${SCRIPT_DIR}/initrd-memprobe"
+
+chmod 0755 "${ROOT_DIR}/init" "${ROOT_DIR}/bin/true" "${ROOT_DIR}/bin/memprobe"
 chmod 1777 "${ROOT_DIR}/tmp"
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
