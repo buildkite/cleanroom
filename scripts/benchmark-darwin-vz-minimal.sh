@@ -168,6 +168,15 @@ require_positive_int() {
   fi
 }
 
+require_non_negative_int() {
+  local name="$1"
+  local value="$2"
+  if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+    echo "${name} must be a non-negative integer" >&2
+    exit 1
+  fi
+}
+
 run_repo_tool() {
   if command -v mise >/dev/null 2>&1; then
     mise exec -- "$@"
@@ -180,10 +189,10 @@ require_positive_int "iterations" "${iterations}"
 require_positive_int "vcpus" "${vcpus}"
 require_positive_int "memory-mib" "${memory_mib}"
 require_positive_int "probe-memory-mib" "${probe_memory_mib}"
-require_positive_int "probe-pre-touch-ms" "${probe_pre_touch_ms}"
-require_positive_int "probe-hold-ms" "${probe_hold_ms}"
-require_positive_int "probe-post-free-ms" "${probe_post_free_ms}"
-require_positive_int "pre-probe-balloon-settle-ms" "${pre_probe_balloon_settle_ms}"
+require_non_negative_int "probe-pre-touch-ms" "${probe_pre_touch_ms}"
+require_non_negative_int "probe-hold-ms" "${probe_hold_ms}"
+require_non_negative_int "probe-post-free-ms" "${probe_post_free_ms}"
+require_non_negative_int "pre-probe-balloon-settle-ms" "${pre_probe_balloon_settle_ms}"
 
 case "${probe}" in
   exec|memory-reporting) ;;
