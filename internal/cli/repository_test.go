@@ -233,6 +233,120 @@ func TestRepositoryOverrideAllowsHostFromWorkspaceStageNetwork(t *testing.T) {
 	}
 }
 
+func TestRepositoryOverrideDefaultsMissingCommitToLatest(t *testing.T) {
+	const wantCommit = "0123456789abcdef0123456789abcdef01234567"
+	checkout, err := (repositoryOverrideFlags{
+		RepoURL: "git@github.com:buildkite/cleanroom.git",
+	}).resolveWithCommitResolver(t.TempDir(), repositoryIntegrationLoader{
+		compiled: stageScopedWorkspaceGitHubPolicy(),
+	}, func(remoteURL, revision string) (string, error) {
+		if got, want := remoteURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+			t.Fatalf("resolver remote URL mismatch: got %q want %q", got, want)
+		}
+		if got, want := revision, "latest"; got != want {
+			t.Fatalf("resolver revision mismatch: got %q want %q", got, want)
+		}
+		return wantCommit, nil
+	})
+	if err != nil {
+		t.Fatalf("repository override resolve returned error: %v", err)
+	}
+	if checkout == nil {
+		t.Fatal("expected repository override checkout")
+	}
+	if got := checkout.CommitSHA; got != wantCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, wantCommit)
+	}
+}
+
+func TestRepositoryOverrideResolvesTagToCommitSHA(t *testing.T) {
+	const wantCommit = "0123456789abcdef0123456789abcdef01234567"
+	checkout, err := (repositoryOverrideFlags{
+		RepoURL:    "git@github.com:buildkite/cleanroom.git",
+		RepoCommit: "v1.2.3",
+	}).resolveWithCommitResolver(t.TempDir(), repositoryIntegrationLoader{
+		compiled: stageScopedWorkspaceGitHubPolicy(),
+	}, func(remoteURL, revision string) (string, error) {
+		if got, want := remoteURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+			t.Fatalf("resolver remote URL mismatch: got %q want %q", got, want)
+		}
+		if got, want := revision, "v1.2.3"; got != want {
+			t.Fatalf("resolver revision mismatch: got %q want %q", got, want)
+		}
+		return wantCommit, nil
+	})
+	if err != nil {
+		t.Fatalf("repository override resolve returned error: %v", err)
+	}
+	if checkout == nil {
+		t.Fatal("expected repository override checkout")
+	}
+	if got := checkout.CommitSHA; got != wantCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, wantCommit)
+	}
+}
+
+func TestResolveRepositoryOverrideCommitUsesFullSHAWithoutRemoteLookup(t *testing.T) {
+	got, err := resolveRepositoryOverrideCommit("", "ABCDEF0123456789ABCDEF0123456789ABCDEF01")
+	if err != nil {
+		t.Fatalf("resolveRepositoryOverrideCommit returned error: %v", err)
+	}
+	if want := "abcdef0123456789abcdef0123456789abcdef01"; got != want {
+		t.Fatalf("unexpected commit: got %q want %q", got, want)
+	}
+}
+
+func TestResolveRepositoryOverrideCommitResolvesLightweightTag(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	wantCommit := headCommit(t, repoDir)
+	runGitInRepository(t, repoDir, "tag", "latest")
+
+	got, err := resolveRepositoryOverrideCommit(repoDir, "latest")
+	if err != nil {
+		t.Fatalf("resolveRepositoryOverrideCommit returned error: %v", err)
+	}
+	if got != wantCommit {
+		t.Fatalf("unexpected commit: got %q want %q", got, wantCommit)
+	}
+}
+
+func TestResolveRepositoryOverrideCommitResolvesLatestAliasToRemoteHEAD(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	wantCommit := headCommit(t, repoDir)
+
+	got, err := resolveRepositoryOverrideCommit(repoDir, "latest")
+	if err != nil {
+		t.Fatalf("resolveRepositoryOverrideCommit returned error: %v", err)
+	}
+	if got != wantCommit {
+		t.Fatalf("unexpected commit: got %q want %q", got, wantCommit)
+	}
+}
+
+func TestResolveRepositoryOverrideCommitResolvesAnnotatedTag(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	wantCommit := headCommit(t, repoDir)
+	runGitInRepository(t, repoDir, "tag", "-a", "latest", "-m", "latest")
+
+	got, err := resolveRepositoryOverrideCommit(repoDir, "latest")
+	if err != nil {
+		t.Fatalf("resolveRepositoryOverrideCommit returned error: %v", err)
+	}
+	if got != wantCommit {
+		t.Fatalf("unexpected commit: got %q want %q", got, wantCommit)
+	}
+}
+
+func TestResolveRepositoryOverrideCommitRejectsBranchRef(t *testing.T) {
+	_, err := resolveRepositoryOverrideCommit("https://github.com/buildkite/cleanroom.git", "refs/heads/main")
+	if err == nil {
+		t.Fatal("expected branch refs to be rejected")
+	}
+	if !strings.Contains(err.Error(), "full 40-character commit SHA or tag name") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCreateCommandShowsDependencyBootstrapOutputDuringSandboxCreate(t *testing.T) {
 	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
 
@@ -382,20 +496,19 @@ func TestCreateCommandBootstrapsRepositoryForExplicitOverride(t *testing.T) {
 	}
 }
 
-func TestCreateCommandRejectsPartialRepositoryOverride(t *testing.T) {
+func TestCreateCommandRejectsRepoCommitWithoutRepoURL(t *testing.T) {
 	outcome := runCreateAliasWithCapture(CreateCommand{
 		repositoryOverrideFlags: repositoryOverrideFlags{
-			RepoURL:    "https://github.com/buildkite/agent.git",
-			RepoCommit: "",
+			RepoCommit: "latest",
 		},
 	}, runtimeContext{})
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)
 	}
 	if outcome.err == nil {
-		t.Fatal("expected create command to reject partial repository override")
+		t.Fatal("expected create command to reject repository commit without repository URL")
 	}
-	if !strings.Contains(outcome.err.Error(), "--repo-url and --repo-commit must be used together") {
+	if !strings.Contains(outcome.err.Error(), "--repo-commit requires --repo-url") {
 		t.Fatalf("unexpected error: %v", outcome.err)
 	}
 }

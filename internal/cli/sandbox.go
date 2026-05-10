@@ -419,7 +419,7 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (c *CreateCommand) validate() error {
-	if _, err := c.repositoryOverrideFlags.resolve(".", nil); err != nil {
+	if err := c.repositoryOverrideFlags.validate(); err != nil {
 		return err
 	}
 	if err := c.workspaceCopyInFlags.validate(c.From, c.repositoryOverrideFlags); err != nil {
