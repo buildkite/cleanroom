@@ -685,8 +685,6 @@ private func probeGuest(
     opts: Options,
     start: UInt64
 ) throws -> ProbeOutcome {
-    try writeExecRequest(connection: connection, command: probeCommand(opts: opts))
-
     let deadline = Date().addingTimeInterval(opts.timeoutSeconds)
     var buffer = Data()
     var stdout = Data()
@@ -701,6 +699,7 @@ private func probeGuest(
             hostSamples.append(try sampleHostMemory(label: "balloon_pre_probe:\(targetMiB)mib", start: start, virtualizationPIDs: handle.virtualizationPIDs))
         }
     }
+    try writeExecRequest(connection: connection, command: probeCommand(opts: opts))
     if opts.probe == "memory-reporting" {
         hostSamples.append(try sampleHostMemory(label: "probe:request_sent", start: start, virtualizationPIDs: handle.virtualizationPIDs))
     }
