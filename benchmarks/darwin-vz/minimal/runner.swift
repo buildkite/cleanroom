@@ -624,7 +624,9 @@ private func setBalloonTarget(handle: VMHandle, targetMiB: UInt64) throws {
         balloon.targetVirtualMachineMemorySize = targetMiB * 1024 * 1024
         sem.signal()
     }
-    _ = sem.wait(timeout: .now() + .seconds(1))
+    if sem.wait(timeout: .now() + .seconds(1)) == .timedOut {
+        throw BaselineError.timeout("timed out setting balloon target to \(targetMiB) MiB")
+    }
     if let targetError {
         throw targetError
     }
