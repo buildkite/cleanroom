@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import Virtualization
 
-private let maxPreProbeBalloonSettleMS = UInt64(useconds_t.max) / 1000
+private let maxPreProbeBalloonSettleMS = UInt64(Int32.max)
 
 private struct Options {
     var kernelPath = ""
@@ -377,6 +377,24 @@ private func msSince(_ start: UInt64) -> Double {
     Double(now() - start) / 1_000_000.0
 }
 
+private func sleepMilliseconds(_ milliseconds: UInt64) throws {
+    if milliseconds == 0 {
+        return
+    }
+    var request = timespec(
+        tv_sec: time_t(milliseconds / 1000),
+        tv_nsec: CLong((milliseconds % 1000) * 1_000_000)
+    )
+    var remaining = timespec()
+    while Darwin.nanosleep(&request, &remaining) != 0 {
+        if errno == EINTR {
+            request = remaining
+            continue
+        }
+        throw BaselineError.posix("nanosleep", errno)
+    }
+}
+
 private func writeAll(fd: Int32, bytes: [UInt8]) throws {
     var written = 0
     while written < bytes.count {
@@ -727,7 +745,7 @@ private func probeGuest(
     if let targetMiB = opts.preProbeBalloonTargetMiB {
         try setBalloonTarget(handle: handle, targetMiB: targetMiB)
         if opts.preProbeBalloonSettleMS > 0 {
-            usleep(useconds_t(opts.preProbeBalloonSettleMS * 1000))
+            try sleepMilliseconds(opts.preProbeBalloonSettleMS)
         }
         if opts.probe == "memory-reporting" {
             hostSamples.append(try sampleVirtualMachineHostMemory(label: "balloon_pre_probe:\(targetMiB)mib", start: start, handle: handle))
