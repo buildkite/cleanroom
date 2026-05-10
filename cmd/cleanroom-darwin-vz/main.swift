@@ -21,6 +21,8 @@ private struct ControlRequest: Decodable {
     let vmnetDisableRouterAdvertisement: Bool?
     let vcpus: Int?
     let memoryMiB: Int64?
+    let initialMemoryBalloonTargetMiB: Int64?
+    let memoryBalloonTargetMiB: Int64?
     let guestPort: UInt32?
     let launchSeconds: Int64?
     let runDir: String?
@@ -44,6 +46,8 @@ private struct ControlRequest: Decodable {
         case vmnetDisableRouterAdvertisement = "vmnet_disable_router_advertisement"
         case vcpus
         case memoryMiB = "memory_mib"
+        case initialMemoryBalloonTargetMiB = "initial_memory_balloon_target_mib"
+        case memoryBalloonTargetMiB = "memory_balloon_target_mib"
         case guestPort = "guest_port"
         case launchSeconds = "launch_seconds"
         case runDir = "run_dir"
@@ -474,6 +478,7 @@ private final class VMRuntime {
     private var vmID: String?
     private var serialChannel: GuestChannel?
     private var guestPort: UInt32 = 0
+    private var memoryMiB: Int64 = 0
     private var launchTimeout: TimeInterval = 30
     private var vmQueue: DispatchQueue?
     private var proxy: ProxyServer?
@@ -502,6 +507,13 @@ private final class VMRuntime {
 
         let vcpus = max(1, req.vcpus ?? 1)
         let memoryMiB = max(Int64(256), req.memoryMiB ?? 512)
+        let initialMemoryBalloonTargetMiB = req.initialMemoryBalloonTargetMiB ?? 0
+        guard initialMemoryBalloonTargetMiB >= 0 else {
+            throw HelperError.invalidRequest("initial_memory_balloon_target_mib must be non-negative")
+        }
+        guard initialMemoryBalloonTargetMiB <= memoryMiB else {
+            throw HelperError.invalidRequest("initial_memory_balloon_target_mib cannot exceed memory_mib")
+        }
         let guestPort = req.guestPort ?? 10_700
         let launchSeconds = max(Int64(5), req.launchSeconds ?? 30)
         let defaultBootArgs = "console=hvc0 root=/dev/vda rw init=/sbin/cleanroom-init cleanroom_guest_port=\(guestPort)"
@@ -548,6 +560,18 @@ private final class VMRuntime {
             releaseFileHandleAttachmentOnFailure?.stop()
         }
 
+        var memoryBalloonInitialMS: Int64?
+        if initialMemoryBalloonTargetMiB > 0 {
+            let memoryBalloonInitialStartedAt = DispatchTime.now()
+            try applyMemoryBalloonTarget(
+                vm: vm,
+                queue: vmQueue,
+                targetMiB: initialMemoryBalloonTargetMiB,
+                memoryMiB: memoryMiB
+            )
+            memoryBalloonInitialMS = elapsedMilliseconds(from: memoryBalloonInitialStartedAt, to: DispatchTime.now())
+        }
+
         let vzStartStartedAt = DispatchTime.now()
         try startVM(vm, queue: vmQueue, timeoutSeconds: launchSeconds)
         let vzStartedAt = DispatchTime.now()
@@ -561,6 +585,7 @@ private final class VMRuntime {
         self.vm = vm
         self.vmID = vmID
         self.proxy = proxy
+        self.memoryMiB = memoryMiB
         self.fileHandleNetworkAttachment = fileHandleNetworkAttachment
         releaseFileHandleAttachmentOnFailure = nil
         proxy.start { [weak self] in
@@ -571,12 +596,15 @@ private final class VMRuntime {
         }
         let proxyReadyAt = DispatchTime.now()
 
-        let timingMS = [
+        var timingMS = [
             "config_build": elapsedMilliseconds(from: startedAt, to: configBuiltAt),
             "vz_start": elapsedMilliseconds(from: vzStartStartedAt, to: vzStartedAt),
             "proxy_ready": elapsedMilliseconds(from: proxyReadyStartedAt, to: proxyReadyAt),
             "vm_ready": elapsedMilliseconds(from: startedAt, to: proxyReadyAt),
         ]
+        if let memoryBalloonInitialMS {
+            timingMS["memory_balloon_initial"] = memoryBalloonInitialMS
+        }
         return ControlResponse(
             ok: true,
             error: nil,
@@ -606,6 +634,7 @@ private final class VMRuntime {
         self.vm = nil
         self.serialChannel = nil
         self.guestPort = 0
+        self.memoryMiB = 0
         self.launchTimeout = 30
         self.vmQueue = nil
         self.proxy = nil
@@ -707,6 +736,39 @@ private final class VMRuntime {
         if let resumeError {
             throw HelperError.vm("failed to resume vm: \(resumeError)")
         }
+    }
+
+    func setMemoryBalloonTarget(vmID requestedID: String?, targetMiB requestedTargetMiB: Int64?) throws {
+        guard let targetMiB = requestedTargetMiB else {
+            throw HelperError.invalidRequest("missing memory_balloon_target_mib")
+        }
+
+        lock.lock()
+        let currentID = vmID
+        let vm = self.vm
+        let vmQueue = self.vmQueue
+        let memoryMiB = self.memoryMiB
+        lock.unlock()
+
+        if let requestedID, !requestedID.isEmpty, let currentID, requestedID != currentID {
+            throw HelperError.invalidRequest("unknown vm_id \(requestedID)")
+        }
+        guard let vm else {
+            throw HelperError.invalidRequest("vm is not running")
+        }
+        guard let vmQueue else {
+            throw HelperError.vm("vm queue is unavailable")
+        }
+        guard memoryMiB > 0 else {
+            throw HelperError.vm("vm memory size is unavailable")
+        }
+
+        try applyMemoryBalloonTarget(
+            vm: vm,
+            queue: vmQueue,
+            targetMiB: targetMiB,
+            memoryMiB: memoryMiB
+        )
     }
 
     private func parseIPv4Address(_ value: String) throws -> in_addr {
@@ -1000,6 +1062,45 @@ private final class VMRuntime {
         return (VZVirtualMachine(configuration: config, queue: queue), channel, networkDetails, fileHandleNetworkAttachment)
     }
 
+    private func applyMemoryBalloonTarget(
+        vm: VZVirtualMachine,
+        queue: DispatchQueue,
+        targetMiB: Int64,
+        memoryMiB: Int64,
+        timeoutSeconds: Int64 = 5
+    ) throws {
+        guard targetMiB > 0 else {
+            throw HelperError.invalidRequest("memory_balloon_target_mib must be greater than zero")
+        }
+        guard targetMiB <= memoryMiB else {
+            throw HelperError.invalidRequest("memory_balloon_target_mib cannot exceed memory_mib")
+        }
+        let bytesPerMiB = Int64(1024 * 1024)
+        guard targetMiB <= Int64.max / bytesPerMiB else {
+            throw HelperError.invalidRequest("memory_balloon_target_mib is too large")
+        }
+        let targetBytes = UInt64(targetMiB * bytesPerMiB)
+
+        let sem = DispatchSemaphore(value: 0)
+        var targetError: Error?
+        queue.async {
+            guard let balloon = vm.memoryBalloonDevices.first as? VZVirtioTraditionalMemoryBalloonDevice else {
+                targetError = HelperError.vm("vm memory balloon device is unavailable")
+                sem.signal()
+                return
+            }
+            balloon.targetVirtualMachineMemorySize = targetBytes
+            sem.signal()
+        }
+
+        if sem.wait(timeout: .now() + .seconds(Int(timeoutSeconds))) == .timedOut {
+            throw HelperError.timeout("timed out waiting for memory balloon target update")
+        }
+        if let targetError {
+            throw targetError
+        }
+    }
+
     private func startVM(_ vm: VZVirtualMachine, queue: DispatchQueue, timeoutSeconds: Int64) throws {
         let sem = DispatchSemaphore(value: 0)
         var startError: Error?
@@ -1186,6 +1287,9 @@ private final class HelperService {
             return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)
         case "ResumeVM":
             try vmRuntime.resume(vmID: req.vmID)
+            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)
+        case "SetMemoryBalloonTarget":
+            try vmRuntime.setMemoryBalloonTarget(vmID: req.vmID, targetMiB: req.memoryBalloonTargetMiB)
             return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)
         case "Ping":
             return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)

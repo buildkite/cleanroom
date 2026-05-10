@@ -15,7 +15,7 @@ Implemented:
 
 - launched execution on macOS via `Virtualization.framework`
 - interactive and non-interactive command execution via existing `internal/vsockexec` protocol
-- helper-managed VM lifecycle (`StartVM` / `StopVM` / `PauseVM` / `ResumeVM`)
+- helper-managed VM lifecycle (`StartVM` / `StopVM` / `PauseVM` / `ResumeVM` / `SetMemoryBalloonTarget`)
 - `filehandle` network mode with a Cleanroom-owned guest gateway and stable guest IP
 - TCP allowlist egress filtering for the active effective policy in `filehandle` mode
 - allow-all egress for repo-agnostic sandboxes created with `cleanroom sandbox create --dangerously-allow-all`
@@ -40,7 +40,7 @@ Control plane:
 
 - socket: `<run_dir>/vz-helper.sock`
 - protocol: newline-delimited JSON request/response
-- operations: `StartVM`, `StopVM`, `PauseVM`, `ResumeVM`, `Ping`
+- operations: `StartVM`, `StopVM`, `PauseVM`, `ResumeVM`, `SetMemoryBalloonTarget`, `Ping`
 
 Data plane:
 
@@ -63,6 +63,7 @@ High-level flow:
 - `kernel_path` absolute path to Linux kernel
 - `rootfs_path` absolute path to sandbox-scoped ext4 rootfs copy
 - `vcpus`, `memory_mib`, `guest_port`, `launch_seconds`
+- optional `initial_memory_balloon_target_mib`
 - `run_dir`
 - `proxy_socket_path`
 - `console_log_path`
@@ -70,6 +71,13 @@ High-level flow:
 `vcpus` and `memory_mib` are effective VM launch ceilings after runtime config
 and policy resource minimums are merged. They are not an exact host reservation
 contract.
+
+When `memory_mib` is above 1024 MiB, Go sends `initial_memory_balloon_target_mib=1024`
+so the helper can request a smaller guest memory target during boot. Before guest
+workload execution, Go sends `SetMemoryBalloonTarget` back to `memory_mib` and
+waits briefly for the guest to process the request. This keeps the user-facing
+memory contract as a ceiling while allowing the backend to optimize boot-time
+host memory pressure internally.
 
 `StartVM` response fields:
 
@@ -87,6 +95,12 @@ contract.
 
 - `op=PauseVM` or `op=ResumeVM`
 - optional `vm_id` (validated when provided)
+
+`SetMemoryBalloonTarget` request:
+
+- `op=SetMemoryBalloonTarget`
+- optional `vm_id` (validated when provided)
+- `memory_balloon_target_mib` target guest memory allowance in MiB, capped by `memory_mib`
 
 ## Kernel and RootFS Strategy
 

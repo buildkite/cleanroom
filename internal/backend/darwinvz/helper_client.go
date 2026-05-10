@@ -42,6 +42,8 @@ type helperControlRequest struct {
 	VMNetDisableRouterAdvertisement bool     `json:"vmnet_disable_router_advertisement,omitempty"`
 	VCPUs                           int64    `json:"vcpus,omitempty"`
 	MemoryMiB                       int64    `json:"memory_mib,omitempty"`
+	InitialMemoryBalloonTargetMiB   int64    `json:"initial_memory_balloon_target_mib,omitempty"`
+	MemoryBalloonTargetMiB          int64    `json:"memory_balloon_target_mib,omitempty"`
 	GuestPort                       uint32   `json:"guest_port,omitempty"`
 	LaunchSeconds                   int64    `json:"launch_seconds,omitempty"`
 	RunDir                          string   `json:"run_dir,omitempty"`
