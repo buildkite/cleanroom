@@ -69,6 +69,50 @@ func replaceImageManagerFactory(t *testing.T, mgr imageManager, err error) {
 	})
 }
 
+func TestImageResolveCommandRunPrintsDigestPinnedReference(t *testing.T) {
+	const resolvedRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	restore := stubRefResolver(t, func(_ context.Context, source string) (string, error) {
+		if got, want := source, "ghcr.io/buildkite/cleanroom-base/alpine:latest"; got != want {
+			t.Fatalf("unexpected source passed to resolver: got %q want %q", got, want)
+		}
+		return resolvedRef, nil
+	})
+	defer restore()
+
+	stdout, readStdout := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&ImageResolveCommand{Ref: "ghcr.io/buildkite/cleanroom-base/alpine:latest"}).Run(&runtimeContext{Stdout: stdout})
+	if err != nil {
+		t.Fatalf("ImageResolveCommand.Run returned error: %v", err)
+	}
+	if got := readStdout(); got != resolvedRef+"\n" {
+		t.Fatalf("unexpected stdout: got %q want %q", got, resolvedRef+"\n")
+	}
+}
+
+func TestImageResolveCommandRunUsesDefaultReference(t *testing.T) {
+	const resolvedRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	restore := stubRefResolver(t, func(_ context.Context, source string) (string, error) {
+		if source != "" {
+			t.Fatalf("expected empty source for resolver default, got %q", source)
+		}
+		return resolvedRef, nil
+	})
+	defer restore()
+
+	stdout, readStdout := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&ImageResolveCommand{}).Run(&runtimeContext{Stdout: stdout})
+	if err != nil {
+		t.Fatalf("ImageResolveCommand.Run returned error: %v", err)
+	}
+	if got := readStdout(); got != resolvedRef+"\n" {
+		t.Fatalf("unexpected stdout: got %q want %q", got, resolvedRef+"\n")
+	}
+}
+
 func TestImagePullCommandRunPrintsResult(t *testing.T) {
 	mgr := &stubImageManager{
 		pullResult: imagemgr.EnsureResult{

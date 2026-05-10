@@ -117,6 +117,27 @@ func TestImageBumpRefAllowsNoArgs(t *testing.T) {
 	}
 }
 
+func TestImageResolveCommandParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"image", "resolve", "ghcr.io/buildkite/cleanroom-base/alpine:latest"}); err != nil {
+		t.Fatalf("parse image resolve returned error: %v", err)
+	}
+	if got, want := c.Image.Resolve.Ref, "ghcr.io/buildkite/cleanroom-base/alpine:latest"; got != want {
+		t.Fatalf("unexpected image resolve ref: got %q want %q", got, want)
+	}
+}
+
+func TestImageResolveCommandAllowsNoArgs(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"image", "resolve"}); err != nil {
+		t.Fatalf("parse image resolve with default ref returned error: %v", err)
+	}
+}
+
 func TestConfigInitParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

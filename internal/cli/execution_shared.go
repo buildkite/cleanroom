@@ -335,7 +335,7 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	snapshotID := strings.TrimSpace(fromSnapshot)
 	hasChdir := strings.TrimSpace(chdir) != ""
 
-	if _, err := repositoryOverride.resolve(".", nil); err != nil {
+	if err := repositoryOverride.validate(); err != nil {
 		return err
 	}
 	if err := copyFlags.validate(fromSnapshot, repositoryOverride); err != nil {

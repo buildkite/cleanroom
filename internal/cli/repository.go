@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -24,32 +25,38 @@ type resolvedRepositoryCheckout struct {
 }
 
 const defaultRepositoryOverridePath = "/workspace"
+const defaultRepositoryOverrideRevision = "latest"
 
 type repositoryOverrideFlags struct {
 	RepoURL    string `name:"repo-url" help:"Bootstrap this repository URL instead of inheriting the current repository"`
-	RepoCommit string `name:"repo-commit" help:"Bootstrap this exact repository commit SHA; requires --repo-url"`
+	RepoCommit string `name:"repo-commit" help:"Bootstrap this repository commit SHA, tag, or latest; defaults to latest when --repo-url is set"`
 }
 
 func (f repositoryOverrideFlags) resolve(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
+	return f.resolveWithCommitResolver(cwd, loader, resolveRepositoryOverrideCommit)
+}
+
+type repositoryOverrideCommitResolver func(remoteURL, revision string) (string, error)
+
+func (f repositoryOverrideFlags) resolveWithCommitResolver(cwd string, loader policyLoader, resolveCommit repositoryOverrideCommitResolver) (*resolvedRepositoryCheckout, error) {
 	repoURL := strings.TrimSpace(f.RepoURL)
-	repoCommit := strings.TrimSpace(f.RepoCommit)
-	switch {
-	case repoURL == "" && repoCommit == "":
-		return nil, nil
-	case repoURL == "" || repoCommit == "":
-		return nil, errors.New("--repo-url and --repo-commit must be used together")
+	if err := f.validate(); err != nil {
+		return nil, err
 	}
+	if repoURL == "" {
+		return nil, nil
+	}
+	repoCommit := f.revision()
 
 	checkout := &repositorycheckout.Checkout{
 		RemoteURL:      repoURL,
-		CommitSHA:      repoCommit,
 		DestinationDir: defaultRepositoryOverridePath,
-	}
-	if err := checkout.ValidateBootstrap(); err != nil {
-		return nil, err
 	}
 	remoteHost, err := checkout.NormalizeRemoteURL()
 	if err != nil {
+		return nil, err
+	}
+	if err := checkout.ValidateWorkdir(); err != nil {
 		return nil, err
 	}
 
@@ -63,11 +70,170 @@ func (f repositoryOverrideFlags) resolve(cwd string, loader policyLoader) (*reso
 		}
 	}
 
+	resolvedCommit, err := resolveCommit(checkout.RemoteURL, repoCommit)
+	if err != nil {
+		return nil, err
+	}
+	checkout.CommitSHA = resolvedCommit
+	if err := checkout.ValidateBootstrap(); err != nil {
+		return nil, err
+	}
+
 	return &resolvedRepositoryCheckout{
 		RemoteURL:      checkout.RemoteURL,
 		CommitSHA:      checkout.CommitSHA,
 		DestinationDir: checkout.DestinationDir,
 	}, nil
+}
+
+func (f repositoryOverrideFlags) validate() error {
+	repoURL := strings.TrimSpace(f.RepoURL)
+	repoCommit := strings.TrimSpace(f.RepoCommit)
+	switch {
+	case repoURL == "" && repoCommit == "":
+		return nil
+	case repoURL == "":
+		return errors.New("--repo-commit requires --repo-url")
+	default:
+		return nil
+	}
+}
+
+func (f repositoryOverrideFlags) revision() string {
+	if revision := strings.TrimSpace(f.RepoCommit); revision != "" {
+		return revision
+	}
+	return defaultRepositoryOverrideRevision
+}
+
+var resolveRepositoryOverrideCommit = resolveRepositoryOverrideCommitDefault
+
+func resolveRepositoryOverrideCommitDefault(remoteURL, revision string) (string, error) {
+	if commitSHA, ok := normalizeRepositoryCommitSHA(revision); ok {
+		return commitSHA, nil
+	}
+	commitSHA, tagErr := resolveRemoteGitTagCommit(remoteURL, revision)
+	if tagErr == nil {
+		return commitSHA, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(revision), defaultRepositoryOverrideRevision) {
+		commitSHA, headErr := resolveRemoteGitHeadCommit(remoteURL)
+		if headErr == nil {
+			return commitSHA, nil
+		}
+		return "", errors.Join(tagErr, fmt.Errorf("resolve repository latest from remote HEAD: %w", headErr))
+	}
+	return "", tagErr
+}
+
+func normalizeRepositoryCommitSHA(revision string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(revision))
+	if len(normalized) != 40 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(normalized); err != nil {
+		return "", false
+	}
+	return normalized, true
+}
+
+func resolveRemoteGitTagCommit(remoteURL, tag string) (string, error) {
+	ref, err := repositoryTagRef(tag)
+	if err != nil {
+		return "", err
+	}
+	out, err := gitOutput("", "ls-remote", remoteURL, ref, ref+"^{}")
+	if err != nil {
+		return "", fmt.Errorf("resolve repository tag %q from remote: %w", strings.TrimSpace(tag), err)
+	}
+	commitSHA, err := selectRemoteGitTagCommit(out, ref)
+	if err != nil {
+		return "", err
+	}
+	return commitSHA, nil
+}
+
+func resolveRemoteGitHeadCommit(remoteURL string) (string, error) {
+	out, err := gitOutput("", "ls-remote", "--exit-code", remoteURL, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve repository HEAD from remote: %w", err)
+	}
+	commitSHA, err := selectRemoteGitRefCommit(out, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return commitSHA, nil
+}
+
+func repositoryTagRef(tag string) (string, error) {
+	trimmed := strings.TrimSpace(tag)
+	if trimmed == "" {
+		return "", errors.New("repository commit_sha is required")
+	}
+	ref := "refs/tags/" + trimmed
+	if strings.HasPrefix(trimmed, "refs/") {
+		if !strings.HasPrefix(trimmed, "refs/tags/") {
+			return "", fmt.Errorf("repository commit %q must be a full 40-character commit SHA or tag name", trimmed)
+		}
+		ref = trimmed
+	}
+	if _, err := gitOutput("", "check-ref-format", ref); err != nil {
+		return "", fmt.Errorf("repository tag %q is not a valid tag name: %w", trimmed, err)
+	}
+	return ref, nil
+}
+
+func selectRemoteGitRefCommit(output, ref string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 2 {
+			return "", fmt.Errorf("parse repository ref lookup: unexpected ls-remote output %q", line)
+		}
+		if fields[1] != ref {
+			continue
+		}
+		if commitSHA, ok := normalizeRepositoryCommitSHA(fields[0]); ok {
+			return commitSHA, nil
+		}
+		return "", fmt.Errorf("repository ref %q resolved to invalid commit %q", ref, fields[0])
+	}
+	return "", fmt.Errorf("repository ref %q was not found", ref)
+}
+
+func selectRemoteGitTagCommit(output, ref string) (string, error) {
+	direct := ""
+	peeled := ""
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 2 {
+			return "", fmt.Errorf("parse repository tag lookup: unexpected ls-remote output %q", line)
+		}
+		switch fields[1] {
+		case ref:
+			direct = fields[0]
+		case ref + "^{}":
+			peeled = fields[0]
+		}
+	}
+	if peeled != "" {
+		if commitSHA, ok := normalizeRepositoryCommitSHA(peeled); ok {
+			return commitSHA, nil
+		}
+		return "", fmt.Errorf("repository tag %q resolved to invalid commit %q", strings.TrimPrefix(ref, "refs/tags/"), peeled)
+	}
+	if direct != "" {
+		if commitSHA, ok := normalizeRepositoryCommitSHA(direct); ok {
+			return commitSHA, nil
+		}
+		return "", fmt.Errorf("repository tag %q resolved to invalid commit %q", strings.TrimPrefix(ref, "refs/tags/"), direct)
+	}
+	return "", fmt.Errorf("repository tag %q was not found", strings.TrimPrefix(ref, "refs/tags/"))
 }
 
 func (f repositoryOverrideFlags) hasRepositoryOverride() bool {

@@ -198,11 +198,12 @@ func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
 		return false
 	}
 
-	switch ctx.Command() {
-	case "config init", "config validate", "version":
+	command := strings.TrimSpace(ctx.Command())
+	switch command {
+	case "config init", "config validate", "image resolve", "version":
 		return true
 	default:
-		return false
+		return strings.HasPrefix(command, "image resolve ")
 	}
 }
 

@@ -14,10 +14,15 @@ import (
 
 type ImageCommand struct {
 	Pull    ImagePullCommand    `cmd:"" help:"Pull and cache a digest-pinned OCI image"`
+	Resolve ImageResolveCommand `cmd:"" help:"Resolve an image tag to a digest-pinned reference"`
 	List    ImageListCommand    `name:"ls" aliases:"list" cmd:"" help:"List cached images"`
 	Remove  ImageRemoveCommand  `name:"rm" aliases:"remove" cmd:"" help:"Remove a cached image by ref or digest"`
 	Import  ImageImportCommand  `cmd:"" help:"Import a rootfs tar stream into the cache for a digest-pinned ref"`
 	BumpRef ImageBumpRefCommand `name:"bump-ref" aliases:"set-ref" cmd:"" help:"Resolve an image tag to digest and update sandbox.image.ref in cleanroom policy"`
+}
+
+type ImageResolveCommand struct {
+	Ref string `arg:"" optional:"" help:"Image reference to resolve (defaults to the current base image tag)"`
 }
 
 type ImagePullCommand struct {
@@ -46,6 +51,15 @@ type imageManager interface {
 
 var newImageManager = func() (imageManager, error) {
 	return imagemgr.New(imagemgr.Options{})
+}
+
+func (c *ImageResolveCommand) Run(ctx *runtimeContext) error {
+	resolved, err := resolveReferenceForPolicyUpdate(context.Background(), c.Ref)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(ctx.Stdout, resolved)
+	return err
 }
 
 func (c *ImagePullCommand) Run(ctx *runtimeContext) error {
