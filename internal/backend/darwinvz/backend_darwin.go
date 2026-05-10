@@ -97,30 +97,32 @@ type preparedRootFS struct {
 }
 
 type sandboxInstance struct {
-	SandboxID           string
-	RunDir              string
-	ConfigPath          string
-	ProxySocketPath     string
-	GuestPort           uint32
-	NetworkProcessPID   int
-	Policy              *policy.CompiledPolicy
-	FirecrackerConfig   backend.FirecrackerConfig
-	ImageRef            string
-	ImageDigest         string
-	LaunchObservability *darwinVZLaunchObservability
-	NetworkMetadata     *darwinVZNetworkMetadata
-	FileHandleGateway   *fileHandleGateway
-	CommandTimeout      int64
-	Helper              *helperSession
-	VMID                string
-	vmRootFSPath        string
-	cacheOutputMounts   []vsockexec.CacheOutputMount
-	cacheOutputVolumes  []preparedDarwinVZCacheOutputVolume
-	cleanupCacheOutputs func()
-	exitedCh            chan struct{}
-	exitMu              sync.RWMutex
-	exitErr             error
-	exitReady           bool
+	SandboxID              string
+	RunDir                 string
+	ConfigPath             string
+	ProxySocketPath        string
+	GuestPort              uint32
+	NetworkProcessPID      int
+	Policy                 *policy.CompiledPolicy
+	FirecrackerConfig      backend.FirecrackerConfig
+	ImageRef               string
+	ImageDigest            string
+	LaunchObservability    *darwinVZLaunchObservability
+	NetworkMetadata        *darwinVZNetworkMetadata
+	FileHandleGateway      *fileHandleGateway
+	CommandTimeout         int64
+	Helper                 *helperSession
+	VMID                   string
+	vmRootFSPath           string
+	cacheOutputMounts      []vsockexec.CacheOutputMount
+	cacheOutputVolumes     []preparedDarwinVZCacheOutputVolume
+	cleanupCacheOutputs    func()
+	exitedCh               chan struct{}
+	memoryBalloonMu        sync.Mutex
+	memoryBalloonTargetMiB int64
+	exitMu                 sync.RWMutex
+	exitErr                error
+	exitReady              bool
 }
 
 const preparedRuntimeRootFSVersion = "v9-darwin-vz"
@@ -1244,22 +1246,23 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}()
 
 	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
-		SandboxID:      req.SandboxID,
-		ConfigPath:     vmPlanPath,
-		BackendName:    a.Name(),
-		RunDir:         runDir,
-		KernelPath:     kernelPath,
-		RootFSPath:     vmRootFSPath,
-		BootArgs:       bootArgs,
-		ConsoleLogPath: consolePath,
-		NetworkCfg:     networkCfg,
-		HostGatewayURL: a.GatewayBridgeURL,
-		GatewayPort:    a.GatewayPort,
-		Policy:         networkPolicy,
-		VCPUs:          req.VCPUs,
-		MemoryMiB:      req.MemoryMiB,
-		GuestPort:      req.GuestPort,
-		LaunchSeconds:  req.LaunchSeconds,
+		SandboxID:                     req.SandboxID,
+		ConfigPath:                    vmPlanPath,
+		BackendName:                   a.Name(),
+		RunDir:                        runDir,
+		KernelPath:                    kernelPath,
+		RootFSPath:                    vmRootFSPath,
+		BootArgs:                      bootArgs,
+		ConsoleLogPath:                consolePath,
+		NetworkCfg:                    networkCfg,
+		HostGatewayURL:                a.GatewayBridgeURL,
+		GatewayPort:                   a.GatewayPort,
+		Policy:                        networkPolicy,
+		VCPUs:                         req.VCPUs,
+		MemoryMiB:                     req.MemoryMiB,
+		InitialMemoryBalloonTargetMiB: darwinVZInitialMemoryBalloonTargetMiB(req.MemoryMiB),
+		GuestPort:                     req.GuestPort,
+		LaunchSeconds:                 req.LaunchSeconds,
 	})
 	if err != nil {
 		observation.Error = err.Error()
@@ -1350,6 +1353,10 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {
 		guestReq.EntropySeed = entropy
+	}
+	if err := a.growDarwinVZMemoryBalloonTarget(ctx, helper, vmID, req.MemoryMiB); err != nil {
+		observation.Error = err.Error()
+		return nil, err
 	}
 	if err := guestexec.SendRequest(conn, guestReq); err != nil {
 		observation.Error = err.Error()
@@ -1583,23 +1590,24 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	)
 	helperStartVMStart := time.Now()
 	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
-		SandboxID:        sandboxID,
-		ConfigPath:       configPath,
-		BackendName:      a.Name(),
-		RunDir:           runDir,
-		KernelPath:       kernelPath,
-		RootFSPath:       vmRootFSPath,
-		SidecarDiskPaths: darwinVZCacheOutputDiskPaths(cacheOutputVolumes),
-		BootArgs:         bootArgs,
-		ConsoleLogPath:   consolePath,
-		NetworkCfg:       networkCfg,
-		HostGatewayURL:   a.GatewayBridgeURL,
-		GatewayPort:      a.GatewayPort,
-		Policy:           compiled,
-		VCPUs:            cfg.VCPUs,
-		MemoryMiB:        cfg.MemoryMiB,
-		GuestPort:        cfg.GuestPort,
-		LaunchSeconds:    cfg.LaunchSeconds,
+		SandboxID:                     sandboxID,
+		ConfigPath:                    configPath,
+		BackendName:                   a.Name(),
+		RunDir:                        runDir,
+		KernelPath:                    kernelPath,
+		RootFSPath:                    vmRootFSPath,
+		SidecarDiskPaths:              darwinVZCacheOutputDiskPaths(cacheOutputVolumes),
+		BootArgs:                      bootArgs,
+		ConsoleLogPath:                consolePath,
+		NetworkCfg:                    networkCfg,
+		HostGatewayURL:                a.GatewayBridgeURL,
+		GatewayPort:                   a.GatewayPort,
+		Policy:                        compiled,
+		VCPUs:                         cfg.VCPUs,
+		MemoryMiB:                     cfg.MemoryMiB,
+		InitialMemoryBalloonTargetMiB: darwinVZInitialMemoryBalloonTargetMiB(cfg.MemoryMiB),
+		GuestPort:                     cfg.GuestPort,
+		LaunchSeconds:                 cfg.LaunchSeconds,
 	})
 	recordDarwinVZPhaseTiming(launchTimingMS, darwinVZTimingHelperStartVM, helperStartVMStart)
 	if err != nil {
@@ -1621,25 +1629,26 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	defer pidLookup.stop()
 
 	instance := &sandboxInstance{
-		SandboxID:           sandboxID,
-		RunDir:              runDir,
-		ConfigPath:          configPath,
-		ProxySocketPath:     startedVM.ProxySocketPath,
-		GuestPort:           cfg.GuestPort,
-		Policy:              compiled,
-		FirecrackerConfig:   cfg,
-		ImageRef:            imageRef,
-		ImageDigest:         imageDigest,
-		NetworkMetadata:     startedVM.NetworkMetadata,
-		FileHandleGateway:   startedVM.FileHandleGW,
-		CommandTimeout:      cfg.LaunchSeconds,
-		Helper:              helper,
-		VMID:                startedVM.VMID,
-		vmRootFSPath:        vmRootFSPath,
-		cacheOutputMounts:   darwinVZCacheOutputVolumeMounts(cacheOutputVolumes),
-		cacheOutputVolumes:  cacheOutputVolumes,
-		cleanupCacheOutputs: cleanupCacheOutputs,
-		exitedCh:            make(chan struct{}),
+		SandboxID:              sandboxID,
+		RunDir:                 runDir,
+		ConfigPath:             configPath,
+		ProxySocketPath:        startedVM.ProxySocketPath,
+		GuestPort:              cfg.GuestPort,
+		Policy:                 compiled,
+		FirecrackerConfig:      cfg,
+		ImageRef:               imageRef,
+		ImageDigest:            imageDigest,
+		NetworkMetadata:        startedVM.NetworkMetadata,
+		FileHandleGateway:      startedVM.FileHandleGW,
+		CommandTimeout:         cfg.LaunchSeconds,
+		Helper:                 helper,
+		VMID:                   startedVM.VMID,
+		vmRootFSPath:           vmRootFSPath,
+		cacheOutputMounts:      darwinVZCacheOutputVolumeMounts(cacheOutputVolumes),
+		cacheOutputVolumes:     cacheOutputVolumes,
+		cleanupCacheOutputs:    cleanupCacheOutputs,
+		exitedCh:               make(chan struct{}),
+		memoryBalloonTargetMiB: darwinVZInitialMemoryBalloonTargetMiB(cfg.MemoryMiB),
 	}
 	go func() {
 		err, ok := <-helper.done
@@ -1873,6 +1882,9 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {
 		guestReq.EntropySeed = entropy
+	}
+	if err := instance.growDarwinVZMemoryBalloonTarget(runCtx, a); err != nil {
+		return nil, err
 	}
 	if err := guestexec.SendRequest(conn, guestReq); err != nil {
 		return nil, err
