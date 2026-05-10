@@ -2,6 +2,8 @@ import Darwin
 import Foundation
 import Virtualization
 
+private let maxPreProbeBalloonSettleMS = UInt64(useconds_t.max) / 1000
+
 private struct Options {
     var kernelPath = ""
     var rootFSPath = ""
@@ -155,11 +157,13 @@ private enum BaselineError: LocalizedError {
 private final class VMHandle {
     let vm: VZVirtualMachine
     let queue: DispatchQueue
+    let excludedVirtualizationPIDs: Set<pid_t>
     var virtualizationPIDs: [pid_t] = []
 
-    init(vm: VZVirtualMachine, queue: DispatchQueue) {
+    init(vm: VZVirtualMachine, queue: DispatchQueue, excludedVirtualizationPIDs: Set<pid_t>) {
         self.vm = vm
         self.queue = queue
+        self.excludedVirtualizationPIDs = excludedVirtualizationPIDs
     }
 
     func stop() {
@@ -347,6 +351,9 @@ private func parseOptions(_ args: [String]) throws -> Options {
     if opts.balloonTargetMiB != nil && opts.probe != "memory-reporting" {
         throw BaselineError.invalid("--balloon-target-mib requires --probe memory-reporting")
     }
+    if opts.preProbeBalloonSettleMS > maxPreProbeBalloonSettleMS {
+        throw BaselineError.invalid("--pre-probe-balloon-settle-ms must be less than or equal to \(maxPreProbeBalloonSettleMS)")
+    }
     if opts.consoleLogPath.isEmpty {
         opts.consoleLogPath = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("darwin-vz-minimal-\(UUID().uuidString).console.log")
@@ -438,7 +445,7 @@ private func readLine(fd: Int32, buffer: inout Data, deadline: Date) throws -> D
     }
 }
 
-private func buildVM(opts: Options, queue: DispatchQueue) throws -> VMHandle {
+private func buildVM(opts: Options, queue: DispatchQueue, excludedVirtualizationPIDs: Set<pid_t>) throws -> VMHandle {
     guard VZVirtualMachine.isSupported else {
         throw BaselineError.vm("Virtualization.framework is not supported on this host")
     }
@@ -475,7 +482,11 @@ private func buildVM(opts: Options, queue: DispatchQueue) throws -> VMHandle {
     config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
     try config.validate()
-    return VMHandle(vm: VZVirtualMachine(configuration: config, queue: queue), queue: queue)
+    return VMHandle(
+        vm: VZVirtualMachine(configuration: config, queue: queue),
+        queue: queue,
+        excludedVirtualizationPIDs: excludedVirtualizationPIDs
+    )
 }
 
 private func startVM(_ handle: VMHandle, timeoutSeconds: Double) throws {
@@ -612,6 +623,27 @@ private func sampleHostMemory(label: String, start: UInt64, virtualizationPIDs: 
     )
 }
 
+private func sampleVirtualMachineHostMemory(label: String, start: UInt64, handle: VMHandle) throws -> HostMemorySample {
+    if handle.virtualizationPIDs.isEmpty {
+        handle.virtualizationPIDs = discoverVirtualizationMachinePIDs(
+            excluding: handle.excludedVirtualizationPIDs,
+            timeoutSeconds: 0.5
+        )
+    }
+    var sample = try sampleHostMemory(label: label, start: start, virtualizationPIDs: handle.virtualizationPIDs)
+    if sample.virtualizationPIDs.isEmpty {
+        handle.virtualizationPIDs = discoverVirtualizationMachinePIDs(
+            excluding: handle.excludedVirtualizationPIDs,
+            timeoutSeconds: 0.5
+        )
+        sample = try sampleHostMemory(label: label, start: start, virtualizationPIDs: handle.virtualizationPIDs)
+    }
+    if sample.virtualizationPIDs.isEmpty {
+        throw BaselineError.vm("unable to sample Virtualization.framework helper process for \(label)")
+    }
+    return sample
+}
+
 private func setBalloonTarget(handle: VMHandle, targetMiB: UInt64) throws {
     let sem = DispatchSemaphore(value: 0)
     var targetError: Error?
@@ -672,11 +704,11 @@ private func consumeGuestMemoryLines(
         }
         let event = try JSONDecoder().decode(GuestMemoryEvent.self, from: line)
         events.append(event)
-        hostSamples.append(try sampleHostMemory(label: "guest:\(event.phase)", start: start, virtualizationPIDs: handle.virtualizationPIDs))
+        hostSamples.append(try sampleVirtualMachineHostMemory(label: "guest:\(event.phase)", start: start, handle: handle))
         if event.phase == "freed", let targetMiB = opts.balloonTargetMiB, !balloonTargetApplied {
             try setBalloonTarget(handle: handle, targetMiB: targetMiB)
             balloonTargetApplied = true
-            hostSamples.append(try sampleHostMemory(label: "balloon_target:\(targetMiB)mib", start: start, virtualizationPIDs: handle.virtualizationPIDs))
+            hostSamples.append(try sampleVirtualMachineHostMemory(label: "balloon_target:\(targetMiB)mib", start: start, handle: handle))
         }
     }
 }
@@ -698,12 +730,12 @@ private func probeGuest(
             usleep(useconds_t(opts.preProbeBalloonSettleMS * 1000))
         }
         if opts.probe == "memory-reporting" {
-            hostSamples.append(try sampleHostMemory(label: "balloon_pre_probe:\(targetMiB)mib", start: start, virtualizationPIDs: handle.virtualizationPIDs))
+            hostSamples.append(try sampleVirtualMachineHostMemory(label: "balloon_pre_probe:\(targetMiB)mib", start: start, handle: handle))
         }
     }
     try writeExecRequest(connection: connection, command: probeCommand(opts: opts))
     if opts.probe == "memory-reporting" {
-        hostSamples.append(try sampleHostMemory(label: "probe:request_sent", start: start, virtualizationPIDs: handle.virtualizationPIDs))
+        hostSamples.append(try sampleVirtualMachineHostMemory(label: "probe:request_sent", start: start, handle: handle))
     }
     var balloonTargetApplied = false
     while true {
@@ -745,7 +777,7 @@ do {
     if opts.probe == "memory-reporting" {
         hostSamples.append(try sampleHostMemory(label: "host:before_vm", start: t0, virtualizationPIDs: []))
     }
-    let handle = try buildVM(opts: opts, queue: queue)
+    let handle = try buildVM(opts: opts, queue: queue, excludedVirtualizationPIDs: preexistingVirtualizationPIDs)
     defer { handle.stop() }
 
     if let targetMiB = opts.initialBalloonTargetMiB {
@@ -759,7 +791,7 @@ do {
     let startMS = msSince(t0)
     handle.virtualizationPIDs = discoverVirtualizationMachinePIDs(excluding: preexistingVirtualizationPIDs, timeoutSeconds: 2.0)
     if opts.probe == "memory-reporting" {
-        hostSamples.append(try sampleHostMemory(label: "vm:started", start: t0, virtualizationPIDs: handle.virtualizationPIDs))
+        hostSamples.append(try sampleVirtualMachineHostMemory(label: "vm:started", start: t0, handle: handle))
     }
 
     let connection = try connectVsock(
@@ -771,13 +803,13 @@ do {
     defer { connection.close() }
     let connectMS = msSince(t0)
     if opts.probe == "memory-reporting" {
-        hostSamples.append(try sampleHostMemory(label: "vsock:connected", start: t0, virtualizationPIDs: handle.virtualizationPIDs))
+        hostSamples.append(try sampleVirtualMachineHostMemory(label: "vsock:connected", start: t0, handle: handle))
     }
 
     let outcome = try probeGuest(handle: handle, connection: connection, opts: opts, start: t0)
     hostSamples.append(contentsOf: outcome.hostMemorySamples)
     if opts.probe == "memory-reporting" {
-        hostSamples.append(try sampleHostMemory(label: "probe:exit", start: t0, virtualizationPIDs: handle.virtualizationPIDs))
+        hostSamples.append(try sampleVirtualMachineHostMemory(label: "probe:exit", start: t0, handle: handle))
     }
     let execResponseMS = msSince(t0)
 
