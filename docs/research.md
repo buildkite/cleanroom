@@ -1,5 +1,9 @@
 # Cleanroom research notes
 
+This is background research, not the user-facing product reference. Start with
+[Policy](policy.md), [Networking](networking.md), [Caching](caching.md), and
+[Backends](backends.md) for current behavior.
+
 This document surveys agent sandbox tools and isolation backends to inform Cleanroom's design. It covers hosted providers, self-hosted tools, and the isolation technologies they use. The goal is practical: what exists, what works, and where Cleanroom fits.
 
 ## Landscape comparison
@@ -14,7 +18,7 @@ This document surveys agent sandbox tools and isolation backends to inform Clean
 | Shuru | Self-hosted | Virtualization.framework (macOS only) | Deny-by-default (`--allow-net` opt-in) | Ephemeral (checkpoint reuse) | Alpine rootfs | Fast (checkpoint restore) | CLI (Rust) |
 | SmolVM | Self-hosted | libkrun microVM | None | Ephemeral + persistent | OCI images | <200ms | CLI (Rust) |
 | Matchlock | Self-hosted | Firecracker (Linux) / Virtualization.framework (macOS) | Allow-list (allow-all default, TLS MITM proxy) | Ephemeral | OCI images (EROFS) | <1s | CLI + Go/Python/TS SDK |
-| Cleanroom | Self-hosted | Firecracker (Linux) / Virtualization.framework (macOS) | Deny-by-default, host:port allow rules in repo policy | Persistent sandboxes (Firecracker) | OCI images (digest-pinned, ext4) | N/A | CLI + ConnectRPC API |
+| Cleanroom | Self-hosted | Firecracker (Linux) / Virtualization.framework (macOS) | Deny-by-default, host:port allow rules in repo policy | Persistent sandboxes | OCI images (digest-pinned, ext4) | Sub-second VM creation on warm paths | CLI + ConnectRPC API |
 
 For independent TTI (time-to-interactive) benchmarks across hosted sandbox providers, see [ComputeSDK benchmarks](https://www.computesdk.com/benchmarks/).
 
@@ -118,7 +122,7 @@ Current validated release: `v1.17.4` (published 2026-02-18). See also: [releases
 
 Apple's [Virtualization.framework](https://developer.apple.com/documentation/virtualization) provides hardware-accelerated VMs on macOS (Apple Silicon and Intel). Cleanroom's `darwin-vz` backend uses a dedicated Swift helper binary for VM lifecycle and keeps policy/image/control-plane orchestration in Go.
 
-Current status: persistent sandboxes are supported. Guest outbound networking is available via NAT, but allowlist egress filtering is not yet implemented. The backend enforces `network.default: deny` as a policy shape check and warns that `network.allow` entries are ignored. See [darwin-vz.md](backend/darwin-vz.md) for implementation details.
+Current status: persistent sandboxes are supported. The `filehandle` network path provides Cleanroom-owned TCP egress filtering, DNS handling, and access to the shared host gateway. See [darwin-vz.md](backend/darwin-vz.md) for implementation details.
 
 Used by: Tart, Matchlock (macOS path), Cleanroom (macOS path).
 

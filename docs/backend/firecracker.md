@@ -127,4 +127,4 @@ and file-backed Firecracker as a fallback with slower restore behaviour.
 - [darwin-vz.md](darwin-vz.md) -- macOS backend
 - [isolation.md](../isolation.md) -- enforcement and persistence details
 - [research.md](../research.md) -- backend evaluation and comparison
-- [../plans/snapshot-restore-fork.md](../plans/snapshot-restore-fork.md) -- proposed snapshot and create-from-snapshot design
+- [snapshots.md](../snapshots.md) -- snapshot commands and create-from-snapshot behavior

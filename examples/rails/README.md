@@ -6,17 +6,7 @@ embedded RubyGems content-cache route.
 
 ## Prerequisites
 
-Install Cleanroom from this checkout:
-
-```bash
-mise run install
-```
-
-Pull the Debian Ruby base image used by the example:
-
-```bash
-cleanroom image pull ghcr.io/buildkite/cleanroom-base/debian-ruby@sha256:cba9876d67beb8971e791f1bc6af175f0bff47e938f955059813c4dd6914eb53
-```
+Install Cleanroom with the main installer. The installer starts the daemon.
 
 The example policy declares enough guest memory and disk for the first Rails bundle:
 
@@ -29,20 +19,13 @@ sandbox:
 
 ## Usage
 
-Run from this directory with a `cleanroom serve` instance running:
+Run from this directory:
 
 ```bash
-# Validate the policy
 cleanroom policy validate
 
-# Start the control plane if it is not already running
-cleanroom serve &
-
-# Run a small Rails component test
 cleanroom exec \
-  --backend darwin-vz \
   --repo-url https://github.com/rails/rails.git \
-  --repo-commit cfa4e1b475472c7980a42dd810f237951db5108a \
   -e BUNDLE_PATH=/workspace/vendor/bundle \
   -e BUNDLE_APP_CONFIG=/workspace/vendor/bundle/.bundle \
   -- sh -lc 'cd activesupport && bin/test test/benchmarkable_test.rb'
@@ -61,7 +44,7 @@ cleanroom exec \
 - the dependency stage is keyed on `Gemfile`, `Gemfile.lock`, and the component
   gemspecs Rails uses from the monorepo
 
-## Network allow list
+## Network Allow List
 
 The example policy allows only the hosts needed for the Rails checkout,
 Debian package bootstrap, and RubyGems resolution:

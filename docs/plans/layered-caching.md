@@ -32,7 +32,7 @@ The system-cache pipeline uses stage terminology:
 
 This document remains the plan for full-rootfs system stage caches. The
 declared input/output model for dependency and service output volumes now lives
-in `dependency-service-volume-caches.md`. That block-volume model is the path
+in [Caching](../caching.md) and [Policy](../policy.md). That block-volume model is the path
 for repo-local outputs such as `node_modules`, package stores, generated files,
 and service data directories. The older idea of a standalone
 `internal/inputmanifest` package did not become the implementation; current
@@ -1019,14 +1019,14 @@ The second path keeps warm hits bounded by rootfs size and host I/O.
 
 ## Relationship To Existing Plans
 
-This plan composes with the existing documents rather than replacing them.
+This plan composes with the user docs and remaining active plans rather than
+replacing them.
 
-- `repository-bootstrap.md`
-  defines exact-commit repository resolution and the host mirror-backed git
-  gateway
-- `snapshot-restore-fork.md`
-  defines immutable rootfs snapshots and fresh-boot fan-out semantics
-- `host-gateway.md`
+- `docs/workspaces.md`
+  defines exact-commit repository resolution and explicit workspace copy
+- `docs/snapshots.md`
+  defines user snapshots and fresh-boot restore semantics
+- `docs/gateway.md`
   defines the host-side mediation point for git and registry traffic
 - `firecracker-privilege-runtime.md`
   defines the Linux host-runtime direction needed for clone-capable snapshot

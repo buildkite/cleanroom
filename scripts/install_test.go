@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -35,6 +36,93 @@ func TestInstallScriptPromptDeclinesSilentlyWithoutTTY(t *testing.T) {
 	}
 }
 
+func TestInstallScriptInstallsMacOSUserDaemonWithoutSudo(t *testing.T) {
+	content, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	cleanroomPath := filepath.Join(tmpDir, "cleanroom")
+	callsPath := filepath.Join(tmpDir, "cleanroom-calls")
+	writeInstallTestExecutable(t, cleanroomPath, `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CLEANROOM_CALLS"
+`)
+
+	script := strings.Join([]string{
+		shellFunction(t, string(content), "log"),
+		shellFunction(t, string(content), "warn"),
+		shellFunction(t, string(content), "die"),
+		shellFunction(t, string(content), "install_cleanroom_daemon"),
+		"id() { printf '501\n'; }",
+		`HOST_OS=Darwin`,
+		`INSTALL_DAEMON=1`,
+		`INSTALL_DIR="$TEST_INSTALL_DIR"`,
+		`install_cleanroom_daemon`,
+	}, "\n")
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(), "TEST_INSTALL_DIR="+tmpDir, "CLEANROOM_CALLS="+callsPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install_cleanroom_daemon failed: %v\n%s", err, out)
+	}
+
+	got := strings.TrimSpace(readFile(t, callsPath))
+	if got != "daemon install --init-config --restart" {
+		t.Fatalf("unexpected cleanroom daemon command: got %q", got)
+	}
+}
+
+func TestInstallScriptInstallsLinuxDaemonWithSudoWhenNonRoot(t *testing.T) {
+	content, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create fake bin dir: %v", err)
+	}
+	cleanroomPath := filepath.Join(tmpDir, "cleanroom")
+	sudoCallsPath := filepath.Join(tmpDir, "sudo-calls")
+	writeInstallTestExecutable(t, cleanroomPath, "#!/usr/bin/env bash\nexit 0\n")
+	writeInstallTestExecutable(t, filepath.Join(binDir, "sudo"), `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SUDO_CALLS"
+`)
+
+	script := strings.Join([]string{
+		shellFunction(t, string(content), "log"),
+		shellFunction(t, string(content), "warn"),
+		shellFunction(t, string(content), "die"),
+		shellFunction(t, string(content), "install_cleanroom_daemon"),
+		"id() { printf '1000\n'; }",
+		`HOST_OS=Linux`,
+		`INSTALL_DAEMON=1`,
+		`INSTALL_DIR="$TEST_INSTALL_DIR"`,
+		`install_cleanroom_daemon`,
+	}, "\n")
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(
+		os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TEST_INSTALL_DIR="+tmpDir,
+		"SUDO_CALLS="+sudoCallsPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install_cleanroom_daemon failed: %v\n%s", err, out)
+	}
+
+	got := strings.TrimSpace(readFile(t, sudoCallsPath))
+	want := cleanroomPath + " daemon install --init-config --restart"
+	if got != want {
+		t.Fatalf("unexpected sudo daemon command: got %q want %q", got, want)
+	}
+}
+
 func shellFunction(t *testing.T, content, name string) string {
 	t.Helper()
 
@@ -48,4 +136,22 @@ func shellFunction(t *testing.T, content, name string) string {
 		t.Fatalf("function %s terminator not found", name)
 	}
 	return rest[:end+3]
+}
+
+func writeInstallTestExecutable(t *testing.T, path, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(content)
 }

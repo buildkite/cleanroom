@@ -1,13 +1,14 @@
 # Buildkite Agent Example
 
-Runs the [buildkite/agent](https://github.com/buildkite/agent) test suite
-inside a cleanroom sandbox with deny-by-default egress, explicit `mise`
-dependency bootstrap, Go module resolution, and dependency-stage warmup.
+Checks out [buildkite/agent](https://github.com/buildkite/agent), warms its
+`mise` toolchain and Go modules, then runs the agent CLI in a Cleanroom sandbox
+with deny-by-default egress.
 
 ## Prerequisites
 
-Install cleanroom (`mise run install` from repository root). The example policy
-declares enough guest resources for a large Go build:
+Install Cleanroom with the main installer. The installer starts the daemon.
+
+This policy declares enough guest resources for a large Go build:
 
 ```yaml
 sandbox:
@@ -18,34 +19,36 @@ sandbox:
 
 ## Usage
 
-Run from this directory with a `cleanroom serve` instance running:
+Run from this directory:
 
 ```bash
-# Validate the policy
 cleanroom policy validate
 
-# Open an interactive shell in the checkout
-cleanroom console \
-  --backend darwin-vz \
-  --repo-url https://github.com/buildkite/agent.git \
-  --repo-commit 9eba5c5b83807b9aaaaffef6225be1f62c8d7d6c
-
-# Run the test suite
 cleanroom exec \
-  --backend darwin-vz \
   --repo-url https://github.com/buildkite/agent.git \
-  --repo-commit 9eba5c5b83807b9aaaaffef6225be1f62c8d7d6c \
-  -- mise x -- go test -p 1 ./...
-
-# Match the host-side gotestsum flow
-cleanroom exec \
-  --backend darwin-vz \
-  --repo-url https://github.com/buildkite/agent.git \
-  --repo-commit 9eba5c5b83807b9aaaaffef6225be1f62c8d7d6c \
-  -- mise x -- go run gotest.tools/gotestsum@latest ./... -- -fastfail
+  -- mise x -- go run . --version
 ```
 
-## Network allow list
+That builds and runs the agent CLI without needing a Buildkite token. To inspect
+the checkout before running commands, open a console:
+
+```bash
+cleanroom console \
+  --repo-url https://github.com/buildkite/agent.git
+```
+
+To run tests, use the repo's Go test path:
+
+```bash
+cleanroom exec \
+  --repo-url https://github.com/buildkite/agent.git \
+  -- mise x -- go test -p 1 ./...
+```
+
+Starting a connected worker is the next step, and requires the usual Buildkite
+agent token and `buildkite-agent start` flags.
+
+## Network Allow List
 
 The `cleanroom.yaml` policy allows egress to the minimum set of hosts
 needed for the explicit `mise exec -- go mod download` dependency bootstrap and
@@ -64,7 +67,6 @@ Go module resolution:
 ## Notes
 
 - First run is slow: git clone, mise tool install, and Go module download
-- The example now targets the current `buildkite/agent` `HEAD` commit at the time of this update: `9eba5c5b83807b9aaaaffef6225be1f62c8d7d6c`
 - The example policy uses the current multi-arch Debian base image digest `ghcr.io/buildkite/cleanroom-base/debian@sha256:28c3f638fabe1ed780f87b82cfb0c6dda2549c86b9e4edbe519e8250243411c5`
 - Guest resource minimums are declared in `cleanroom.yaml`; larger host runtime defaults still win
 - The policy sets:

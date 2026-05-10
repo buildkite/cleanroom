@@ -25,7 +25,7 @@ usage() {
 Install cleanroom from GitHub releases.
 
 Usage:
-  install.sh [--version <version>] [--install-dir <dir>] [--repo <owner/repo>] [--no-darwin-helper]
+  install.sh [--version <version>] [--install-dir <dir>] [--repo <owner/repo>] [--no-darwin-helper] [--no-daemon]
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | bash
@@ -36,6 +36,7 @@ Environment variables:
   CLEANROOM_VERSION               Optional release version (example: vX.Y.Z)
   CLEANROOM_INSTALL_DIR           Install destination (default: /usr/local/bin)
   CLEANROOM_REPO                  GitHub repo in owner/repo format (default: buildkite/cleanroom)
+  CLEANROOM_INSTALL_DAEMON        Set to 0 to skip daemon install/start
   CLEANROOM_INSTALL_DARWIN_HELPER Set to 0 to skip cleanroom-darwin-vz install on macOS
   CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS Optional entitlements plist for cleanroom-darwin-vz signing or re-signing
   CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY Optional codesign identity for cleanroom-darwin-vz (default: ad-hoc when re-signing)
@@ -226,6 +227,46 @@ install_macos_pkg() {
   run_with_optional_sudo installer -pkg "$pkg_path" -target /
 }
 
+install_cleanroom_daemon() {
+  local cleanroom_bin
+
+  if [ "$INSTALL_DAEMON" = "0" ]; then
+    log "Skipping daemon install"
+    return 0
+  fi
+
+  cleanroom_bin="${INSTALL_DIR}/cleanroom"
+  [ -x "${cleanroom_bin}" ] || die "cleanroom binary missing at ${cleanroom_bin}"
+
+  case "$HOST_OS" in
+    Darwin)
+      if [ "$(id -u)" -eq 0 ]; then
+        die "cannot install the macOS user daemon while running as root; rerun without sudo or pass --no-daemon"
+      fi
+      log "Installing and starting cleanroom launchd daemon"
+      if ! "${cleanroom_bin}" daemon install --init-config --restart; then
+        die "failed to install cleanroom daemon"
+      fi
+      ;;
+    Linux)
+      log "Installing and starting cleanroom systemd daemon"
+      if [ "$(id -u)" -eq 0 ]; then
+        if ! "${cleanroom_bin}" daemon install --init-config --restart; then
+          die "failed to install cleanroom daemon"
+        fi
+      else
+        command -v sudo >/dev/null 2>&1 || die "sudo is required to install the cleanroom daemon (or pass --no-daemon)"
+        if ! sudo "${cleanroom_bin}" daemon install --init-config --restart; then
+          die "failed to install cleanroom daemon"
+        fi
+      fi
+      ;;
+    *)
+      die "daemon install is unsupported on ${HOST_OS}"
+      ;;
+  esac
+}
+
 homebrew_e2fsprogs_prefixes() {
   local brew_path prefix
 
@@ -414,6 +455,7 @@ esac
 VERSION="${CLEANROOM_VERSION:-}"
 INSTALL_DIR="${CLEANROOM_INSTALL_DIR:-/usr/local/bin}"
 REPO="${CLEANROOM_REPO:-buildkite/cleanroom}"
+INSTALL_DAEMON="${CLEANROOM_INSTALL_DAEMON:-1}"
 INSTALL_DARWIN_HELPER="${CLEANROOM_INSTALL_DARWIN_HELPER:-1}"
 
 while [ "$#" -gt 0 ]; do
@@ -435,6 +477,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-darwin-helper)
       INSTALL_DARWIN_HELPER=0
+      shift
+      ;;
+    --no-daemon)
+      INSTALL_DAEMON=0
       shift
       ;;
     -h|--help)
@@ -472,6 +518,7 @@ if can_use_notarized_macos_pkg && try_install_notarized_macos_pkg; then
     *) warn "${INSTALL_DIR} is not in PATH" ;;
   esac
   maybe_install_darwin_host_dependencies
+  install_cleanroom_daemon
   exit 0
 fi
 
@@ -631,3 +678,4 @@ case ":${PATH}:" in
 esac
 
 maybe_install_darwin_host_dependencies
+install_cleanroom_daemon
