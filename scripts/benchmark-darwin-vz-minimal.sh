@@ -18,6 +18,20 @@ Options:
   -n, --iterations <count>  Number of runs (default: 10).
   --vcpus <count>           Guest vCPU count (default: 2).
   --memory-mib <mib>        Guest memory in MiB (default: 1024).
+  --probe <name>            Probe to run: exec or memory-reporting (default: exec).
+  --probe-memory-mib <mib>  Memory touched by memory-reporting probe (default: 256).
+  --probe-pre-touch-ms <ms> Delay after the before sample (default: 500).
+  --probe-hold-ms <ms>      Delay after touching memory (default: 1000).
+  --probe-post-free-ms <ms> Delay after freeing memory (default: 3000).
+  --balloon-device <on|off> Attach the VZ virtio memory balloon (default: on).
+  --initial-balloon-target-mib <mib>
+                            Set VZ balloon target before VM start.
+  --pre-probe-balloon-target-mib <mib>
+                            Set VZ balloon target before running the probe.
+  --pre-probe-balloon-settle-ms <ms>
+                            Delay after pre-probe balloon target (default: 1000).
+  --balloon-target-mib <mib>
+                            Set explicit VZ balloon target after the guest frees memory.
   --boot-args <args>        Full Linux command line override.
   --output-dir <path>       JSONL output directory (default: benchmarks/results).
   -h, --help                Show this help.
@@ -38,6 +52,16 @@ kernel_profile=""
 iterations=10
 vcpus=2
 memory_mib=1024
+probe="exec"
+probe_memory_mib=256
+probe_pre_touch_ms=500
+probe_hold_ms=1000
+probe_post_free_ms=3000
+balloon_device="on"
+initial_balloon_target_mib=""
+pre_probe_balloon_target_mib=""
+pre_probe_balloon_settle_ms=1000
+balloon_target_mib=""
 output_dir="${REPO_ROOT}/benchmarks/results"
 build_kernel=0
 
@@ -73,6 +97,46 @@ while [[ $# -gt 0 ]]; do
       ;;
     --memory-mib)
       memory_mib="$2"
+      shift 2
+      ;;
+    --probe)
+      probe="$2"
+      shift 2
+      ;;
+    --probe-memory-mib)
+      probe_memory_mib="$2"
+      shift 2
+      ;;
+    --probe-pre-touch-ms)
+      probe_pre_touch_ms="$2"
+      shift 2
+      ;;
+    --probe-hold-ms)
+      probe_hold_ms="$2"
+      shift 2
+      ;;
+    --probe-post-free-ms)
+      probe_post_free_ms="$2"
+      shift 2
+      ;;
+    --balloon-device)
+      balloon_device="$2"
+      shift 2
+      ;;
+    --initial-balloon-target-mib)
+      initial_balloon_target_mib="$2"
+      shift 2
+      ;;
+    --pre-probe-balloon-target-mib)
+      pre_probe_balloon_target_mib="$2"
+      shift 2
+      ;;
+    --pre-probe-balloon-settle-ms)
+      pre_probe_balloon_settle_ms="$2"
+      shift 2
+      ;;
+    --balloon-target-mib)
+      balloon_target_mib="$2"
       shift 2
       ;;
     --boot-args)
@@ -115,9 +179,66 @@ run_repo_tool() {
 require_positive_int "iterations" "${iterations}"
 require_positive_int "vcpus" "${vcpus}"
 require_positive_int "memory-mib" "${memory_mib}"
+require_positive_int "probe-memory-mib" "${probe_memory_mib}"
+require_positive_int "probe-pre-touch-ms" "${probe_pre_touch_ms}"
+require_positive_int "probe-hold-ms" "${probe_hold_ms}"
+require_positive_int "probe-post-free-ms" "${probe_post_free_ms}"
+require_positive_int "pre-probe-balloon-settle-ms" "${pre_probe_balloon_settle_ms}"
+
+case "${probe}" in
+  exec|memory-reporting) ;;
+  *)
+    echo "unsupported --probe: ${probe}" >&2
+    exit 1
+    ;;
+esac
+case "${balloon_device}" in
+  on|off) ;;
+  *)
+    echo "unsupported --balloon-device: ${balloon_device}" >&2
+    exit 1
+    ;;
+esac
+if [[ -n "${balloon_target_mib}" ]]; then
+  require_positive_int "balloon-target-mib" "${balloon_target_mib}"
+fi
+if [[ -n "${initial_balloon_target_mib}" ]]; then
+  require_positive_int "initial-balloon-target-mib" "${initial_balloon_target_mib}"
+fi
+if [[ -n "${pre_probe_balloon_target_mib}" ]]; then
+  require_positive_int "pre-probe-balloon-target-mib" "${pre_probe_balloon_target_mib}"
+fi
+if [[ "${probe}" == "memory-reporting" && "${probe_memory_mib}" -ge "${memory_mib}" ]]; then
+  echo "--probe-memory-mib must be smaller than --memory-mib" >&2
+  exit 1
+fi
+if [[ -n "${balloon_target_mib}" && "${balloon_target_mib}" -gt "${memory_mib}" ]]; then
+  echo "--balloon-target-mib must be less than or equal to --memory-mib" >&2
+  exit 1
+fi
+if [[ -n "${initial_balloon_target_mib}" && "${initial_balloon_target_mib}" -gt "${memory_mib}" ]]; then
+  echo "--initial-balloon-target-mib must be less than or equal to --memory-mib" >&2
+  exit 1
+fi
+if [[ -n "${pre_probe_balloon_target_mib}" && "${pre_probe_balloon_target_mib}" -gt "${memory_mib}" ]]; then
+  echo "--pre-probe-balloon-target-mib must be less than or equal to --memory-mib" >&2
+  exit 1
+fi
+if [[ "${balloon_device}" == "off" && (-n "${balloon_target_mib}" || -n "${initial_balloon_target_mib}" || -n "${pre_probe_balloon_target_mib}") ]]; then
+  echo "balloon target options require --balloon-device on" >&2
+  exit 1
+fi
+if [[ -n "${balloon_target_mib}" && "${probe}" != "memory-reporting" ]]; then
+  echo "--balloon-target-mib requires --probe memory-reporting" >&2
+  exit 1
+fi
 
 if [[ -n "${initrd_path}" && -n "${rootfs_path}" ]]; then
   echo "--initrd and --rootfs are mutually exclusive" >&2
+  exit 1
+fi
+if [[ "${probe}" == "memory-reporting" && -n "${rootfs_path}" ]]; then
+  echo "--probe memory-reporting currently requires initrd mode" >&2
   exit 1
 fi
 
@@ -205,10 +326,26 @@ for i in $(seq 1 "${iterations}"); do
     "${mode_args[@]}"
     --vcpus "${vcpus}"
     --memory-mib "${memory_mib}"
+    --probe "${probe}"
+    --probe-memory-mib "${probe_memory_mib}"
+    --probe-pre-touch-ms "${probe_pre_touch_ms}"
+    --probe-hold-ms "${probe_hold_ms}"
+    --probe-post-free-ms "${probe_post_free_ms}"
+    --balloon-device "${balloon_device}"
     --console-log "${console_log}"
   )
   if [[ -n "${boot_args}" ]]; then
     runner_args+=(--boot-args "${boot_args}")
+  fi
+  if [[ -n "${initial_balloon_target_mib}" ]]; then
+    runner_args+=(--initial-balloon-target-mib "${initial_balloon_target_mib}")
+  fi
+  if [[ -n "${pre_probe_balloon_target_mib}" ]]; then
+    runner_args+=(--pre-probe-balloon-target-mib "${pre_probe_balloon_target_mib}")
+    runner_args+=(--pre-probe-balloon-settle-ms "${pre_probe_balloon_settle_ms}")
+  fi
+  if [[ -n "${balloon_target_mib}" ]]; then
+    runner_args+=(--balloon-target-mib "${balloon_target_mib}")
   fi
 
   "${runner_path}" "${runner_args[@]}" | tee -a "${output_path}"

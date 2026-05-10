@@ -122,6 +122,11 @@ docker run --rm \
       -e VIRTIO_MMIO \
       -e VIRTIO_PCI_LEGACY \
       -e VIRTIO_CONSOLE \
+      -e VIRTIO_BALLOON \
+      -e MEMORY_BALLOON \
+      -e BALLOON_COMPACTION \
+      -e COMPACTION \
+      -e PAGE_REPORTING \
       -e VSOCKETS \
       -e VIRTIO_VSOCKETS \
       -e NET \
@@ -130,6 +135,7 @@ docker run --rm \
       -e SYSFS \
       -e FUTEX \
       -e EPOLL \
+      -e ADVISE_SYSCALLS \
       -e ANON_INODES \
       -e EVENTFD \
       -e SIGNALFD \
