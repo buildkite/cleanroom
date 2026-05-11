@@ -85,13 +85,47 @@ purge_stale_cleanroom_resources() {
 }
 
 cleanup() {
+  local status="$1"
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
     wait "$srv_pid" >/dev/null 2>&1 || true
   fi
+  upload_firecracker_artifacts "$status" || true
   sleep 1
   purge_stale_cleanroom_resources 2>/dev/null || true
   rm -rf "$tmpdir"
+}
+
+upload_firecracker_artifacts() {
+  local status="$1"
+  if [[ -z "${BUILDKITE:-}" ]]; then
+    return 0
+  fi
+  if ! command -v buildkite-agent >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -z "${tmpdir:-}" || ! -d "$tmpdir" ]]; then
+    return 0
+  fi
+
+  local artifact_dir artifact_path
+  artifact_dir="$(mktemp -d)"
+  artifact_path="$(mktemp "/tmp/cleanroom-ci-examples-firecracker.XXXXXX.tgz")"
+
+  cp "$tmpdir/server.log" "$artifact_dir/server.log" 2>/dev/null || true
+  cp "$tmpdir/doctor.json" "$artifact_dir/doctor.json" 2>/dev/null || true
+  if [[ -f "$tmpdir/config/cleanroom/config.yaml" ]]; then
+    mkdir -p "$artifact_dir/config/cleanroom"
+    cp "$tmpdir/config/cleanroom/config.yaml" "$artifact_dir/config/cleanroom/config.yaml" || true
+  fi
+
+  if tar -czf "$artifact_path" -C "$artifact_dir" .; then
+    echo "--- :package: Upload firecracker example artifacts (status=$status)"
+    buildkite-agent artifact upload "$artifact_path" || true
+  fi
+
+  rm -rf "$artifact_dir"
+  rm -f "$artifact_path"
 }
 
 main() {
@@ -108,7 +142,9 @@ main() {
   scripts/build-go.sh
 
   tmpdir="$(mktemp -d)"
-  trap cleanup EXIT
+  trap 'status=$?; cleanup "$status"; exit "$status"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   export XDG_CONFIG_HOME="$tmpdir/config"
   export XDG_CACHE_HOME="$tmpdir/cache"
