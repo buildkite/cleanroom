@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
   firecracker-trusted-dns
+  firecracker-port-dial
 )
 
 run_privileged() {

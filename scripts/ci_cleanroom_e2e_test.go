@@ -80,6 +80,7 @@ func TestCiCleanroomE2EProbesHelperCapabilitiesInsteadOfHelperDrift(t *testing.T
 	script := string(content)
 	for _, needle := range []string{
 		"ROOT_HELPER_REQUIRED_CAPABILITIES=(",
+		"firecracker-port-dial",
 		"sudo -n \"$PRIVILEGED_HELPER_PATH\" capabilities",
 		"verify_helper_capabilities",
 		"Roll out the latest helper on the CI host",

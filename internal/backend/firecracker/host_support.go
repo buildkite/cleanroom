@@ -98,6 +98,7 @@ func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostS
 		runtimeMissingCaps := helperMissingCapabilities(caps, []string{
 			helperCapabilityFirecrackerNetwork,
 			helperCapabilityFirecrackerTrustedDNS,
+			helperCapabilityFirecrackerPortDial,
 		})
 		if len(runtimeMissingCaps) > 0 {
 			result.RuntimeMessage = fmt.Sprintf("privileged helper is missing required capabilities: %s", strings.Join(runtimeMissingCaps, ", "))

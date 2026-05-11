@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/e2e-observability.sh"
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
   firecracker-trusted-dns
+  firecracker-port-dial
 )
 
 OBSERVABILITY_SUITE_LABEL="Firecracker E2E"
