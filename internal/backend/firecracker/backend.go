@@ -120,6 +120,7 @@ const preparedRuntimeRootFSVersion = "v2-debugfs"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
 const helperCapabilityFirecrackerTrustedDNS = "firecracker-trusted-dns"
+const helperCapabilityFirecrackerPortDial = "firecracker-port-dial"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
 const helperCapabilityFirecrackerZFSMetadata = "firecracker-zfs-metadata"
 const helperCapabilityFirecrackerNFLog = "firecracker-nflog"
@@ -2404,6 +2405,7 @@ func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {
 	required := []string{
 		helperCapabilityFirecrackerNetwork,
 		helperCapabilityFirecrackerTrustedDNS,
+		helperCapabilityFirecrackerPortDial,
 	}
 
 	snapshotDriver := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
