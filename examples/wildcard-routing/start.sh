@@ -17,6 +17,54 @@ dump_listeners() {
   fi
 }
 
+dump_processes() {
+  log "process snapshot"
+  ps -ef >&2 || true
+}
+
+probe_guest_http() {
+  log "guest-local http probe"
+  python3 - <<'PY' >&2 || true
+import http.client
+
+for host in (
+    "example.cleanroom.localhost",
+    "app.example.cleanroom.localhost",
+    "s3.example.cleanroom.localhost",
+):
+    print(f"guest-local probe {host}: starting", flush=True)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", 80, timeout=3)
+        conn.request("GET", "/", headers={"Host": host})
+        resp = conn.getresponse()
+        body = resp.read(512).decode("utf-8", "replace")
+        headers = ", ".join(f"{k}: {v}" for k, v in resp.getheaders())
+        print(f"guest-local probe {host}: status={resp.status} reason={resp.reason}", flush=True)
+        print(f"guest-local probe {host}: headers={headers}", flush=True)
+        print(f"guest-local probe {host}: body={body!r}", flush=True)
+    except Exception as err:
+        print(f"guest-local probe {host}: error={err!r}", flush=True)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+PY
+}
+
+post_nginx_start_probe() {
+  sleep 2
+  log "post-nginx startup probe"
+  dump_processes
+  dump_listeners
+  probe_guest_http
+  sleep 5
+  log "post-nginx follow-up probe"
+  dump_processes
+  dump_listeners
+  probe_guest_http
+}
+
 log "starting package installation"
 apt-get update
 apt-get install --yes --no-install-recommends nginx python3
@@ -59,4 +107,5 @@ trap cleanup EXIT INT TERM
 
 log "starting nginx foreground server"
 dump_listeners
+post_nginx_start_probe &
 nginx -c "$PWD/nginx.conf" -g 'daemon off;'
