@@ -11,19 +11,47 @@ if [[ -z "$BACKEND" || -z "$LISTEN_ENDPOINT" || -z "$REPO_ROOT" ]]; then
 fi
 
 tmpdir="$(mktemp -d)"
+upload_smoke_artifacts() {
+  local status="$1"
+  if [[ -z "${BUILDKITE:-}" ]]; then
+    return 0
+  fi
+  if ! command -v buildkite-agent >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ ! -d "$tmpdir" ]]; then
+    return 0
+  fi
+
+  local artifact_path
+  artifact_path="$(mktemp "/tmp/cleanroom-ci-example-smoke-${BACKEND}.XXXXXX.tgz")"
+  if tar -czf "$artifact_path" -C "$tmpdir" .; then
+    echo "--- :package: Upload example smoke artifacts ($BACKEND, status=$status)"
+    buildkite-agent artifact upload "$artifact_path" || true
+  fi
+  rm -f "$artifact_path"
+}
+
 cleanup() {
+  local status="$1"
   if [[ -n "${wildcard_pid:-}" ]]; then
     kill "$wildcard_pid" >/dev/null 2>&1 || true
     wait "$wildcard_pid" >/dev/null 2>&1 || true
   fi
+  upload_smoke_artifacts "$status" || true
   rm -rf "$tmpdir"
 }
-trap cleanup EXIT
+trap 'status=$?; cleanup "$status"; exit "$status"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 basic_smoke_dir="$tmpdir/basic"
 docker_smoke_dir="$tmpdir/docker"
 wildcard_example_dir="$REPO_ROOT/examples/wildcard-routing"
 exposure_cert_path="${XDG_CONFIG_HOME:-$HOME/.config}/cleanroom/tls/exposure-cert.pem"
+curl_max_time_seconds="${CLEANROOM_CI_CURL_MAX_TIME_SECONDS:-15}"
+curl_connect_timeout_seconds="${CLEANROOM_CI_CURL_CONNECT_TIMEOUT_SECONDS:-5}"
+wildcard_debug_log="$tmpdir/wildcard-debug.log"
 
 mkdir -p "$basic_smoke_dir" "$docker_smoke_dir"
 cat > "$basic_smoke_dir/cleanroom.yaml" <<'EOF'
@@ -130,6 +158,14 @@ if ! grep -q '^docker-pull-ok$' "$tmpdir/docker-pull.out"; then
 fi
 
 echo "--- :globe_with_meridians: Wildcard routing example smoke test ($BACKEND)"
+{
+  echo "backend=$BACKEND"
+  echo "listen_endpoint=$LISTEN_ENDPOINT"
+  echo "wildcard_example_dir=$wildcard_example_dir"
+  echo "curl_max_time_seconds=$curl_max_time_seconds"
+  echo "curl_connect_timeout_seconds=$curl_connect_timeout_seconds"
+  date -u '+started_at=%Y-%m-%dT%H:%M:%SZ'
+} >>"$wildcard_debug_log"
 "$REPO_ROOT/dist/cleanroom" exec \
   --host "$LISTEN_ENDPOINT" \
   --backend "$BACKEND" \
@@ -161,6 +197,7 @@ if [[ -z "$wildcard_url" ]]; then
   cat "$tmpdir/wildcard.stderr" >&2 || true
   exit 1
 fi
+echo "wildcard exposure ready: $wildcard_url" >>"$wildcard_debug_log"
 
 wildcard_port="${wildcard_url##*:}"
 if [[ ! -f "$exposure_cert_path" ]]; then
@@ -169,13 +206,29 @@ if [[ ! -f "$exposure_cert_path" ]]; then
   cat "$tmpdir/wildcard.stderr" >&2 || true
   exit 1
 fi
+echo "wildcard_port=$wildcard_port" >>"$wildcard_debug_log"
+echo "exposure_cert_path=$exposure_cert_path" >>"$wildcard_debug_log"
 
 curl_retry() {
-  local output_file="$1"
-  shift
-  for _ in $(seq 1 60); do
-    if curl --silent --show-error --fail-with-body --cacert "$exposure_cert_path" "$@" >"$output_file"; then
+  local label="$1"
+  local output_file="$2"
+  shift 2
+  local attempt
+  for attempt in $(seq 1 60); do
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label attempt $attempt/60" >>"$wildcard_debug_log"
+    if curl --silent --show-error --fail-with-body \
+      --connect-timeout "$curl_connect_timeout_seconds" \
+      --max-time "$curl_max_time_seconds" \
+      --cacert "$exposure_cert_path" "$@" >"$output_file"; then
+      echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label attempt $attempt/60 succeeded" >>"$wildcard_debug_log"
       return 0
+    fi
+    local curl_status=$?
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label attempt $attempt/60 failed status=$curl_status" >>"$wildcard_debug_log"
+    if [[ -s "$output_file" ]]; then
+      echo "--- $label response tail ---" >>"$wildcard_debug_log"
+      tail -40 "$output_file" >>"$wildcard_debug_log" || true
+      echo "--- end $label response tail ---" >>"$wildcard_debug_log"
     fi
     sleep 1
   done
@@ -183,18 +236,40 @@ curl_retry() {
 }
 
 curl_headers_retry() {
-  local output_file="$1"
-  shift
-  for _ in $(seq 1 60); do
-    if curl --silent --show-error --fail-with-body --cacert "$exposure_cert_path" --dump-header "$output_file" --output /dev/null "$@"; then
+  local label="$1"
+  local output_file="$2"
+  shift 2
+  local body_file="${output_file}.body"
+  local attempt
+  for attempt in $(seq 1 60); do
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label headers attempt $attempt/60" >>"$wildcard_debug_log"
+    if curl --silent --show-error --fail-with-body \
+      --connect-timeout "$curl_connect_timeout_seconds" \
+      --max-time "$curl_max_time_seconds" \
+      --cacert "$exposure_cert_path" \
+      --dump-header "$output_file" \
+      --output "$body_file" "$@"; then
+      echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label headers attempt $attempt/60 succeeded" >>"$wildcard_debug_log"
       return 0
+    fi
+    local curl_status=$?
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label headers attempt $attempt/60 failed status=$curl_status" >>"$wildcard_debug_log"
+    if [[ -s "$output_file" ]]; then
+      echo "--- $label headers tail ---" >>"$wildcard_debug_log"
+      tail -40 "$output_file" >>"$wildcard_debug_log" || true
+      echo "--- end $label headers tail ---" >>"$wildcard_debug_log"
+    fi
+    if [[ -s "$body_file" ]]; then
+      echo "--- $label body tail ---" >>"$wildcard_debug_log"
+      tail -40 "$body_file" >>"$wildcard_debug_log" || true
+      echo "--- end $label body tail ---" >>"$wildcard_debug_log"
     fi
     sleep 1
   done
   return 1
 }
 
-if ! curl_retry "$tmpdir/wildcard-exact.out" \
+if ! curl_retry "wildcard-exact" "$tmpdir/wildcard-exact.out" \
   --resolve "example.cleanroom.localhost:${wildcard_port}:127.0.0.1" \
   "https://example.cleanroom.localhost:${wildcard_port}/"; then
   echo "wildcard exact route did not become ready" >&2
@@ -208,7 +283,7 @@ if ! grep -q '^exact route ok$' "$tmpdir/wildcard-exact.out"; then
   exit 1
 fi
 
-if ! curl_retry "$tmpdir/wildcard-app.out" \
+if ! curl_retry "wildcard-app" "$tmpdir/wildcard-app.out" \
   --resolve "app.example.cleanroom.localhost:${wildcard_port}:127.0.0.1" \
   "https://app.example.cleanroom.localhost:${wildcard_port}/"; then
   echo "wildcard app route did not become ready" >&2
@@ -229,7 +304,7 @@ for needle in \
   fi
 done
 
-if ! curl_headers_retry "$tmpdir/wildcard-redirect.headers" \
+if ! curl_headers_retry "wildcard-redirect" "$tmpdir/wildcard-redirect.headers" \
   --resolve "s3.example.cleanroom.localhost:${wildcard_port}:127.0.0.1" \
   "https://s3.example.cleanroom.localhost:${wildcard_port}/"; then
   echo "wildcard redirect route did not become ready" >&2
