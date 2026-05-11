@@ -12,12 +12,18 @@ fi
 
 tmpdir="$(mktemp -d)"
 cleanup() {
+  if [[ -n "${multi_host_pid:-}" ]]; then
+    kill "$multi_host_pid" >/dev/null 2>&1 || true
+    wait "$multi_host_pid" >/dev/null 2>&1 || true
+  fi
   rm -rf "$tmpdir"
 }
 trap cleanup EXIT
 
 basic_smoke_dir="$tmpdir/basic"
 docker_smoke_dir="$tmpdir/docker"
+multi_host_example_dir="$REPO_ROOT/examples/multi-host-routing"
+exposure_cert_path="${XDG_CONFIG_HOME:-$HOME/.config}/cleanroom/tls/exposure-cert.pem"
 
 mkdir -p "$basic_smoke_dir" "$docker_smoke_dir"
 cat > "$basic_smoke_dir/cleanroom.yaml" <<'EOF'
@@ -58,7 +64,8 @@ for example_dir in \
   "$REPO_ROOT/examples/docker-cache-output" \
   "$REPO_ROOT/examples/seeded-output-cache" \
   "$REPO_ROOT/examples/rails" \
-  "$REPO_ROOT/examples/buildkite-agent"; do
+  "$REPO_ROOT/examples/buildkite-agent" \
+  "$REPO_ROOT/examples/multi-host-routing"; do
   echo "--- :mag: Validate $(basename "$example_dir") example"
   (
     cd "$example_dir"
@@ -121,6 +128,165 @@ if ! grep -q '^docker-pull-ok$' "$tmpdir/docker-pull.out"; then
   echo "expected docker pull smoke output missing" >&2
   exit 1
 fi
+
+echo "--- :globe_with_meridians: Multi-host routing example smoke test ($BACKEND)"
+"$REPO_ROOT/dist/cleanroom" exec \
+  --host "$LISTEN_ENDPOINT" \
+  --backend "$BACKEND" \
+  --no-stdin \
+  -c "$multi_host_example_dir" \
+  --expose-https example:80 \
+  --expose-https example-app:80 \
+  --expose-https example-s3:80 \
+  -- sh -lc 'cd /workspace/examples/multi-host-routing && sh ./start.sh' >"$tmpdir/multi-host.stdout" 2>"$tmpdir/multi-host.stderr" &
+multi_host_pid=$!
+
+multi_host_url=""
+for _ in $(seq 1 120); do
+  if ! kill -0 "$multi_host_pid" >/dev/null 2>&1; then
+    echo "multi-host example exited before exposure was ready" >&2
+    cat "$tmpdir/multi-host.stdout" >&2 || true
+    cat "$tmpdir/multi-host.stderr" >&2 || true
+    wait "$multi_host_pid"
+    exit 1
+  fi
+  multi_host_url="$(grep -m1 '^exposed: https://example\.cleanroom\.localhost:' "$tmpdir/multi-host.stderr" | sed 's/^exposed: //' || true)"
+  if [[ -n "$multi_host_url" ]]; then
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$multi_host_url" ]]; then
+  echo "timed out waiting for multi-host example exposure" >&2
+  cat "$tmpdir/multi-host.stdout" >&2 || true
+  cat "$tmpdir/multi-host.stderr" >&2 || true
+  exit 1
+fi
+
+multi_host_port="${multi_host_url##*:}"
+if [[ ! -f "$exposure_cert_path" ]]; then
+  echo "expected exposure certificate at $exposure_cert_path" >&2
+  exit 1
+fi
+
+curl_retry() {
+  local label="$1"
+  local output_file="$2"
+  shift 2
+  for _ in $(seq 1 60); do
+    if curl --silent --show-error --fail-with-body \
+      --connect-timeout 5 \
+      --max-time 15 \
+      --cacert "$exposure_cert_path" "$@" >"$output_file"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "$label did not become ready" >&2
+  cat "$tmpdir/multi-host.stdout" >&2 || true
+  cat "$tmpdir/multi-host.stderr" >&2 || true
+  return 1
+}
+
+curl_headers_retry() {
+  local label="$1"
+  local output_file="$2"
+  shift 2
+  local body_file="${output_file}.body"
+  for _ in $(seq 1 60); do
+    if curl --silent --show-error --fail-with-body \
+      --connect-timeout 5 \
+      --max-time 15 \
+      --cacert "$exposure_cert_path" \
+      --dump-header "$output_file" \
+      --output "$body_file" "$@"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "$label did not become ready" >&2
+  cat "$tmpdir/multi-host.stdout" >&2 || true
+  cat "$tmpdir/multi-host.stderr" >&2 || true
+  return 1
+}
+
+curl_status_retry() {
+  local label="$1"
+  local output_file="$2"
+  local expected_status="$3"
+  shift 3
+  local status_file="${output_file}.status"
+  for _ in $(seq 1 60); do
+    if curl --silent --show-error \
+      --connect-timeout 5 \
+      --max-time 15 \
+      --cacert "$exposure_cert_path" \
+      --write-out '%{http_code}' \
+      --output "$output_file" "$@" >"$status_file" && [[ "$(cat "$status_file")" == "$expected_status" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "$label did not return HTTP $expected_status" >&2
+  if [[ -f "$status_file" ]]; then
+    echo "last status: $(cat "$status_file")" >&2
+  fi
+  cat "$tmpdir/multi-host.stdout" >&2 || true
+  cat "$tmpdir/multi-host.stderr" >&2 || true
+  return 1
+}
+
+curl_retry "multi-host exact route" "$tmpdir/multi-host-exact.out" \
+  --resolve "example.cleanroom.localhost:${multi_host_port}:127.0.0.1" \
+  "https://example.cleanroom.localhost:${multi_host_port}/"
+if ! grep -q '^exact route ok$' "$tmpdir/multi-host-exact.out"; then
+  echo "expected multi-host exact route output missing" >&2
+  cat "$tmpdir/multi-host-exact.out" >&2 || true
+  exit 1
+fi
+
+curl_retry "multi-host app route" "$tmpdir/multi-host-app.out" \
+  --resolve "example-app.cleanroom.localhost:${multi_host_port}:127.0.0.1" \
+  "https://example-app.cleanroom.localhost:${multi_host_port}/"
+for needle in \
+  '"host": "example-app.cleanroom.localhost:'"$multi_host_port"'"' \
+  '"x_forwarded_host": "example-app.cleanroom.localhost:'"$multi_host_port"'"' \
+  '"x_forwarded_proto": "https"' \
+  '"x_forwarded_port": "'"$multi_host_port"'"' \
+  '"x_forwarded_for": "127.0.0.1"'; do
+  if ! grep -Fq "$needle" "$tmpdir/multi-host-app.out"; then
+    echo "expected multi-host app response to contain $needle" >&2
+    cat "$tmpdir/multi-host-app.out" >&2 || true
+    exit 1
+  fi
+done
+
+curl_headers_retry "multi-host redirect route" "$tmpdir/multi-host-redirect.headers" \
+  --resolve "example-s3.cleanroom.localhost:${multi_host_port}:127.0.0.1" \
+  "https://example-s3.cleanroom.localhost:${multi_host_port}/"
+if ! grep -q '^HTTP/.* 302' "$tmpdir/multi-host-redirect.headers"; then
+  echo "expected multi-host redirect status missing" >&2
+  cat "$tmpdir/multi-host-redirect.headers" >&2 || true
+  exit 1
+fi
+if ! tr -d '\r' <"$tmpdir/multi-host-redirect.headers" | grep -Fixq "Location: https://example-app.cleanroom.localhost:${multi_host_port}/from-s3?client=127.0.0.1"; then
+  echo "expected multi-host redirect location missing" >&2
+  cat "$tmpdir/multi-host-redirect.headers" >&2 || true
+  exit 1
+fi
+
+curl_status_retry "multi-host unregistered route" "$tmpdir/multi-host-missing.out" "404" \
+  --resolve "example-missing.cleanroom.localhost:${multi_host_port}:127.0.0.1" \
+  "https://example-missing.cleanroom.localhost:${multi_host_port}/"
+if ! grep -q '^404 page not found$' "$tmpdir/multi-host-missing.out"; then
+  echo "expected multi-host missing route body missing" >&2
+  cat "$tmpdir/multi-host-missing.out" >&2 || true
+  exit 1
+fi
+
+kill "$multi_host_pid" >/dev/null 2>&1 || true
+wait "$multi_host_pid" >/dev/null 2>&1 || true
+multi_host_pid=""
 
 if [[ "$BACKEND" = "firecracker" ]]; then
   echo "--- :whale: Docker example run smoke test ($BACKEND skipped)"
