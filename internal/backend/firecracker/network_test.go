@@ -150,6 +150,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryConfiguresDynamicRulesWithoutStati
 		"iptables -N " + trustedDNSUDPChainName(tap),
 		"iptables -t nat -A PREROUTING -i " + tap + " -p udp --dport 53 -j REDIRECT --to-ports " + strconv.Itoa(trustedDNSListenPort),
 		"iptables -t nat -A PREROUTING -i " + tap + " -p tcp --dport 53 -j REDIRECT --to-ports " + strconv.Itoa(trustedDNSListenPort),
+		"iptables -A INPUT -i " + tap + " -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
 		"iptables -A FORWARD -i " + tap + " -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
 		"iptables -A FORWARD -i " + tap + " -p tcp -j " + trustedDNSTCPChainName(tap),
 		"iptables -A FORWARD -i " + tap + " -p udp -j " + trustedDNSUDPChainName(tap),
@@ -232,11 +233,19 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	if !strings.Contains(joined, "iptables -A INPUT -i "+tap+" ! -s "+cfg.GuestIP+" -j DROP") {
 		t.Fatalf("expected anti-spoof INPUT rule for tap %s\ncalls:\n%s", tap, joined)
 	}
+	if !strings.Contains(joined, "iptables -A INPUT -i "+tap+" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT") {
+		t.Fatalf("expected established INPUT ACCEPT rule for tap %s\ncalls:\n%s", tap, joined)
+	}
 	if !strings.Contains(joined, "iptables -A INPUT -i "+tap+" -s "+cfg.GuestIP+" -p tcp --dport 8170 -j ACCEPT") {
 		t.Fatalf("expected gateway INPUT ACCEPT rule for tap %s\ncalls:\n%s", tap, joined)
 	}
 	if !strings.Contains(joined, "iptables -A INPUT -i "+tap+" -j DROP") {
 		t.Fatalf("expected INPUT catch-all DROP rule for tap %s\ncalls:\n%s", tap, joined)
+	}
+	inputEstablishedIdx := strings.Index(joined, "iptables -A INPUT -i "+tap+" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT")
+	inputDropIdx := strings.Index(joined, "iptables -A INPUT -i "+tap+" -j DROP")
+	if inputEstablishedIdx < 0 || inputDropIdx < 0 || inputEstablishedIdx > inputDropIdx {
+		t.Fatalf("established INPUT rule must appear before catch-all DROP\ncalls:\n%s", joined)
 	}
 
 	// Verify INPUT rules appear before FORWARD rules.
