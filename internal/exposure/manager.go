@@ -523,8 +523,15 @@ func (m *Manager) newHTTPSProxy(r *route) (*httputil.ReverseProxy, *http.Transpo
 			return r.dialer(ctx, r.sandboxID, r.guestPort)
 		},
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = transport
+	proxy := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(req *httputil.ProxyRequest) {
+			req.SetURL(target)
+			req.Out.Host = req.In.Host
+			req.SetXForwarded()
+			req.Out.Header.Set("X-Forwarded-Port", forwardedPort(req.In))
+		},
+	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 		if m.logger != nil {
 			m.logger.Warn("https exposure proxy failed", "sandbox_id", r.sandboxID, "guest_port", r.guestPort, "hostname", r.hostname, "error", err)
@@ -695,6 +702,24 @@ func validateDNSLabel(label string) error {
 		}
 	}
 	return nil
+}
+
+func forwardedPort(req *http.Request) string {
+	if req == nil {
+		return "80"
+	}
+	if _, port, err := net.SplitHostPort(strings.TrimSpace(req.Host)); err == nil && port != "" {
+		return port
+	}
+	if req.URL != nil {
+		if port := req.URL.Port(); port != "" {
+			return port
+		}
+	}
+	if req.TLS != nil {
+		return "443"
+	}
+	return "80"
 }
 
 func normalizeRequestHost(host string) string {

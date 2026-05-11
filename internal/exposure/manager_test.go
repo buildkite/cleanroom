@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -405,6 +407,109 @@ func TestRegisterHTTPSReusesProxyTransport(t *testing.T) {
 	}
 	if route.httpsProxy.Transport != route.httpsTransport {
 		t.Fatal("expected https route proxy to reuse the route transport")
+	}
+}
+
+func TestHTTPSProxyForwardsTrustedHeadersAndPreservesHost(t *testing.T) {
+	t.Parallel()
+
+	type observedRequest struct {
+		host             string
+		xForwardedHost   string
+		xForwardedProto  string
+		xForwardedPort   string
+		xForwardedFor    string
+		clientHeaderSeen string
+	}
+
+	seen := make(chan observedRequest, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seen <- observedRequest{
+			host:             req.Host,
+			xForwardedHost:   req.Header.Get("X-Forwarded-Host"),
+			xForwardedProto:  req.Header.Get("X-Forwarded-Proto"),
+			xForwardedPort:   req.Header.Get("X-Forwarded-Port"),
+			xForwardedFor:    req.Header.Get("X-Forwarded-For"),
+			clientHeaderSeen: req.Header.Get("X-Client-Test"),
+		}
+		w.Header().Set("Location", "https://"+req.Host+"/redirected")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(backend.Close)
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("parse backend URL: %v", err)
+	}
+
+	httpsPort := freeTCPPort(t)
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsPort)),
+		TLSDir:      t.TempDir(),
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err = manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "buildkite",
+			GuestPort: 3000,
+		},
+		Dialer: func(ctx context.Context, _ string, _ int) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "tcp", backendURL.Host)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://buildkite.cleanroom.localhost:8143/sessions", nil)
+	req.Host = "buildkite.cleanroom.localhost:8143"
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-Host", "malicious.example")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set("X-Forwarded-Port", "9999")
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	req.Header.Set("X-Client-Test", "kept")
+
+	rr := httptest.NewRecorder()
+	manager.handleHTTPS(rr, req)
+
+	if got, want := rr.Code, http.StatusFound; got != want {
+		t.Fatalf("unexpected status: got %d want %d", got, want)
+	}
+	if got, want := rr.Header().Get("Location"), "https://buildkite.cleanroom.localhost:8143/redirected"; got != want {
+		t.Fatalf("unexpected redirect location: got %q want %q", got, want)
+	}
+
+	select {
+	case got := <-seen:
+		if got.host != "buildkite.cleanroom.localhost:8143" {
+			t.Fatalf("unexpected host: %q", got.host)
+		}
+		if got.xForwardedHost != "buildkite.cleanroom.localhost:8143" {
+			t.Fatalf("unexpected X-Forwarded-Host: %q", got.xForwardedHost)
+		}
+		if got.xForwardedProto != "https" {
+			t.Fatalf("unexpected X-Forwarded-Proto: %q", got.xForwardedProto)
+		}
+		if got.xForwardedPort != "8143" {
+			t.Fatalf("unexpected X-Forwarded-Port: %q", got.xForwardedPort)
+		}
+		if got.xForwardedFor != "127.0.0.1" {
+			t.Fatalf("unexpected X-Forwarded-For: %q", got.xForwardedFor)
+		}
+		if got.clientHeaderSeen != "kept" {
+			t.Fatalf("unexpected preserved header value: %q", got.clientHeaderSeen)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for backend request")
 	}
 }
 
