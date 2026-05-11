@@ -214,6 +214,7 @@ curl_retry() {
   local output_file="$2"
   shift 2
   local attempt
+  local curl_status
   for attempt in $(seq 1 60); do
     echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label attempt $attempt/60" >>"$wildcard_debug_log"
     if curl --silent --show-error --fail-with-body \
@@ -223,7 +224,7 @@ curl_retry() {
       echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label attempt $attempt/60 succeeded" >>"$wildcard_debug_log"
       return 0
     fi
-    local curl_status=$?
+    curl_status=$?
     echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label attempt $attempt/60 failed status=$curl_status" >>"$wildcard_debug_log"
     if [[ -s "$output_file" ]]; then
       echo "--- $label response tail ---" >>"$wildcard_debug_log"
@@ -241,6 +242,7 @@ curl_headers_retry() {
   shift 2
   local body_file="${output_file}.body"
   local attempt
+  local curl_status
   for attempt in $(seq 1 60); do
     echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label headers attempt $attempt/60" >>"$wildcard_debug_log"
     if curl --silent --show-error --fail-with-body \
@@ -252,7 +254,7 @@ curl_headers_retry() {
       echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label headers attempt $attempt/60 succeeded" >>"$wildcard_debug_log"
       return 0
     fi
-    local curl_status=$?
+    curl_status=$?
     echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') curl $label headers attempt $attempt/60 failed status=$curl_status" >>"$wildcard_debug_log"
     if [[ -s "$output_file" ]]; then
       echo "--- $label headers tail ---" >>"$wildcard_debug_log"

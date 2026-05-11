@@ -1,3 +1,4 @@
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote
 
@@ -41,8 +42,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        return
+        sys.stderr.write("redirect-backend: " + (fmt % args) + "\n")
+        sys.stderr.flush()
 
 
 if __name__ == "__main__":
-    HTTPServer(("127.0.0.1", 18081), Handler).serve_forever()
+    server = HTTPServer(("127.0.0.1", 18081), Handler)
+    print("redirect-backend: serving on 127.0.0.1:18081", file=sys.stderr, flush=True)
+    server.serve_forever()

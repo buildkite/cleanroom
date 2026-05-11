@@ -1,4 +1,5 @@
 import json
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -22,8 +23,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def log_message(self, fmt, *args):
-        return
+        sys.stderr.write("app-backend: " + (fmt % args) + "\n")
+        sys.stderr.flush()
 
 
 if __name__ == "__main__":
-    HTTPServer(("127.0.0.1", 18080), Handler).serve_forever()
+    server = HTTPServer(("127.0.0.1", 18080), Handler)
+    print("app-backend: serving on 127.0.0.1:18080", file=sys.stderr, flush=True)
+    server.serve_forever()
