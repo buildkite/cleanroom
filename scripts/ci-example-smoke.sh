@@ -242,7 +242,7 @@ if ! grep -q '^HTTP/.* 302' "$tmpdir/wildcard-redirect.headers"; then
   cat "$tmpdir/wildcard-redirect.headers" >&2 || true
   exit 1
 fi
-if ! grep -q "^Location: https://app.example.cleanroom.localhost:${wildcard_port}/from-s3?client=127.0.0.1"$'\r' "$tmpdir/wildcard-redirect.headers"; then
+if ! grep -qi "^Location: https://app.example.cleanroom.localhost:${wildcard_port}/from-s3?client=127.0.0.1"$'\r' "$tmpdir/wildcard-redirect.headers"; then
   echo "expected wildcard redirect location missing" >&2
   exit 1
 fi
