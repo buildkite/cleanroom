@@ -79,6 +79,7 @@ case "$1" in
 ' ;;
   capabilities) printf 'firecracker-network
 firecracker-trusted-dns
+firecracker-port-dial
 ' ;;
   true) exit 0 ;;
   ip) exit 0 ;;
@@ -124,6 +125,7 @@ case "$1" in
 ' ;;
   capabilities) printf 'firecracker-network
 firecracker-trusted-dns
+firecracker-port-dial
 firecracker-zfs
 ' ;;
   true) exit 0 ;;

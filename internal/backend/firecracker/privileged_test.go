@@ -506,7 +506,7 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	writeExecutable(t, binDir, "ip", "#!/bin/sh\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
 	writeExecutable(t, binDir, "zfs", "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"-H\" ] && [ \"$3\" = \"-d\" ] && [ \"$4\" = \"0\" ] && [ \"$5\" = \"-o\" ] && [ \"$6\" = \"name\" ]; then printf '%s\\n' \"$7\"; exit 0; fi\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"-H\" ] && [ \"$3\" = \"-o\" ] && [ \"$4\" = \"name\" ]; then printf '%s\\n%s/child\\n' \"$5\" \"$5\"; exit 0; fi\nexit 0\n")
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
-	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\ncase \"$1\" in\n  version)\n    printf 'test-helper\\n'\n    ;;\n  capabilities)\n    printf 'firecracker-network\\nfirecracker-trusted-dns\\nfirecracker-rootfs\\nfirecracker-zfs\\n'\n    ;;\n  true)\n    exec \"$@\"\n    ;;\n  zfs)\n    if [ \"$2\" = \"list\" ] && [ \"$3\" = \"-H\" ] && [ \"$4\" = \"-d\" ] && [ \"$5\" = \"0\" ] && [ \"$6\" = \"-o\" ] && [ \"$7\" = \"name\" ]; then\n      printf '%s\\n' \"$8\"\n      exit 0\n    fi\n    echo 'unexpected helper zfs args' >&2\n    exit 2\n    ;;\n  *)\n    exec \"$@\"\n    ;;\n esac\n")
+	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\ncase \"$1\" in\n  version)\n    printf 'test-helper\\n'\n    ;;\n  capabilities)\n    printf 'firecracker-network\\nfirecracker-trusted-dns\\nfirecracker-port-dial\\nfirecracker-rootfs\\nfirecracker-zfs\\n'\n    ;;\n  true)\n    exec \"$@\"\n    ;;\n  zfs)\n    if [ \"$2\" = \"list\" ] && [ \"$3\" = \"-H\" ] && [ \"$4\" = \"-d\" ] && [ \"$5\" = \"0\" ] && [ \"$6\" = \"-o\" ] && [ \"$7\" = \"name\" ]; then\n      printf '%s\\n' \"$8\"\n      exit 0\n    fi\n    echo 'unexpected helper zfs args' >&2\n    exit 2\n    ;;\n  *)\n    exec \"$@\"\n    ;;\n esac\n")
 
 	kernelPath := filepath.Join(tmpDir, "vmlinux")
 	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o644); err != nil {
@@ -744,6 +744,7 @@ func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	want := []string{
 		helperCapabilityFirecrackerNetwork,
 		helperCapabilityFirecrackerTrustedDNS,
+		helperCapabilityFirecrackerPortDial,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected default helper capabilities: got %v want %v", got, want)
@@ -755,6 +756,7 @@ func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	want = []string{
 		helperCapabilityFirecrackerNetwork,
 		helperCapabilityFirecrackerTrustedDNS,
+		helperCapabilityFirecrackerPortDial,
 		helperCapabilityFirecrackerZFS,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

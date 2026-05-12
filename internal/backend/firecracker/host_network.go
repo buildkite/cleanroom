@@ -153,6 +153,13 @@ func setupHostNetworkWithTrustedDNSFactoryAndLogger(ctx context.Context, runID s
 	}
 	addCleanup("iptables", "-D", "INPUT", "-i", tapName, "!", "-s", guestIP, "-j", "DROP")
 
+	establishedInputCleanup, err := installInputEstablishedRule(setupRun, tapName)
+	if err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install input established rule for %s: %w", tapName, err)
+	}
+	addCleanup(establishedInputCleanup...)
+
 	if gatewayPort > 0 {
 		port := strconv.Itoa(gatewayPort)
 		if err := setupRun("iptables", "-A", "INPUT", "-i", tapName, "-s", guestIP, "-p", "tcp", "--dport", port, "-j", "ACCEPT"); err != nil {
@@ -361,25 +368,31 @@ func isNoSuchNetworkInterfaceError(err error) bool {
 	return strings.Contains(msg, "no such network interface") || strings.Contains(msg, "not found")
 }
 
+func installInputEstablishedRule(setupRun func(args ...string) error, tapName string) ([]string, error) {
+	return installEstablishedRule(setupRun, "INPUT", "-i", tapName)
+}
+
 func installForwardReturnPathRule(setupRun func(args ...string) error, tapName string) ([]string, error) {
-	return installForwardEstablishedRule(setupRun, "-o", tapName)
+	return installEstablishedRule(setupRun, "FORWARD", "-o", tapName)
 }
 
 func installForwardEstablishedEgressRule(setupRun func(args ...string) error, tapName string) ([]string, error) {
-	return installForwardEstablishedRule(setupRun, "-i", tapName)
+	return installEstablishedRule(setupRun, "FORWARD", "-i", tapName)
 }
 
-func installForwardEstablishedRule(setupRun func(args ...string) error, directionFlag, tapName string) ([]string, error) {
-	conntrackRule := []string{"iptables", "-A", "FORWARD", directionFlag, tapName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}
+func installEstablishedRule(setupRun func(args ...string) error, chain string, matchArgs ...string) ([]string, error) {
+	conntrackRule := append([]string{"iptables", "-A", chain}, matchArgs...)
+	conntrackRule = append(conntrackRule, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT")
 	if err := setupRun(conntrackRule...); err == nil {
-		cleanup := append([]string{"iptables", "-D", "FORWARD", directionFlag, tapName}, conntrackRule[5:]...)
+		cleanup := append([]string{"iptables", "-D", chain}, conntrackRule[3:]...)
 		return cleanup, nil
 	}
-	stateRule := []string{"iptables", "-A", "FORWARD", directionFlag, tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}
+	stateRule := append([]string{"iptables", "-A", chain}, matchArgs...)
+	stateRule = append(stateRule, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
 	if err := setupRun(stateRule...); err != nil {
 		return nil, err
 	}
-	cleanup := append([]string{"iptables", "-D", "FORWARD", directionFlag, tapName}, stateRule[5:]...)
+	cleanup := append([]string{"iptables", "-D", chain}, stateRule[3:]...)
 	return cleanup, nil
 }
 

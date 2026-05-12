@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "9"
+  echo "10"
 }
 
 helper_has_zfs() {
@@ -24,6 +24,7 @@ helper_capabilities() {
   cat <<'EOF'
 firecracker-network
 firecracker-trusted-dns
+firecracker-port-dial
 firecracker-nflog
 EOF
 
@@ -312,6 +313,17 @@ run_iptables() {
 
   if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && ( "$3" == "-o" || "$3" == "-i" ) && "$5" == "-m" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
     is_tap_name "$4" || die "iptables FORWARD ${3}: unsupported interface '$4'"
+    if [[ "$6" == "state" && "$7" == "--state" && "$8" == "RELATED,ESTABLISHED" ]]; then
+      exec /usr/sbin/iptables "$@"
+    fi
+    if [[ "$6" == "conntrack" && "$7" == "--ctstate" && "$8" == "RELATED,ESTABLISHED" ]]; then
+      exec /usr/sbin/iptables "$@"
+    fi
+  fi
+
+  # Host-initiated port dial replies: iptables -A INPUT -i <tap> -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "-i" && "$5" == "-m" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
+    is_tap_name "$4" || die "iptables INPUT established: unsupported interface '$4'"
     if [[ "$6" == "state" && "$7" == "--state" && "$8" == "RELATED,ESTABLISHED" ]]; then
       exec /usr/sbin/iptables "$@"
     fi
