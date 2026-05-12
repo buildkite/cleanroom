@@ -137,12 +137,12 @@ type DarwinVZConfig struct {
 	MinimumRootFSBytes            ByteSize              `yaml:"minimum_rootfs_bytes"`
 	MinimumCacheOutputVolumeBytes ByteSize              `yaml:"minimum_cache_output_volume_bytes"`
 	Network                       DarwinVZNetworkConfig `yaml:"network,omitempty"`
-	Services           ServicesConfig        `yaml:"services"`
-	Snapshots          SnapshotConfig        `yaml:"snapshots"`
-	VCPUs              int64                 `yaml:"vcpus"`
-	MemoryMiB          int64                 `yaml:"memory_mib"`
-	GuestPort          uint32                `yaml:"guest_port"`
-	LaunchSeconds      int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	Services                      ServicesConfig        `yaml:"services"`
+	Snapshots                     SnapshotConfig        `yaml:"snapshots"`
+	VCPUs                         int64                 `yaml:"vcpus"`
+	MemoryMiB                     int64                 `yaml:"memory_mib"`
+	GuestPort                     uint32                `yaml:"guest_port"`
+	LaunchSeconds                 int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 type DarwinVZNetworkConfig struct {
@@ -203,12 +203,13 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 			ZFSDataset:            cfg.Backends.Firecracker.Snapshots.ZFSDataset,
 			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
 		},
-		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
-		VCPUs:                cfg.Backends.Firecracker.VCPUs,
-		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
-		GuestCID:             cfg.Backends.Firecracker.GuestCID,
-		GuestPort:            cfg.Backends.Firecracker.GuestPort,
-		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
+		PrivilegedHelperPath:          cfg.Backends.Firecracker.PrivilegedHelperPath,
+		VCPUs:                         cfg.Backends.Firecracker.VCPUs,
+		MemoryMiB:                     cfg.Backends.Firecracker.MemoryMiB,
+		GuestCID:                      cfg.Backends.Firecracker.GuestCID,
+		GuestPort:                     cfg.Backends.Firecracker.GuestPort,
+		LaunchSeconds:                 cfg.Backends.Firecracker.LaunchSeconds,
+		MinimumCacheOutputVolumeBytes: int64(cfg.Backends.Firecracker.MinimumCacheOutputVolumeBytes),
 	}
 	if backendName == "darwin-vz" {
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
@@ -235,6 +236,7 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
 		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
 		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
+		out.MinimumCacheOutputVolumeBytes = int64(cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes)
 	}
 
 	out.Launch = true
