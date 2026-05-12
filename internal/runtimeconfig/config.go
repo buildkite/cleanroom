@@ -703,7 +703,7 @@ func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 }
 
 func darwinVZConfigHasValues(cfg DarwinVZConfig) bool {
-	return !darwinVZConfigIsZero(cfg) || cfg.MinimumRootFSBytes > 0
+	return !darwinVZConfigIsZero(cfg) || cfg.MinimumRootFSBytes > 0 || cfg.MinimumCacheOutputVolumeBytes > 0
 }
 
 func darwinVZNetworkConfigIsZero(cfg DarwinVZNetworkConfig) bool {
