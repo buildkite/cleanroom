@@ -3,6 +3,9 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +101,37 @@ func TestGitCredentialFillProviderResolveUsesCanonicalRemoteURL(t *testing.T) {
 	wantHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte("git:secret"))
 	if header != wantHeader {
 		t.Fatalf("unexpected authorization header: got %q want %q", header, wantHeader)
+	}
+}
+
+func TestGitCredentialFillFromHostDisablesPrompts(t *testing.T) {
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, "env.txt")
+
+	shimScript := "#!/bin/sh\n/usr/bin/env > " + envFile + "\nexit 1\n"
+	shimPath := filepath.Join(tmpDir, "git")
+	if err := os.WriteFile(shimPath, []byte(shimScript), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+
+	t.Setenv("PATH", tmpDir)
+
+	_, err := gitCredentialFillFromHost(tmpDir, "protocol=https\nhost=example.com\n\n")
+	if err == nil {
+		t.Fatal("expected non-nil error from shim exiting non-zero")
+	}
+
+	captured, readErr := os.ReadFile(envFile)
+	if readErr != nil {
+		t.Fatalf("read captured env: %v", readErr)
+	}
+	env := string(captured)
+
+	if !strings.Contains(env, "GIT_TERMINAL_PROMPT=0") {
+		t.Errorf("GIT_TERMINAL_PROMPT=0 not found in captured env:\n%s", env)
+	}
+	if !strings.Contains(env, "GCM_INTERACTIVE=never") {
+		t.Errorf("GCM_INTERACTIVE=never not found in captured env:\n%s", env)
 	}
 }
 

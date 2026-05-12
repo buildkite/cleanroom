@@ -135,6 +135,10 @@ func gitCredentialFillFromHost(dir, input string) (string, error) {
 	cmd := exec.Command("git", "credential", "fill")
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GCM_INTERACTIVE=never",
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
