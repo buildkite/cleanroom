@@ -146,13 +146,15 @@ func TestPrepareDarwinVZCacheOutputVolumesCfgMinimumBytesOverridesPackageDefault
 	})
 	darwinVZCacheOutputVolumeMinimumBytes = 1024
 
-	var capturedMinimumBytes int64
+	var capturedEmptyMinimumBytes int64
 	createEmptyDarwinVZCacheOutputExt4ImageFn = func(_ context.Context, path string, minimumBytes int64) error {
-		capturedMinimumBytes = minimumBytes
+		capturedEmptyMinimumBytes = minimumBytes
 		return os.WriteFile(path, []byte("empty-ext4"), 0o644)
 	}
 
-	prepareDarwinVZCacheOutputWritableVolumeFn = func(_ context.Context, _ backend.FirecrackerConfig, volumeID, attachmentPath, sourceRef string, _ int64) (volumestore.WritableVolume, func(), error) {
+	var capturedWritableMinimumBytes int64
+	prepareDarwinVZCacheOutputWritableVolumeFn = func(_ context.Context, _ backend.FirecrackerConfig, volumeID, attachmentPath, sourceRef string, minimumBytes int64) (volumestore.WritableVolume, func(), error) {
+		capturedWritableMinimumBytes = minimumBytes
 		if sourceRef == "" {
 			return volumestore.WritableVolume{}, nil, errors.New("unexpected empty source ref")
 		}
@@ -183,7 +185,10 @@ func TestPrepareDarwinVZCacheOutputVolumesCfgMinimumBytesOverridesPackageDefault
 	}
 	defer cleanup()
 
-	if got, want := capturedMinimumBytes, int64(16<<30); got != want {
+	if got, want := capturedEmptyMinimumBytes, int64(16<<30); got != want {
 		t.Fatalf("minimumBytes passed to createEmptyDarwinVZCacheOutputExt4ImageFn: got %d want %d", got, want)
+	}
+	if got, want := capturedWritableMinimumBytes, int64(16<<30); got != want {
+		t.Fatalf("minimumBytes passed to prepareDarwinVZCacheOutputWritableVolumeFn: got %d want %d", got, want)
 	}
 }

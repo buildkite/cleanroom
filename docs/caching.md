@@ -86,7 +86,8 @@ inputs.
 
 Cache output volumes are sparse ext4 images on the host. When Cleanroom creates
 a new volume — or restores one from an older snapshot — it enforces a minimum
-size. The default is 512 MiB.
+size. The default is 32 GiB.
+<!-- tracks cacheoutput.DefaultVolumeMinimumBytes -->
 
 If your service block pulls large container images into `/var/lib/docker`
 (Kafka, Postgres builds, schema-registry, and similar), you may need more
