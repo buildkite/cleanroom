@@ -82,6 +82,33 @@ Use service blocks for database files, Docker state, fixture stores, or other
 guest-local state that is expensive to rebuild but safe to reuse from declared
 inputs.
 
+## Cache Output Volume Size
+
+Cache output volumes are sparse ext4 images on the host. When Cleanroom creates
+a new volume — or restores one from an older snapshot — it enforces a minimum
+size. The default is 512 MiB.
+
+If your service block pulls large container images into `/var/lib/docker`
+(Kafka, Postgres builds, schema-registry, and similar), you may need more
+headroom. Set `minimum_cache_output_volume_bytes` in your runtime config:
+
+```yaml
+backends:
+  darwin-vz:
+    minimum_cache_output_volume_bytes: 16GiB
+```
+
+```yaml
+backends:
+  firecracker:
+    minimum_cache_output_volume_bytes: 16GiB
+```
+
+Because the images are sparse, raising this value doesn't immediately consume
+host disk space — only actual writes do. Existing on-disk writable volumes keep
+their current size; the new minimum only applies when a volume is first created
+or restored from a snapshot that predates the setting.
+
 ## Host Cache Peers
 
 Runtime config can point Cleanroom at trusted cache peers:
