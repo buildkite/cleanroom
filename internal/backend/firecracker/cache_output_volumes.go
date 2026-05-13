@@ -29,6 +29,13 @@ type preparedCacheOutputVolume struct {
 	Volume volumestore.WritableVolume
 }
 
+func resolveCacheOutputVolumeMinimumBytes(cfg backend.FirecrackerConfig) int64 {
+	if cfg.MinimumCacheOutputVolumeBytes > 0 {
+		return cfg.MinimumCacheOutputVolumeBytes
+	}
+	return cacheOutputVolumeMinimumBytes
+}
+
 func prepareCacheOutputVolumes(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, sandboxID, runDir string, specs []backend.CacheOutputVolumeSpec) ([]preparedCacheOutputVolume, func(), error) {
 	if len(specs) == 0 {
 		return nil, func() {}, nil
@@ -66,7 +73,7 @@ func prepareCacheOutputVolumes(ctx context.Context, logger *charmlog.Logger, cfg
 		}
 		runtimeVolumeID := cacheOutputRuntimeVolumeID(sandboxID, spec.VolumeID, i)
 		attachmentPath := filepath.Join(runDir, fmt.Sprintf("cache-output-%02d.ext4", i))
-		volume, volumeCleanup, err := prepareWritableVolumeWithLogger(ctx, logger, volumeCfg, runtimeVolumeID, attachmentPath, sourceRef, cacheOutputVolumeMinimumBytes)
+		volume, volumeCleanup, err := prepareWritableVolumeWithLogger(ctx, logger, volumeCfg, runtimeVolumeID, attachmentPath, sourceRef, resolveCacheOutputVolumeMinimumBytes(volumeCfg))
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("cache output volume %q: %w", spec.VolumeID, err)
@@ -94,7 +101,7 @@ func cacheOutputVolumeSource(ctx context.Context, cfg backend.FirecrackerConfig,
 	}
 	if sourceRef == "" {
 		sourceRef = filepath.Join(runDir, "cache-output-empty-base.ext4")
-		if err := createEmptyCacheOutputExt4ImageFn(ctx, sourceRef, cacheOutputVolumeMinimumBytes); err != nil {
+		if err := createEmptyCacheOutputExt4ImageFn(ctx, sourceRef, resolveCacheOutputVolumeMinimumBytes(volumeCfg)); err != nil {
 			return "", volumeCfg, fmt.Errorf("create empty cache output volume source: %w", err)
 		}
 		return sourceRef, volumeCfg, nil

@@ -356,6 +356,143 @@ backends:
 	}
 }
 
+func TestLoadSupportsDarwinVZMinimumCacheOutputVolumeBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_cache_output_volume_bytes: 17179869184
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes), int64(17179869184); got != want {
+		t.Fatalf("unexpected darwin-vz minimum cache output volume bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsDarwinVZMinimumCacheOutputVolumeBytesHumanString(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_cache_output_volume_bytes: 16GiB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes), int64(16<<30); got != want {
+		t.Fatalf("unexpected darwin-vz minimum cache output volume bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidDarwinVZMinimumCacheOutputVolumeBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_cache_output_volume_bytes: giant
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject invalid minimum_cache_output_volume_bytes")
+	}
+	if !strings.Contains(err.Error(), "invalid byte size") {
+		t.Fatalf("expected error to mention invalid byte size, got %v", err)
+	}
+}
+
+func TestLoadAllowsExplicitZeroDarwinVZMinimumCacheOutputVolumeBytesOverride(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    minimum_cache_output_volume_bytes: 0
+  darwin_vz:
+    kernel_image: /tmp/legacy-kernel
+    rootfs: /tmp/legacy-rootfs
+    minimum_cache_output_volume_bytes: 16GiB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes), int64(0); got != want {
+		t.Fatalf("unexpected darwin-vz minimum cache output volume bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsFirecrackerMinimumCacheOutputVolumeBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: firecracker
+backends:
+  firecracker:
+    minimum_cache_output_volume_bytes: 17179869184
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.Firecracker.MinimumCacheOutputVolumeBytes), int64(17179869184); got != want {
+		t.Fatalf("unexpected firecracker minimum cache output volume bytes: got %d want %d", got, want)
+	}
+}
+
 func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -888,6 +1025,32 @@ backends:
 	}
 	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2<<30); got != want {
 		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsLegacyDarwinVZMinimumCacheOutputVolumeBytesOnly(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin_vz:
+    minimum_cache_output_volume_bytes: 16GiB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes), int64(16<<30); got != want {
+		t.Fatalf("unexpected darwin-vz minimum cache output volume bytes: got %d want %d", got, want)
 	}
 }
 

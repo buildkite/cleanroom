@@ -408,7 +408,12 @@ type FirecrackerConfig struct {
 	// MinimumRootFSBytes is a writable rootfs capacity floor. Backends may
 	// provide this as logical capacity or a larger backend default; it is not an
 	// exact host-disk allocation promise.
-	MinimumRootFSBytes                        int64
+	MinimumRootFSBytes int64
+	// MinimumCacheOutputVolumeBytes is a per-cache-output-volume capacity floor.
+	// Backends may provide this as logical capacity or a larger backend default;
+	// it is not an exact host-disk allocation promise. Zero means fall back to
+	// the backend's package-level default.
+	MinimumCacheOutputVolumeBytes int64
 	DarwinVZNetworkMode                       string
 	DarwinVZNetworkSubnet                     string
 	DarwinVZNetworkExternalInterface          string

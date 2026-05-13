@@ -117,30 +117,32 @@ type Backends struct {
 }
 
 type FirecrackerConfig struct {
-	BinaryPath           string         `yaml:"binary_path"`
-	KernelImage          string         `yaml:"kernel_image"`
-	RootFS               string         `yaml:"rootfs"`
-	Services             ServicesConfig `yaml:"services"`
-	Snapshots            SnapshotConfig `yaml:"snapshots"`
-	PrivilegedHelperPath string         `yaml:"privileged_helper_path"`
-	VCPUs                int64          `yaml:"vcpus"`
-	MemoryMiB            int64          `yaml:"memory_mib"`
-	GuestCID             uint32         `yaml:"guest_cid"`
-	GuestPort            uint32         `yaml:"guest_port"`
-	LaunchSeconds        int64          `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	BinaryPath                    string         `yaml:"binary_path"`
+	KernelImage                   string         `yaml:"kernel_image"`
+	RootFS                        string         `yaml:"rootfs"`
+	MinimumCacheOutputVolumeBytes ByteSize       `yaml:"minimum_cache_output_volume_bytes"`
+	Services                      ServicesConfig `yaml:"services"`
+	Snapshots                     SnapshotConfig `yaml:"snapshots"`
+	PrivilegedHelperPath          string         `yaml:"privileged_helper_path"`
+	VCPUs                         int64          `yaml:"vcpus"`
+	MemoryMiB                     int64          `yaml:"memory_mib"`
+	GuestCID                      uint32         `yaml:"guest_cid"`
+	GuestPort                     uint32         `yaml:"guest_port"`
+	LaunchSeconds                 int64          `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 type DarwinVZConfig struct {
-	KernelImage        string                `yaml:"kernel_image"`
-	RootFS             string                `yaml:"rootfs"`
-	MinimumRootFSBytes ByteSize              `yaml:"minimum_rootfs_bytes"`
-	Network            DarwinVZNetworkConfig `yaml:"network,omitempty"`
-	Services           ServicesConfig        `yaml:"services"`
-	Snapshots          SnapshotConfig        `yaml:"snapshots"`
-	VCPUs              int64                 `yaml:"vcpus"`
-	MemoryMiB          int64                 `yaml:"memory_mib"`
-	GuestPort          uint32                `yaml:"guest_port"`
-	LaunchSeconds      int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	KernelImage                   string                `yaml:"kernel_image"`
+	RootFS                        string                `yaml:"rootfs"`
+	MinimumRootFSBytes            ByteSize              `yaml:"minimum_rootfs_bytes"`
+	MinimumCacheOutputVolumeBytes ByteSize              `yaml:"minimum_cache_output_volume_bytes"`
+	Network                       DarwinVZNetworkConfig `yaml:"network,omitempty"`
+	Services                      ServicesConfig        `yaml:"services"`
+	Snapshots                     SnapshotConfig        `yaml:"snapshots"`
+	VCPUs                         int64                 `yaml:"vcpus"`
+	MemoryMiB                     int64                 `yaml:"memory_mib"`
+	GuestPort                     uint32                `yaml:"guest_port"`
+	LaunchSeconds                 int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 type DarwinVZNetworkConfig struct {
@@ -201,12 +203,13 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 			ZFSDataset:            cfg.Backends.Firecracker.Snapshots.ZFSDataset,
 			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
 		},
-		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
-		VCPUs:                cfg.Backends.Firecracker.VCPUs,
-		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
-		GuestCID:             cfg.Backends.Firecracker.GuestCID,
-		GuestPort:            cfg.Backends.Firecracker.GuestPort,
-		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
+		PrivilegedHelperPath:          cfg.Backends.Firecracker.PrivilegedHelperPath,
+		VCPUs:                         cfg.Backends.Firecracker.VCPUs,
+		MemoryMiB:                     cfg.Backends.Firecracker.MemoryMiB,
+		GuestCID:                      cfg.Backends.Firecracker.GuestCID,
+		GuestPort:                     cfg.Backends.Firecracker.GuestPort,
+		LaunchSeconds:                 cfg.Backends.Firecracker.LaunchSeconds,
+		MinimumCacheOutputVolumeBytes: int64(cfg.Backends.Firecracker.MinimumCacheOutputVolumeBytes),
 	}
 	if backendName == "darwin-vz" {
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
@@ -233,6 +236,7 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
 		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
 		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
+		out.MinimumCacheOutputVolumeBytes = int64(cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes)
 	}
 
 	out.Launch = true
@@ -359,7 +363,8 @@ func parseConfig(path string, raw []byte) (Config, error) {
 	presenceCfg := struct {
 		Backends struct {
 			DarwinVZ struct {
-				MinimumRootFSBytes *ByteSize `yaml:"minimum_rootfs_bytes"`
+				MinimumRootFSBytes            *ByteSize `yaml:"minimum_rootfs_bytes"`
+				MinimumCacheOutputVolumeBytes *ByteSize `yaml:"minimum_cache_output_volume_bytes"`
 			} `yaml:"darwin-vz"`
 		} `yaml:"backends"`
 	}{}
@@ -369,6 +374,8 @@ func parseConfig(path string, raw []byte) (Config, error) {
 
 	darwinVZMinRootFSBytes := cfg.Backends.DarwinVZ.MinimumRootFSBytes
 	darwinVZMinRootFSBytesSet := presenceCfg.Backends.DarwinVZ.MinimumRootFSBytes != nil
+	darwinVZMinCacheOutputVolumeBytes := cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes
+	darwinVZMinCacheOutputVolumeBytesSet := presenceCfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes != nil
 	if darwinVZConfigIsZero(cfg.Backends.DarwinVZ) {
 		if darwinVZConfigHasValues(rawCfg.Backends.DarwinVZLegacy) {
 			cfg.Backends.DarwinVZ = rawCfg.Backends.DarwinVZLegacy
@@ -376,6 +383,9 @@ func parseConfig(path string, raw []byte) (Config, error) {
 	}
 	if darwinVZMinRootFSBytesSet {
 		cfg.Backends.DarwinVZ.MinimumRootFSBytes = darwinVZMinRootFSBytes
+	}
+	if darwinVZMinCacheOutputVolumeBytesSet {
+		cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes = darwinVZMinCacheOutputVolumeBytes
 	}
 
 	cfg = normalizeConfig(cfg, inferredDefaultBackend(backendPresence.Backends.Firecracker != nil, backendPresence.Backends.DarwinVZ != nil || backendPresence.Backends.LegacyDarwinVZ != nil))
@@ -693,7 +703,7 @@ func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 }
 
 func darwinVZConfigHasValues(cfg DarwinVZConfig) bool {
-	return !darwinVZConfigIsZero(cfg) || cfg.MinimumRootFSBytes > 0
+	return !darwinVZConfigIsZero(cfg) || cfg.MinimumRootFSBytes > 0 || cfg.MinimumCacheOutputVolumeBytes > 0
 }
 
 func darwinVZNetworkConfigIsZero(cfg DarwinVZNetworkConfig) bool {

@@ -3,6 +3,9 @@
 package darwinvz
 
 import (
+	"context"
+	"errors"
+	"os"
 	"reflect"
 	"testing"
 
@@ -128,5 +131,64 @@ func TestDarwinVZCacheOutputDevicePathSkipsRootDisk(t *testing.T) {
 		if got := darwinVZCacheOutputDevicePath(index); got != want {
 			t.Fatalf("cacheOutputDevicePath(%d) = %q, want %q", index, got, want)
 		}
+	}
+}
+
+func TestPrepareDarwinVZCacheOutputVolumesCfgMinimumBytesOverridesPackageDefault(t *testing.T) {
+	runDir := t.TempDir()
+	prevCreateEmpty := createEmptyDarwinVZCacheOutputExt4ImageFn
+	prevPrepareFn := prepareDarwinVZCacheOutputWritableVolumeFn
+	prevMinimumBytes := darwinVZCacheOutputVolumeMinimumBytes
+	t.Cleanup(func() {
+		createEmptyDarwinVZCacheOutputExt4ImageFn = prevCreateEmpty
+		prepareDarwinVZCacheOutputWritableVolumeFn = prevPrepareFn
+		darwinVZCacheOutputVolumeMinimumBytes = prevMinimumBytes
+	})
+	darwinVZCacheOutputVolumeMinimumBytes = 1024
+
+	var capturedEmptyMinimumBytes int64
+	createEmptyDarwinVZCacheOutputExt4ImageFn = func(_ context.Context, path string, minimumBytes int64) error {
+		capturedEmptyMinimumBytes = minimumBytes
+		return os.WriteFile(path, []byte("empty-ext4"), 0o644)
+	}
+
+	var capturedWritableMinimumBytes int64
+	prepareDarwinVZCacheOutputWritableVolumeFn = func(_ context.Context, _ backend.FirecrackerConfig, volumeID, attachmentPath, sourceRef string, minimumBytes int64) (volumestore.WritableVolume, func(), error) {
+		capturedWritableMinimumBytes = minimumBytes
+		if sourceRef == "" {
+			return volumestore.WritableVolume{}, nil, errors.New("unexpected empty source ref")
+		}
+		return volumestore.WritableVolume{
+			Ref:            "volume:" + volumeID,
+			AttachmentPath: attachmentPath,
+		}, func() {}, nil
+	}
+
+	cfg := backend.FirecrackerConfig{
+		MinimumCacheOutputVolumeBytes: 16 << 30,
+	}
+	specs := []backend.CacheOutputVolumeSpec{
+		{
+			Stage:     "service-volume",
+			BlockName: "postgres",
+			CacheKey:  "service-volume:v1:postgres",
+			VolumeID:  "service-volume-def456",
+			DirMappings: []backend.CacheOutputDirMapping{
+				{GuestPath: "/var/lib/cleanroom/services/postgres", Subpath: "dirs/0"},
+			},
+		},
+	}
+
+	_, cleanup, err := prepareDarwinVZCacheOutputVolumes(context.Background(), cfg, "sandbox-1", runDir, specs)
+	if err != nil {
+		t.Fatalf("prepareDarwinVZCacheOutputVolumes returned error: %v", err)
+	}
+	defer cleanup()
+
+	if got, want := capturedEmptyMinimumBytes, int64(16<<30); got != want {
+		t.Fatalf("minimumBytes passed to createEmptyDarwinVZCacheOutputExt4ImageFn: got %d want %d", got, want)
+	}
+	if got, want := capturedWritableMinimumBytes, int64(16<<30); got != want {
+		t.Fatalf("minimumBytes passed to prepareDarwinVZCacheOutputWritableVolumeFn: got %d want %d", got, want)
 	}
 }
