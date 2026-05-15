@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestEnsureLocalCertificateCreatesReusableLeafCertificate(t *testing.T) {
+func TestEnsureLocalCertificateCreatesReusableCertificateAuthority(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -23,22 +23,15 @@ func TestEnsureLocalCertificateCreatesReusableLeafCertificate(t *testing.T) {
 	if !first.Cert.Equal(second.Cert) {
 		t.Fatal("expected second call to reuse generated certificate")
 	}
-	if first.Cert.IsCA {
-		t.Fatal("expected exposure certificate to be a leaf certificate, not a CA")
-	}
-	if err := first.Cert.VerifyHostname("buildkite." + Domain); err != nil {
-		t.Fatalf("expected certificate to verify buildkite hostname: %v", err)
-	}
-	if err := first.Cert.VerifyHostname("example.com"); err == nil {
-		t.Fatal("expected certificate not to verify arbitrary hostnames")
+	if !first.Cert.IsCA {
+		t.Fatal("expected exposure certificate to be a CA")
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(first.Cert)
 	if _, err := first.Cert.Verify(x509.VerifyOptions{
-		DNSName: "buildkite." + Domain,
-		Roots:   roots,
+		Roots: roots,
 	}); err != nil {
-		t.Fatalf("expected certificate to verify as a directly trusted leaf: %v", err)
+		t.Fatalf("expected certificate authority to verify as a trusted root: %v", err)
 	}
 	if info, err := os.Stat(filepath.Join(dir, LocalCertificateKeyFilename)); err != nil {
 		t.Fatalf("stat certificate key: %v", err)
@@ -47,7 +40,7 @@ func TestEnsureLocalCertificateCreatesReusableLeafCertificate(t *testing.T) {
 	}
 }
 
-func TestGenerateServerCertificateUsesTrustedLeafCertificate(t *testing.T) {
+func TestGenerateServerCertificateUsesLocalCertificateAuthority(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -55,7 +48,7 @@ func TestGenerateServerCertificateUsesTrustedLeafCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
 	}
-	cert, err := GenerateServerCertificate(Domain, dir)
+	cert, err := GenerateServerCertificate("buildkite."+Domain, dir)
 	if err != nil {
 		t.Fatalf("GenerateServerCertificate returned error: %v", err)
 	}
@@ -63,16 +56,34 @@ func TestGenerateServerCertificateUsesTrustedLeafCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse leaf certificate: %v", err)
 	}
-	if !leaf.Equal(local.Cert) {
-		t.Fatal("expected server certificate to use the locally trusted leaf certificate")
+	if leaf.Equal(local.Cert) {
+		t.Fatal("expected server certificate to use a dynamically generated leaf")
 	}
 	if leaf.IsCA {
 		t.Fatal("expected server certificate not to be a CA")
+	}
+	if len(cert.Certificate) < 2 {
+		t.Fatalf("expected server certificate chain to include the local CA, got %d certificates", len(cert.Certificate))
+	}
+	issuer, err := x509.ParseCertificate(cert.Certificate[1])
+	if err != nil {
+		t.Fatalf("parse issuer certificate: %v", err)
+	}
+	if !issuer.Equal(local.Cert) {
+		t.Fatal("expected server certificate chain to include the local CA")
 	}
 	if block, _ := pem.Decode(local.CertPEM); block == nil || block.Type != "CERTIFICATE" {
 		t.Fatal("expected local certificate PEM to contain a certificate")
 	}
 	if err := leaf.VerifyHostname("buildkite." + Domain); err != nil {
 		t.Fatalf("expected leaf to verify buildkite hostname: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(local.Cert)
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		DNSName: "buildkite." + Domain,
+		Roots:   roots,
+	}); err != nil {
+		t.Fatalf("expected server certificate to verify against local CA: %v", err)
 	}
 }

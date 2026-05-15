@@ -29,7 +29,7 @@ type ExecCommand struct {
 	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	Env                 []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
 	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
-	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port>, or configured expose.https routes when omitted"`
 	TTY                 bool     `name:"tty" help:"Allocate a tty and attach through the interactive transport; stdout and stderr merge into a single stream"`
 	NoStdin             bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
 	PrintSandboxID      bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
@@ -197,6 +197,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			}
 		}
 		return joinExecutionAndWorkspaceCopyOutError(executionErr, copyOutErr)
+	}
+	exposures, err = resolveRequestedExposures(ctx, cwd, sandboxID, exposures)
+	if err != nil {
+		return err
 	}
 	exposureManager, exposed, err := startClientExposures(rootCtx, client, sandboxID, exposures)
 	if err != nil {

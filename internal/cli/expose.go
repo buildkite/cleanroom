@@ -9,7 +9,7 @@ type ExposeCommand struct {
 	clientFlags
 	SandboxID   string   `name:"in" aliases:"sandbox-id" required:"" help:"Sandbox ID to expose"`
 	Expose      []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
-	ExposeHTTPS []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
+	ExposeHTTPS []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port>, or configured expose.https routes when omitted"`
 }
 
 type PortForwardCommand struct {
@@ -20,6 +20,10 @@ type PortForwardCommand struct {
 
 func (c *ExposeCommand) Run(ctx *runtimeContext) error {
 	exposures, err := parseExposureFlags(c.Expose, c.ExposeHTTPS)
+	if err != nil {
+		return err
+	}
+	exposures, err = resolveRequestedExposures(ctx, ctx.CWD, c.SandboxID, exposures)
 	if err != nil {
 		return err
 	}

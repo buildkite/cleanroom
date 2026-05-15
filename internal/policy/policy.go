@@ -35,6 +35,7 @@ type Loader struct{}
 type rawPolicy struct {
 	Version    int            `yaml:"version"`
 	Repository *rawRepository `yaml:"repository"`
+	Expose     rawExpose      `yaml:"expose"`
 	Sandbox    struct {
 		Image struct {
 			Ref string `yaml:"ref"`
@@ -55,6 +56,20 @@ type rawRepository struct {
 	Path       string                 `yaml:"path"`
 	Submodules bool                   `yaml:"submodules"`
 	Network    *rawStageNetworkConfig `yaml:"network"`
+}
+
+type rawExpose struct {
+	HTTPS rawExposeHTTPS `yaml:"https"`
+}
+
+type rawExposeHTTPS struct {
+	Base   string                `yaml:"base"`
+	Routes []rawExposeHTTPSRoute `yaml:"routes"`
+}
+
+type rawExposeHTTPSRoute struct {
+	Port  int      `yaml:"port"`
+	Hosts []string `yaml:"hosts"`
 }
 
 type rawDependencyCommandSpec []string
@@ -140,6 +155,28 @@ type RepositoryConfig struct {
 	Remote     string `json:"remote"`
 	Path       string `json:"path"`
 	Submodules bool   `json:"submodules"`
+}
+
+type ExposeConfig struct {
+	HTTPS ExposeHTTPSConfig `json:"https,omitempty"`
+}
+
+func (c ExposeConfig) IsZero() bool {
+	return c.HTTPS.IsZero()
+}
+
+type ExposeHTTPSConfig struct {
+	Base   string             `json:"base,omitempty"`
+	Routes []ExposeHTTPSRoute `json:"routes,omitempty"`
+}
+
+func (c ExposeHTTPSConfig) IsZero() bool {
+	return strings.TrimSpace(c.Base) == "" && len(c.Routes) == 0
+}
+
+type ExposeHTTPSRoute struct {
+	Port  int      `json:"port"`
+	Hosts []string `json:"hosts"`
 }
 
 type Services struct {
@@ -293,6 +330,49 @@ func normalizeRawNetworkStages(raw rawPolicy) (*NetworkStagePolicies, error) {
 	return &out, nil
 }
 
+func normalizeExposeConfig(raw rawExpose) (ExposeConfig, error) {
+	https, err := normalizeExposeHTTPSConfig(raw.HTTPS)
+	if err != nil {
+		return ExposeConfig{}, err
+	}
+	return ExposeConfig{HTTPS: https}, nil
+}
+
+func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
+	base := strings.TrimSpace(strings.ToLower(raw.Base))
+	if base == "" && len(raw.Routes) == 0 {
+		return ExposeHTTPSConfig{}, nil
+	}
+	if len(raw.Routes) == 0 {
+		return ExposeHTTPSConfig{}, errors.New("expose.https.routes must include at least one route")
+	}
+	routes := make([]ExposeHTTPSRoute, 0, len(raw.Routes))
+	for i, route := range raw.Routes {
+		field := fmt.Sprintf("expose.https.routes[%d]", i)
+		if route.Port < 1 || route.Port > 65535 {
+			return ExposeHTTPSConfig{}, fmt.Errorf("%s.port must be in range 1-65535", field)
+		}
+		if len(route.Hosts) == 0 {
+			return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts must include at least one host", field)
+		}
+		hosts := make([]string, 0, len(route.Hosts))
+		seen := map[string]struct{}{}
+		for j, host := range route.Hosts {
+			host = strings.TrimSpace(strings.ToLower(host))
+			if host == "" {
+				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] cannot be empty", field, j)
+			}
+			if _, ok := seen[host]; ok {
+				continue
+			}
+			seen[host] = struct{}{}
+			hosts = append(hosts, host)
+		}
+		routes = append(routes, ExposeHTTPSRoute{Port: route.Port, Hosts: hosts})
+	}
+	return ExposeHTTPSConfig{Base: base, Routes: routes}, nil
+}
+
 func (l Loader) LoadAndCompile(root string) (*CompiledPolicy, string, error) {
 	raw, source, err := l.Load(root)
 	if err != nil {
@@ -316,6 +396,19 @@ func (l Loader) LoadRepository(root string) (RepositoryConfig, string, error) {
 	cfg, err := normalizeRepositoryConfig(raw.Repository)
 	if err != nil {
 		return RepositoryConfig{}, source, err
+	}
+	return cfg, source, nil
+}
+
+func (l Loader) LoadExpose(root string) (ExposeConfig, string, error) {
+	raw, source, err := l.Load(root)
+	if err != nil {
+		return ExposeConfig{}, "", err
+	}
+
+	cfg, err := normalizeExposeConfig(raw.Expose)
+	if err != nil {
+		return ExposeConfig{}, source, err
 	}
 	return cfg, source, nil
 }
@@ -384,6 +477,9 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 
 	repository, err := normalizeRepositoryConfig(raw.Repository)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := normalizeExposeConfig(raw.Expose); err != nil {
 		return nil, err
 	}
 	if err := validateRepositoryScopedBlocks(raw, repository); err != nil {

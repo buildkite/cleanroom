@@ -31,7 +31,7 @@ type SandboxCreateCommand struct {
 	Docker              bool     `help:"Enable the guest Docker service for this repo-agnostic sandbox"`
 	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for this repo-agnostic sandbox"`
 	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
-	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port>, or configured expose.https routes when omitted"`
 	LaunchSeconds       int64    `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON                bool     `help:"Print sandbox as JSON"`
 }
@@ -64,7 +64,7 @@ type CreateCommand struct {
 	workspaceCopyInFlags
 	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
-	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port>, or configured expose.https routes when omitted"`
 	LaunchSeconds       int64    `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON                bool     `help:"Print sandbox as JSON"`
 }
@@ -344,6 +344,10 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 	if sandboxID == "" {
 		return errors.New("create sandbox: response missing sandbox id")
 	}
+	exposures, err = resolveRequestedExposures(ctx, ctx.CWD, sandboxID, exposures)
+	if err != nil {
+		return err
+	}
 
 	if outputJSON {
 		enc := json.NewEncoder(ctx.Stdout)
@@ -403,6 +407,10 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	}
 	if c.CopyIn && repository != nil {
 		warnWorkspaceBindingError(ctx, recordGitWorkspaceBinding(sandboxID, repository, toRepositoryCheckout(repository), repositoryLocalChangesFiles(localChanges), "copy-in"))
+	}
+	exposures, err = resolveRequestedExposures(ctx, cwd, sandboxID, exposures)
+	if err != nil {
+		return err
 	}
 	if c.JSON {
 		enc := json.NewEncoder(ctx.Stdout)

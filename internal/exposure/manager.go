@@ -56,14 +56,16 @@ type Manager struct {
 	tlsDir      string
 	logger      *log.Logger
 
-	mu          sync.RWMutex
-	byOwner     map[string][]*route
-	tcpRoutes   map[int]*route
-	httpsRoutes map[string]*route
-	tcpServers  map[int]*tcpServer
+	mu                 sync.RWMutex
+	byOwner            map[string][]*route
+	tcpRoutes          map[int]*route
+	httpsRoutes        map[string]*route
+	httpsPatternRoutes []*route
+	tcpServers         map[int]*tcpServer
 
 	httpsServer *http.Server
 	httpsLn     net.Listener
+	certCache   map[string]*tls.Certificate
 
 	dnsServers []*dns.Server
 	closeOnce  sync.Once
@@ -78,6 +80,7 @@ type route struct {
 	hostPort  int
 	name      string
 	hostname  string
+	wildcard  bool
 	url       string
 	dialer    Dialer
 
@@ -119,6 +122,7 @@ func NewManager(cfg Config) *Manager {
 		byOwner:     map[string][]*route{},
 		tcpRoutes:   map[int]*route{},
 		httpsRoutes: map[string]*route{},
+		certCache:   map[string]*tls.Certificate{},
 		tcpServers:  map[int]*tcpServer{},
 		closed:      make(chan struct{}),
 	}
@@ -169,6 +173,7 @@ func (m *Manager) ReleaseOwner(ownerID string) {
 			}
 		case "https":
 			delete(m.httpsRoutes, r.hostname)
+			m.removeHTTPSPatternRouteLocked(r)
 			closeHTTPSRouteIdleConnections(r)
 		}
 	}
@@ -201,6 +206,7 @@ func (m *Manager) startDNS(ctx context.Context) error {
 	}
 	handler := dns.NewServeMux()
 	handler.HandleFunc(dns.Fqdn(m.domain), m.handleDNS)
+	handler.HandleFunc(dns.Fqdn("localhost"), m.handleDNS)
 
 	udp := &dns.Server{Addr: m.dnsListen, Net: "udp", Handler: handler}
 	tcp := &dns.Server{Addr: m.dnsListen, Net: "tcp", Handler: handler}
@@ -282,6 +288,8 @@ func (m *Manager) Close() error {
 	}
 	m.tcpRoutes = map[int]*route{}
 	m.httpsRoutes = map[string]*route{}
+	m.httpsPatternRoutes = nil
+	m.certCache = map[string]*tls.Certificate{}
 	m.byOwner = map[string][]*route{}
 	if m.httpsServer != nil {
 		if err := m.httpsServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -369,10 +377,10 @@ func (m *Manager) registerHTTPS(ctx context.Context, ownerID, sandboxID string, 
 	if name == "" {
 		name = sandboxID
 	}
-	if err := validateDNSLabel(name); err != nil {
+	host, wildcard, err := m.normalizeHTTPSRouteHost(name)
+	if err != nil {
 		return nil, err
 	}
-	host := name + "." + m.domain
 	r := &route{
 		ownerID:   ownerID,
 		sandboxID: sandboxID,
@@ -380,6 +388,7 @@ func (m *Manager) registerHTTPS(ctx context.Context, ownerID, sandboxID string, 
 		guestPort: guestPort,
 		name:      name,
 		hostname:  host,
+		wildcard:  wildcard,
 		dialer:    dialer,
 	}
 	r.httpsProxy, r.httpsTransport = m.newHTTPSProxy(r)
@@ -390,6 +399,9 @@ func (m *Manager) registerHTTPS(ctx context.Context, ownerID, sandboxID string, 
 		return nil, fmt.Errorf("https route %s is already exposed", host)
 	}
 	m.httpsRoutes[host] = r
+	if wildcard {
+		m.httpsPatternRoutes = append(m.httpsPatternRoutes, r)
+	}
 	m.byOwner[ownerID] = append(m.byOwner[ownerID], r)
 	m.mu.Unlock()
 
@@ -421,6 +433,7 @@ func (m *Manager) releaseRoute(target *route) {
 	case "https":
 		if m.httpsRoutes[target.hostname] == target {
 			delete(m.httpsRoutes, target.hostname)
+			m.removeHTTPSPatternRouteLocked(target)
 			closeHTTPSRouteIdleConnections(target)
 		}
 	}
@@ -489,6 +502,7 @@ func (m *Manager) startHTTPS(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	m.certCache[m.domain] = &cert
 	var listenConfig net.ListenConfig
 	ln, err := listenConfig.Listen(ctx, "tcp", m.httpsListen)
 	if err != nil {
@@ -503,8 +517,12 @@ func (m *Manager) startHTTPS(ctx context.Context) error {
 	m.httpsListen = ln.Addr().String()
 	m.httpsLn = ln
 	m.httpsServer = &http.Server{
-		Handler:   http.HandlerFunc(m.handleHTTPS),
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		Handler: http.HandlerFunc(m.handleHTTPS),
+		TLSConfig: &tls.Config{
+			Certificates:   []tls.Certificate{cert},
+			GetCertificate: m.getHTTPSCertificate,
+			MinVersion:     tls.VersionTLS12,
+		},
 	}
 	go func() {
 		err := m.httpsServer.ServeTLS(ln, "", "")
@@ -553,7 +571,7 @@ func (m *Manager) handleHTTPS(w http.ResponseWriter, req *http.Request) {
 		host = normalizeDomain(req.TLS.ServerName)
 	}
 	m.mu.RLock()
-	r := m.httpsRoutes[host]
+	r := m.matchHTTPSRouteLocked(host)
 	m.mu.RUnlock()
 	if r == nil {
 		http.NotFound(w, req)
@@ -602,7 +620,171 @@ func (m *Manager) hasKnownDNSQuestion(msg *dns.Msg) bool {
 }
 
 func (m *Manager) handlesDNSName(name string) bool {
+	name = normalizeDomain(name)
+	if m.handlesManagedDomainName(name) {
+		return true
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.matchHTTPSRouteLocked(name) != nil
+}
+
+func (m *Manager) handlesManagedDomainName(name string) bool {
 	return name == m.domain || strings.HasSuffix(name, "."+m.domain)
+}
+
+func (m *Manager) normalizeHTTPSRouteHost(name string) (string, bool, error) {
+	name = normalizeDomain(name)
+	if name == "" {
+		return "", false, errors.New("missing https route name")
+	}
+	if !strings.Contains(name, ".") && !strings.Contains(name, "*") {
+		if err := validateDNSLabel(name); err != nil {
+			return "", false, fmt.Errorf("invalid https route name: %w", err)
+		}
+		return name + "." + m.domain, false, nil
+	}
+	host, wildcard, err := normalizeLocalhostRoutePattern(name)
+	if err != nil {
+		return "", false, fmt.Errorf("invalid https route host %q: %w", name, err)
+	}
+	return host, wildcard, nil
+}
+
+func normalizeLocalhostRoutePattern(host string) (string, bool, error) {
+	host = normalizeDomain(host)
+	if host == "" {
+		return "", false, errors.New("missing host")
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 || labels[len(labels)-1] != "localhost" {
+		return "", false, errors.New("host must be a subdomain of localhost")
+	}
+	if len(labels) == 2 && labels[0] == "*" {
+		return "", false, errors.New("wildcard host must include a concrete localhost subdomain")
+	}
+
+	wildcard := false
+	seenConcrete := false
+	for i, label := range labels {
+		if label == "*" {
+			if seenConcrete {
+				return "", false, errors.New("wildcard labels must be leading labels")
+			}
+			wildcard = true
+			continue
+		}
+		seenConcrete = true
+		if err := validateDNSLabel(label); err != nil {
+			return "", false, fmt.Errorf("label %d: %w", i, err)
+		}
+	}
+	if !wildcard && labels[0] == "localhost" {
+		return "", false, errors.New("host must be a subdomain of localhost")
+	}
+	return host, wildcard, nil
+}
+
+func (m *Manager) matchHTTPSRouteLocked(host string) *route {
+	host = normalizeDomain(host)
+	if host == "" {
+		return nil
+	}
+	if r := m.httpsRoutes[host]; r != nil && !r.wildcard {
+		return r
+	}
+	var best *route
+	bestLabels := -1
+	for _, candidate := range m.httpsPatternRoutes {
+		if candidate == nil || !routePatternMatchesHost(candidate.hostname, host) {
+			continue
+		}
+		labelCount := strings.Count(candidate.hostname, ".") + 1
+		if labelCount > bestLabels {
+			best = candidate
+			bestLabels = labelCount
+		}
+	}
+	return best
+}
+
+func routePatternMatchesHost(pattern, host string) bool {
+	pattern = normalizeDomain(pattern)
+	host = normalizeDomain(host)
+	if pattern == "" || host == "" {
+		return false
+	}
+	patternLabels := strings.Split(pattern, ".")
+	hostLabels := strings.Split(host, ".")
+	if len(patternLabels) != len(hostLabels) {
+		return false
+	}
+	for i, label := range patternLabels {
+		if label == "*" {
+			continue
+		}
+		if label != hostLabels[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Manager) removeHTTPSPatternRouteLocked(target *route) {
+	if target == nil || !target.wildcard {
+		return
+	}
+	for i, r := range m.httpsPatternRoutes {
+		if r == target {
+			m.httpsPatternRoutes = append(m.httpsPatternRoutes[:i], m.httpsPatternRoutes[i+1:]...)
+			return
+		}
+	}
+}
+
+func (m *Manager) getHTTPSCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	name := ""
+	if hello != nil {
+		name = normalizeDomain(hello.ServerName)
+	}
+	if name == "" {
+		name = m.domain
+	}
+	if !m.handlesCertificateName(name) {
+		return nil, fmt.Errorf("unhandled https exposure hostname %q", name)
+	}
+
+	m.mu.RLock()
+	if cert := m.certCache[name]; cert != nil {
+		m.mu.RUnlock()
+		return cert, nil
+	}
+	m.mu.RUnlock()
+
+	cert, err := GenerateServerCertificate(name, m.tlsDir)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.certCache[name]; existing != nil {
+		return existing, nil
+	}
+	m.certCache[name] = &cert
+	return &cert, nil
+}
+
+func (m *Manager) handlesCertificateName(name string) bool {
+	name = normalizeDomain(name)
+	if name == "" {
+		return false
+	}
+	if m.handlesManagedDomainName(name) {
+		return true
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.matchHTTPSRouteLocked(name) != nil
 }
 
 func (m *Manager) httpsURL(host string) string {

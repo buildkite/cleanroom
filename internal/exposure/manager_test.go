@@ -410,6 +410,103 @@ func TestRegisterHTTPSReusesProxyTransport(t *testing.T) {
 	}
 }
 
+func TestRegisterHTTPSRoutesWildcardLocalhostPattern(t *testing.T) {
+	t.Parallel()
+
+	seen := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seen <- req.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(backend.Close)
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("parse backend URL: %v", err)
+	}
+
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTCPPort(t))),
+		TLSDir:      t.TempDir(),
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	exposed, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "*.sandbox-1.localhost",
+			GuestPort: 3000,
+		},
+		Dialer: func(ctx context.Context, _ string, _ int) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "tcp", backendURL.Host)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	if got, want := exposed.GetHostname(), "*.sandbox-1.localhost"; got != want {
+		t.Fatalf("unexpected hostname: got %q want %q", got, want)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://api.sandbox-1.localhost/", nil)
+	req.Host = "api.sandbox-1.localhost"
+	rr := httptest.NewRecorder()
+	manager.handleHTTPS(rr, req)
+	if got, want := rr.Code, http.StatusNoContent; got != want {
+		t.Fatalf("unexpected status: got %d want %d", got, want)
+	}
+	select {
+	case got := <-seen:
+		if got != "api.sandbox-1.localhost" {
+			t.Fatalf("unexpected backend host: %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for backend request")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "https://deep.api.sandbox-1.localhost/", nil)
+	req.Host = "deep.api.sandbox-1.localhost"
+	rr = httptest.NewRecorder()
+	manager.handleHTTPS(rr, req)
+	if got, want := rr.Code, http.StatusNotFound; got != want {
+		t.Fatalf("unexpected deep wildcard status: got %d want %d", got, want)
+	}
+}
+
+func TestRegisterHTTPSRejectsExternalRouteHost(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{TLSDir: t.TempDir()})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "google.com",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err == nil {
+		t.Fatal("expected external host to be rejected")
+	}
+	if !strings.Contains(err.Error(), "localhost") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestHTTPSProxyForwardsTrustedHeadersAndPreservesHost(t *testing.T) {
 	t.Parallel()
 
@@ -559,6 +656,44 @@ func TestDNSReturnsLoopbackForWildcardNames(t *testing.T) {
 	}
 	if !a.A.Equal(net.ParseIP("127.0.0.1")) {
 		t.Fatalf("unexpected A answer: got %v", a.A)
+	}
+}
+
+func TestDNSReturnsLoopbackForConfiguredLocalhostRoute(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{TLSDir: t.TempDir()})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+	if _, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "*.sandbox-1.localhost",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	}); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	msg := new(dns.Msg)
+	msg.SetQuestion("api.sandbox-1.localhost.", dns.TypeA)
+	w := &captureDNSResponseWriter{}
+	manager.handleDNS(w, msg)
+
+	if w.msg == nil {
+		t.Fatal("expected DNS response")
+	}
+	if got, want := w.msg.Rcode, dns.RcodeSuccess; got != want {
+		t.Fatalf("unexpected DNS rcode: got %d want %d", got, want)
+	}
+	if len(w.msg.Answer) != 1 {
+		t.Fatalf("expected one A answer, got %v", w.msg.Answer)
 	}
 }
 

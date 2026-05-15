@@ -24,6 +24,10 @@ func (l *policyValidateLoader) LoadRepository(string) (policy.RepositoryConfig, 
 	return policy.RepositoryConfig{}, "", nil
 }
 
+func (l *policyValidateLoader) LoadExpose(string) (policy.ExposeConfig, string, error) {
+	return policy.ExposeConfig{}, "", nil
+}
+
 func TestPolicyValidateCommandRunJSON(t *testing.T) {
 	t.Parallel()
 

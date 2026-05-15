@@ -42,14 +42,13 @@ cd examples/multi-host-routing
 mise exec -- cleanroom policy validate
 ```
 
-Start the example with three exact HTTPS hosts pointing at the same guest port:
+Start the example with the HTTPS hosts declared in `cleanroom.yaml` pointing at
+the same guest port:
 
 ```bash
 mise exec -- cleanroom exec \
   --backend darwin-vz \
-  --expose-https example:80 \
-  --expose-https example-app:80 \
-  --expose-https example-s3:80 \
+  --expose-https \
   -- sh -lc 'cd /workspace/examples/multi-host-routing && sh ./start.sh'
 ```
 
@@ -65,8 +64,8 @@ If Cleanroom chooses a different HTTPS listener port, pass that port to
 
 ## What This Exercises
 
-- exact route registration for hosts covered by the existing
-  `*.cleanroom.localhost` TLS certificate
+- configured exact route registration for hosts covered by the local Cleanroom
+  certificate authority
 - guest-side host-based virtual hosting in `nginx`
 - preserved `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
   `X-Forwarded-Port`, and `X-Forwarded-For`

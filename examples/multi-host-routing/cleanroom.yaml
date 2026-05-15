@@ -1,5 +1,14 @@
 version: 1
 
+expose:
+  https:
+    routes:
+      - port: 80
+        hosts:
+          - example.cleanroom.localhost
+          - example-app.cleanroom.localhost
+          - example-s3.cleanroom.localhost
+
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/debian@sha256:28c3f638fabe1ed780f87b82cfb0c6dda2549c86b9e4edbe519e8250243411c5

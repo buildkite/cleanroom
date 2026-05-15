@@ -13,6 +13,8 @@ import (
 const (
 	exposureProtocolTCP   = "tcp"
 	exposureProtocolHTTPS = "https"
+
+	configuredHTTPSExposureSpec = "__cleanroom_configured_https__"
 )
 
 func parseExposureFlags(tcpSpecs, httpsSpecs []string) ([]*cleanroomv1.PortExposure, error) {
@@ -93,7 +95,13 @@ func parseTCPExposureSpec(spec string) (*cleanroomv1.PortExposure, error) {
 func parseHTTPSExposureSpec(spec string) (*cleanroomv1.PortExposure, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		return nil, errors.New("invalid --expose-https value: empty exposure")
+		spec = configuredHTTPSExposureSpec
+	}
+	if spec == configuredHTTPSExposureSpec {
+		return &cleanroomv1.PortExposure{
+			Protocol: exposureProtocolHTTPS,
+			Name:     configuredHTTPSExposureSpec,
+		}, nil
 	}
 
 	name := ""

@@ -98,6 +98,10 @@ func (doctorFailingLoader) LoadRepository(string) (policy.RepositoryConfig, stri
 	return policy.RepositoryConfig{}, "", errors.New("policy unavailable")
 }
 
+func (doctorFailingLoader) LoadExpose(string) (policy.ExposeConfig, string, error) {
+	return policy.ExposeConfig{}, "", errors.New("policy unavailable")
+}
+
 type doctorStaticLoader struct{}
 
 func (doctorStaticLoader) LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error) {
@@ -106,6 +110,10 @@ func (doctorStaticLoader) LoadAndCompile(cwd string) (*policy.CompiledPolicy, st
 
 func (doctorStaticLoader) LoadRepository(string) (policy.RepositoryConfig, string, error) {
 	return policy.RepositoryConfig{}, "", nil
+}
+
+func (doctorStaticLoader) LoadExpose(string) (policy.ExposeConfig, string, error) {
+	return policy.ExposeConfig{}, "", nil
 }
 
 func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
