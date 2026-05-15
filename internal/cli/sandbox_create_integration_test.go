@@ -138,6 +138,33 @@ func TestTopLevelCreateIntegrationReportsExposureSetupFailureAfterCreate(t *test
 	}
 }
 
+func TestTopLevelCreatePrevalidatesConfiguredExposureBeforeCreate(t *testing.T) {
+	cwd := t.TempDir()
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		Chdir:       cwd,
+		ExposeHTTPS: []string{""},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: &configuredExposureLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected CreateCommand.Run to fail before creating a sandbox")
+	}
+	if !strings.Contains(outcome.err.Error(), "requires expose.https") {
+		t.Fatalf("unexpected CreateCommand.Run error: %v", outcome.err)
+	}
+	if strings.TrimSpace(outcome.stdout) != "" {
+		t.Fatalf("expected no sandbox id on stdout, got %q", outcome.stdout)
+	}
+	if strings.Contains(outcome.stderr, "sandbox_id=") {
+		t.Fatalf("expected no sandbox id on stderr before create, got %q", outcome.stderr)
+	}
+}
+
 func TestSandboxCreateIntegrationDangerouslyAllowAllSetsAllowNetworkDefault(t *testing.T) {
 	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
 		if got, want := source, defaultBumpRefSource; got != want {

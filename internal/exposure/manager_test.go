@@ -2,6 +2,7 @@ package exposure
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -476,6 +477,129 @@ func TestRegisterHTTPSRoutesWildcardLocalhostPattern(t *testing.T) {
 	manager.handleHTTPS(rr, req)
 	if got, want := rr.Code, http.StatusNotFound; got != want {
 		t.Fatalf("unexpected deep wildcard status: got %d want %d", got, want)
+	}
+}
+
+func TestHTTPSCertificateGenerationUsesBoundedManagedWildcardFallback(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTCPPort(t))),
+		TLSDir:      t.TempDir(),
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "buildkite",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	manager.mu.RLock()
+	cacheEntries := len(manager.certCache)
+	manager.mu.RUnlock()
+
+	cert, err := manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: "missing.cleanroom.localhost"})
+	if err != nil {
+		t.Fatalf("expected one-label managed hostname to use wildcard fallback certificate: %v", err)
+	}
+	if cert.Leaf == nil {
+		t.Fatal("expected fallback certificate to include parsed leaf")
+	}
+	if err := cert.Leaf.VerifyHostname("missing.cleanroom.localhost"); err != nil {
+		t.Fatalf("expected fallback certificate to verify missing hostname: %v", err)
+	}
+	manager.mu.RLock()
+	if got, want := len(manager.certCache), cacheEntries+1; got != want {
+		manager.mu.RUnlock()
+		t.Fatalf("expected one wildcard fallback certificate cache entry: got %d want %d", got, want)
+	}
+	if manager.certCache["*.cleanroom.localhost"] == nil {
+		manager.mu.RUnlock()
+		t.Fatal("expected wildcard fallback certificate to be cached by pattern")
+	}
+	manager.mu.RUnlock()
+
+	_, err = manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: "deep.missing.cleanroom.localhost"})
+	if err == nil {
+		t.Fatal("expected unregistered deep managed hostname to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unhandled") {
+		t.Fatalf("unexpected certificate error: %v", err)
+	}
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if got, want := len(manager.certCache), cacheEntries+1; got != want {
+		t.Fatalf("expected rejected deep hostname not to populate certificate cache: got %d want %d", got, want)
+	}
+}
+
+func TestHTTPSCertificateCacheLimitBoundsWildcardRouteCertificates(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTCPPort(t))),
+		TLSDir:      t.TempDir(),
+	})
+	manager.certCacheLimit = 3
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "*.*.sandbox-1.localhost",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	for _, name := range []string{"a.b.sandbox-1.localhost", "c.d.sandbox-1.localhost"} {
+		if _, err := manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: name}); err != nil {
+			t.Fatalf("getHTTPSCertificate(%q) returned error: %v", name, err)
+		}
+	}
+	_, err = manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: "e.f.sandbox-1.localhost"})
+	if err == nil {
+		t.Fatal("expected certificate cache limit error")
+	}
+	if !strings.Contains(err.Error(), "cache is full") {
+		t.Fatalf("unexpected certificate error: %v", err)
+	}
+
+	_, err = manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-2",
+		SandboxID: "sandbox-2",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "buildkite",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err != nil {
+		t.Fatalf("Register exact route returned error: %v", err)
+	}
+	if _, err := manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: "buildkite.cleanroom.localhost"}); err != nil {
+		t.Fatalf("expected exact route certificate to bypass wildcard cache limit, got %v", err)
 	}
 }
 

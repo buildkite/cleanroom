@@ -28,6 +28,8 @@ const (
 	dnsTakeoverEvery   = 100 * time.Millisecond
 )
 
+const maxHTTPSCertificateCacheEntries = 128
+
 type Dialer func(ctx context.Context, sandboxID string, port int) (net.Conn, error)
 
 type RegisterRequest struct {
@@ -63,9 +65,10 @@ type Manager struct {
 	httpsPatternRoutes []*route
 	tcpServers         map[int]*tcpServer
 
-	httpsServer *http.Server
-	httpsLn     net.Listener
-	certCache   map[string]*tls.Certificate
+	httpsServer    *http.Server
+	httpsLn        net.Listener
+	certCache      map[string]*tls.Certificate
+	certCacheLimit int
 
 	dnsServers []*dns.Server
 	closeOnce  sync.Once
@@ -112,19 +115,20 @@ func NewManager(cfg Config) *Manager {
 		httpsListen = DefaultHTTPSListen
 	}
 	return &Manager{
-		domain:      domain,
-		tcpHost:     tcpHost,
-		dnsListen:   dnsListen,
-		httpsListen: httpsListen,
-		fixedHTTPS:  fixedHTTPS,
-		tlsDir:      strings.TrimSpace(cfg.TLSDir),
-		logger:      cfg.Logger,
-		byOwner:     map[string][]*route{},
-		tcpRoutes:   map[int]*route{},
-		httpsRoutes: map[string]*route{},
-		certCache:   map[string]*tls.Certificate{},
-		tcpServers:  map[int]*tcpServer{},
-		closed:      make(chan struct{}),
+		domain:         domain,
+		tcpHost:        tcpHost,
+		dnsListen:      dnsListen,
+		httpsListen:    httpsListen,
+		fixedHTTPS:     fixedHTTPS,
+		tlsDir:         strings.TrimSpace(cfg.TLSDir),
+		logger:         cfg.Logger,
+		byOwner:        map[string][]*route{},
+		tcpRoutes:      map[int]*route{},
+		httpsRoutes:    map[string]*route{},
+		certCache:      map[string]*tls.Certificate{},
+		certCacheLimit: maxHTTPSCertificateCacheEntries,
+		tcpServers:     map[int]*tcpServer{},
+		closed:         make(chan struct{}),
 	}
 }
 
@@ -750,41 +754,84 @@ func (m *Manager) getHTTPSCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 	if name == "" {
 		name = m.domain
 	}
-	if !m.handlesCertificateName(name) {
+	certName, wildcardRoute, allowed := m.certificateNameFor(name)
+	if !allowed {
 		return nil, fmt.Errorf("unhandled https exposure hostname %q", name)
 	}
 
 	m.mu.RLock()
-	if cert := m.certCache[name]; cert != nil {
+	if cert := m.certCache[certName]; cert != nil {
 		m.mu.RUnlock()
 		return cert, nil
 	}
+	cacheFull := wildcardRoute && len(m.certCache) >= m.certCacheLimit
 	m.mu.RUnlock()
+	if cacheFull {
+		return nil, fmt.Errorf("https exposure certificate cache is full")
+	}
 
-	cert, err := GenerateServerCertificate(name, m.tlsDir)
+	cert, err := GenerateServerCertificate(certName, m.tlsDir)
 	if err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing := m.certCache[name]; existing != nil {
+	if existing := m.certCache[certName]; existing != nil {
 		return existing, nil
 	}
-	m.certCache[name] = &cert
+	if wildcardRoute && len(m.certCache) >= m.certCacheLimit {
+		return nil, fmt.Errorf("https exposure certificate cache is full")
+	}
+	m.certCache[certName] = &cert
 	return &cert, nil
 }
 
-func (m *Manager) handlesCertificateName(name string) bool {
+func (m *Manager) certificateNameFor(name string) (string, bool, bool) {
 	name = normalizeDomain(name)
 	if name == "" {
-		return false
+		return "", false, false
 	}
-	if m.handlesManagedDomainName(name) {
-		return true
+	if name == m.domain {
+		return name, false, true
 	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.matchHTTPSRouteLocked(name) != nil
+	r := m.matchHTTPSRouteLocked(name)
+	m.mu.RUnlock()
+	if r != nil {
+		if certName, ok := routeWildcardCertificateName(r); ok {
+			return certName, false, true
+		}
+		return name, r.wildcard, true
+	}
+	if m.handlesManagedWildcardCertificateName(name) {
+		return "*." + m.domain, false, true
+	}
+	return "", false, false
+}
+
+func routeWildcardCertificateName(r *route) (string, bool) {
+	if r == nil || !r.wildcard {
+		return "", false
+	}
+	labels := strings.Split(r.hostname, ".")
+	if len(labels) < 2 || labels[0] != "*" {
+		return "", false
+	}
+	for _, label := range labels[1:] {
+		if label == "*" {
+			return "", false
+		}
+	}
+	return r.hostname, true
+}
+
+func (m *Manager) handlesManagedWildcardCertificateName(name string) bool {
+	suffix := "." + m.domain
+	if !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	prefix := strings.TrimSuffix(name, suffix)
+	return prefix != "" && !strings.Contains(prefix, ".")
 }
 
 func (m *Manager) httpsURL(host string) string {

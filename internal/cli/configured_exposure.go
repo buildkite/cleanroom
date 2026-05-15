@@ -9,6 +9,8 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
+const configuredHTTPSPreflightSandboxID = "cr-preflight"
+
 func normalizeBareExposeHTTPSArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil
@@ -29,17 +31,11 @@ func resolveRequestedExposures(ctx *runtimeContext, cwd, sandboxID string, reque
 	if !hasConfiguredHTTPSExposure(requested) {
 		return requested, nil
 	}
-	if ctx == nil || ctx.Loader == nil {
-		return nil, errors.New("configured --expose-https requires a policy loader")
-	}
-	cfg, _, err := ctx.Loader.LoadExpose(cwd)
+	cfg, err := loadConfiguredHTTPSExposure(ctx, cwd)
 	if err != nil {
-		if errors.Is(err, policy.ErrPolicyNotFound) {
-			return nil, errors.New("configured --expose-https requires expose.https in cleanroom.yaml")
-		}
 		return nil, err
 	}
-	configured, err := expandConfiguredHTTPSExposures(cfg.HTTPS, sandboxID)
+	configured, err := expandConfiguredHTTPSExposures(cfg, sandboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +49,32 @@ func resolveRequestedExposures(ctx *runtimeContext, cwd, sandboxID string, reque
 		resolved = append(resolved, req)
 	}
 	return resolved, nil
+}
+
+func prevalidateConfiguredExposures(ctx *runtimeContext, cwd string, requested []*cleanroomv1.PortExposure) error {
+	if !hasConfiguredHTTPSExposure(requested) {
+		return nil
+	}
+	cfg, err := loadConfiguredHTTPSExposure(ctx, cwd)
+	if err != nil {
+		return err
+	}
+	_, err = expandConfiguredHTTPSExposures(cfg, configuredHTTPSPreflightSandboxID)
+	return err
+}
+
+func loadConfiguredHTTPSExposure(ctx *runtimeContext, cwd string) (policy.ExposeHTTPSConfig, error) {
+	if ctx == nil || ctx.Loader == nil {
+		return policy.ExposeHTTPSConfig{}, errors.New("configured --expose-https requires a policy loader")
+	}
+	cfg, _, err := ctx.Loader.LoadExpose(cwd)
+	if err != nil {
+		if errors.Is(err, policy.ErrPolicyNotFound) {
+			return policy.ExposeHTTPSConfig{}, errors.New("configured --expose-https requires expose.https in cleanroom.yaml")
+		}
+		return policy.ExposeHTTPSConfig{}, err
+	}
+	return cfg.HTTPS, nil
 }
 
 func hasConfiguredHTTPSExposure(requested []*cleanroomv1.PortExposure) bool {

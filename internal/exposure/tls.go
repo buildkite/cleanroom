@@ -23,6 +23,8 @@ const (
 	LocalCertificateKeyFilename = "exposure-cert.key"
 )
 
+var ErrLocalCertificateRequiresInstall = errors.New("exposure certificate must be refreshed with cleanroom dns install")
+
 type LocalCertificate struct {
 	Cert     *x509.Certificate
 	Key      *rsa.PrivateKey
@@ -112,7 +114,7 @@ func GenerateServerCertificate(domain, dir string) (tls.Certificate, error) {
 	if domain == "" {
 		return tls.Certificate{}, errors.New("missing exposure certificate domain")
 	}
-	ca, err := EnsureLocalCertificate(domain, dir)
+	ca, err := EnsureRuntimeCertificateAuthority(domain, dir)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -156,6 +158,44 @@ func GenerateServerCertificate(domain, dir string) (tls.Certificate, error) {
 	}
 	pair.Leaf = leaf
 	return pair, nil
+}
+
+// EnsureRuntimeCertificateAuthority loads the local CA used to mint HTTPS exposure leaves.
+func EnsureRuntimeCertificateAuthority(domain, dir string) (*LocalCertificate, error) {
+	domain = normalizeCertificateDomain(domain)
+	if domain == "" {
+		return nil, errors.New("missing exposure certificate authority domain")
+	}
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		var err error
+		dir, err = DefaultTLSDir()
+		if err != nil {
+			return nil, err
+		}
+	}
+	certPath := filepath.Join(dir, LocalCertificateFilename)
+	keyPath := filepath.Join(dir, LocalCertificateKeyFilename)
+
+	certPEM, certErr := os.ReadFile(certPath)
+	keyPEM, keyErr := os.ReadFile(keyPath)
+	switch {
+	case certErr == nil && keyErr == nil:
+		cert, err := parseLocalCertificate(certPEM, keyPEM)
+		if err != nil {
+			return nil, err
+		}
+		if localCertificateIsUsableCA(cert.Cert) && localCertificateKeyMatches(cert.Cert, cert.Key) {
+			cert.CertPath = certPath
+			cert.KeyPath = keyPath
+			return cert, nil
+		}
+		return nil, fmt.Errorf("%w: run sudo cleanroom dns install to refresh %s", ErrLocalCertificateRequiresInstall, certPath)
+	case errors.Is(certErr, os.ErrNotExist) && errors.Is(keyErr, os.ErrNotExist):
+		return EnsureLocalCertificate(domain, dir)
+	default:
+		return nil, fmt.Errorf("load exposure certificate from %s: cert error=%v key error=%v", dir, certErr, keyErr)
+	}
 }
 
 func parseLocalCertificate(certPEM, keyPEM []byte) (*LocalCertificate, error) {

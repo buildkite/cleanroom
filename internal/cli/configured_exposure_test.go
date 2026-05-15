@@ -120,6 +120,24 @@ func TestResolveRequestedExposuresRequiresConfiguredHTTPS(t *testing.T) {
 	}
 }
 
+func TestPrevalidateConfiguredExposuresRequiresConfiguredHTTPS(t *testing.T) {
+	t.Parallel()
+
+	loader := &configuredExposureLoader{}
+	err := prevalidateConfiguredExposures(&runtimeContext{Loader: loader}, "/repo", []*cleanroomv1.PortExposure{
+		{Protocol: exposureProtocolHTTPS, Name: configuredHTTPSExposureSpec},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "requires expose.https") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := loader.cwd, "/repo"; got != want {
+		t.Fatalf("unexpected loader cwd: got %q want %q", got, want)
+	}
+}
+
 type configuredExposureLoader struct {
 	cfg policy.ExposeConfig
 	cwd string

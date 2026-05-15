@@ -87,11 +87,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	logger := newClientLogger()
 
-	host := e.resolvedHost(ctx.Config)
-	client, err := e.connect(ctx)
-	if err != nil {
-		return err
-	}
 	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
 	if err != nil {
 		return err
@@ -101,6 +96,14 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 	exposures, err := parseExposureFlags(e.Expose, e.ExposeHTTPS)
+	if err != nil {
+		return err
+	}
+	if err := prevalidateRequestedExposures(ctx, cwd, exposures); err != nil {
+		return err
+	}
+	host := e.resolvedHost(ctx.Config)
+	client, err := e.connect(ctx)
 	if err != nil {
 		return err
 	}

@@ -296,6 +296,9 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 	if err != nil {
 		return err
 	}
+	if err := prevalidateRequestedExposures(ctx, ctx.CWD, exposures); err != nil {
+		return err
+	}
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
 	client, err := connectFlags.connect(ctx)
 	if err != nil {
@@ -346,6 +349,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 	}
 	exposures, err = resolveRequestedExposures(ctx, ctx.CWD, sandboxID, exposures)
 	if err != nil {
+		_ = writeSandboxID(os.Stderr, sandboxID)
 		return err
 	}
 
@@ -378,13 +382,16 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	host := c.resolvedHost(ctx.Config)
-	client, err := c.connect(ctx)
+
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
 	if err != nil {
 		return err
 	}
-
-	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err := prevalidateRequestedExposures(ctx, cwd, exposures); err != nil {
+		return err
+	}
+	host := c.resolvedHost(ctx.Config)
+	client, err := c.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -410,6 +417,7 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	}
 	exposures, err = resolveRequestedExposures(ctx, cwd, sandboxID, exposures)
 	if err != nil {
+		_ = writeSandboxID(os.Stderr, sandboxID)
 		return err
 	}
 	if c.JSON {
