@@ -33,6 +33,11 @@ func TestNormalizeBareExposeHTTPSArgs(t *testing.T) {
 			args: []string{"create", "--expose-https", "buildkite:3000"},
 			want: []string{"create", "--expose-https", "buildkite:3000"},
 		},
+		{
+			name: "guest arg after command separator",
+			args: []string{"exec", "--", "tool", "--expose-https"},
+			want: []string{"exec", "--", "tool", "--expose-https"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -17,6 +17,9 @@ func normalizeBareExposeHTTPSArgs(args []string) []string {
 	}
 	out := append([]string(nil), args...)
 	for i, arg := range out {
+		if arg == "--" {
+			break
+		}
 		if arg != "--expose-https" {
 			continue
 		}
