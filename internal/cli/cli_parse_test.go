@@ -879,6 +879,18 @@ func TestServeCommandParses(t *testing.T) {
 	}
 }
 
+func TestServeCommandParsesPprofListen(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "--pprof-listen", "127.0.0.1:6060"}); err != nil {
+		t.Fatalf("parse serve --pprof-listen returned error: %v", err)
+	}
+	if got, want := c.Serve.PprofListen, "127.0.0.1:6060"; got != want {
+		t.Fatalf("unexpected pprof listen: got %q want %q", got, want)
+	}
+}
+
 func TestServeCommandRejectsExposureListenFlags(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

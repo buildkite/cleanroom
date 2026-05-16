@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,6 +157,64 @@ func TestServeCommandRunServerStartsWithoutContentCache(t *testing.T) {
 		}
 	case <-waitCtx.Done():
 		t.Fatal(context.Cause(waitCtx))
+	}
+}
+
+func TestServeCommandRunServerStartsLocalPprofEndpoint(t *testing.T) {
+	listenAddr := reserveLocalTCPAddr(t)
+	pprofAddr := reserveLocalTCPAddr(t)
+	var cancelRun context.CancelFunc
+	stubServeNotifyContext(t, func(parent context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		runCtx, cancel := context.WithCancel(parent)
+		cancelRun = cancel
+		return runCtx, cancel
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- (&ServeCommand{
+			Listen:        "http://" + listenAddr,
+			GatewayListen: "127.0.0.1:0",
+			PprofListen:   pprofAddr,
+		}).Run(&runtimeContext{
+			CWD:        t.TempDir(),
+			ConfigPath: "/tmp/cleanroom-config.yaml",
+			Backends:   map[string]backend.Adapter{},
+		})
+	}()
+
+	waitForHTTPHealthz(t, fmt.Sprintf("http://%s/healthz", listenAddr), 5*time.Second)
+	waitForHTTPHealthz(t, fmt.Sprintf("http://%s/debug/pprof/", pprofAddr), 5*time.Second)
+	if cancelRun == nil {
+		t.Fatal("expected serveSignalNotifyContext replacement to capture a cancel func")
+	}
+	cancelRun()
+
+	waitCtx, cancel := context.WithTimeoutCause(context.Background(), 5*time.Second, fmt.Errorf("timed out waiting for ServeCommand.Run to exit after cancellation"))
+	defer cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ServeCommand.Run returned error: %v", err)
+		}
+	case <-waitCtx.Done():
+		t.Fatal(context.Cause(waitCtx))
+	}
+}
+
+func TestStartLocalPprofServerRejectsNonLoopbackListen(t *testing.T) {
+	pprofServer, err := startLocalPprofServer("0.0.0.0:0")
+	if err == nil {
+		if pprofServer != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = pprofServer.Shutdown(shutdownCtx)
+		}
+		t.Fatal("expected non-loopback pprof listen address to be rejected")
+	}
+	if !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("expected loopback validation error, got %v", err)
 	}
 }
 
