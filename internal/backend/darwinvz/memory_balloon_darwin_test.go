@@ -167,6 +167,79 @@ func TestExecuteInSandboxRestoresMemoryBalloonTargetBeforeGuestExec(t *testing.T
 	}
 }
 
+func TestExecuteInSandboxSkipsMemoryBalloonGrowWhenLaunchAlreadyRestoredTarget(t *testing.T) {
+	socketDir, err := os.MkdirTemp("", "cr-balloon-ready-")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(socketDir)
+	socketPath := filepath.Join(socketDir, "proxy.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverErr <- acceptErr
+			return
+		}
+		defer conn.Close()
+
+		var req vsockexec.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			serverErr <- err
+			return
+		}
+		if got, want := req.Command, []string{"true"}; len(got) != len(want) || got[0] != want[0] {
+			t.Errorf("unexpected guest command: got %#v want %#v", got, want)
+		}
+		if err := vsockexec.EncodeStreamFrame(conn, vsockexec.ExecStreamFrame{Type: "exit", ExitCode: 0}); err != nil {
+			serverErr <- err
+			return
+		}
+		serverErr <- nil
+	}()
+
+	var helperReqs []helperControlRequest
+	adapter := &Adapter{
+		helperRequestFn: func(_ context.Context, _ *helperSession, req helperControlRequest) (helperControlResponse, error) {
+			helperReqs = append(helperReqs, req)
+			return helperControlResponse{OK: true}, nil
+		},
+	}
+
+	_, err = adapter.executeInSandbox(context.Background(), context.Background(), &sandboxInstance{
+		SandboxID: "cr-test",
+		VMID:      "vm-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			MemoryMiB: 8192,
+		},
+		ProxySocketPath:        socketPath,
+		Policy:                 &policy.CompiledPolicy{NetworkDefault: "deny"},
+		Helper:                 &helperSession{},
+		exitedCh:               make(chan struct{}),
+		memoryBalloonTargetMiB: 8192,
+	}, backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-123",
+		Command:     []string{"true"},
+		Policy:      &policy.CompiledPolicy{NetworkDefault: "deny"},
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("executeInSandbox returned error: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("guest exec server returned error: %v", err)
+	}
+	if len(helperReqs) != 0 {
+		t.Fatalf("helper requests = %#v, want no SetMemoryBalloonTarget request when launch already restored target", helperReqs)
+	}
+}
+
 func TestSandboxInstanceGrowsMemoryBalloonTargetOnce(t *testing.T) {
 	var helperReqs []helperControlRequest
 	adapter := &Adapter{

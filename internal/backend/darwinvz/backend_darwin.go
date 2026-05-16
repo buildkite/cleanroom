@@ -1284,6 +1284,11 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		}
 	}()
 
+	if err := a.growDarwinVZMemoryBalloonTarget(ctx, helper, vmID, req.MemoryMiB); err != nil {
+		observation.Error = err.Error()
+		return nil, err
+	}
+
 	networkProcessPID := 0
 	lookupCtx, cancelLookup := context.WithTimeout(ctx, networkProcessLookupTimeout)
 	networkProcessPID, _ = resolveVirtualizationProcessPID(lookupCtx, vmRootFSPath)
@@ -1663,6 +1668,11 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		instance.setExited(err)
 		close(instance.exitedCh)
 	}()
+
+	if err := a.setDarwinVZMemoryBalloonTarget(ctx, helper, startedVM.VMID, cfg.MemoryMiB); err != nil {
+		pidLookup.stop()
+		return nil, err
+	}
 
 	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
 	defer cancel()
