@@ -67,6 +67,16 @@ cleanroom version
 Use `--print-sandbox-id`, `cleanroom status --last`, or
 `cleanroom execution inspect ...` when you need retained control-plane details.
 
+For Go runtime profiling during local diagnostics, start the server with a
+loopback-only pprof listener:
+
+```bash
+cleanroom serve --pprof-listen 127.0.0.1:6060
+go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
+```
+
+The pprof listener is disabled by default and rejects non-loopback addresses.
+
 ## Storage
 
 ```bash

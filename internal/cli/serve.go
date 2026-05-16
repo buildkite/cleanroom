@@ -2,8 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/pprof"
+	"net/netip"
 	"os"
 	"os/signal"
 	"runtime"
@@ -36,6 +40,7 @@ type ServeCommand struct {
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
+	PprofListen   string `help:"Enable local Go pprof HTTP server at this loopback address, for example 127.0.0.1:6060"`
 	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
 	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
 }
@@ -58,6 +63,17 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	pprofServer, err := startLocalPprofServer(s.PprofListen)
+	if err != nil {
+		return err
+	}
+	if pprofServer != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = pprofServer.Shutdown(shutdownCtx)
+		}()
+	}
 	if shouldShowStartupHeader(os.Stderr) {
 		gatewayListen := strings.TrimSpace(s.GatewayListen)
 		if gatewayListen == "" {
@@ -69,6 +85,9 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 			{Key: "gateway_listen", Value: gatewayListen},
 			{Key: "runtime_config", Value: ctx.ConfigPath},
 			{Key: "log_level", Value: effectiveLogLevel(s.LogLevel)},
+		}
+		if pprofServer != nil {
+			fields = append(fields, startupField{Key: "pprof", Value: pprofServer.URL()})
 		}
 		fields = append(fields, observabilityStartupFields(ctx.Config.Observability)...)
 		if err := writeStartupHeader(os.Stderr, startupHeader{
@@ -258,6 +277,80 @@ func formatTraceSampling(cfg runtimeconfig.TraceSamplingConfig) string {
 		return mode
 	}
 	return fmt.Sprintf("%s ratio=%g", mode, *cfg.Ratio)
+}
+
+type localPprofServer struct {
+	server   *http.Server
+	listener net.Listener
+}
+
+func startLocalPprofServer(listen string) (*localPprofServer, error) {
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		return nil, nil
+	}
+	if err := validateLocalPprofListen(listen); err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return nil, fmt.Errorf("listen for pprof on %q: %w", listen, err)
+	}
+	server := &http.Server{
+		Handler:           pprofHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	pprofServer := &localPprofServer{
+		server:   server,
+		listener: listener,
+	}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Warn("pprof server stopped unexpectedly", "listen", listener.Addr().String(), "error", err)
+		}
+	}()
+	return pprofServer, nil
+}
+
+func validateLocalPprofListen(listen string) error {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("parse pprof listen address %q: %w", listen, err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("pprof listen host must be localhost or a loopback IP, got %q", host)
+	}
+	if !addr.IsLoopback() {
+		return fmt.Errorf("pprof listen host must be loopback, got %q", host)
+	}
+	return nil
+}
+
+func (s *localPprofServer) URL() string {
+	addr := s.listener.Addr().String()
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://" + addr + "/debug/pprof/"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/debug/pprof/"
+}
+
+func (s *localPprofServer) Shutdown(ctx context.Context) error {
+	return s.server.Shutdown(ctx)
+}
+
+func pprofHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
 }
 
 func configureBackendLogging(backends map[string]backend.Adapter, logger *log.Logger) {
