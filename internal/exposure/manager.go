@@ -178,6 +178,7 @@ func (m *Manager) ReleaseOwner(ownerID string) {
 		case "https":
 			delete(m.httpsRoutes, r.hostname)
 			m.removeHTTPSPatternRouteLocked(r)
+			m.removeHTTPSRouteCertificatesLocked(r)
 			closeHTTPSRouteIdleConnections(r)
 		}
 	}
@@ -438,6 +439,7 @@ func (m *Manager) releaseRoute(target *route) {
 		if m.httpsRoutes[target.hostname] == target {
 			delete(m.httpsRoutes, target.hostname)
 			m.removeHTTPSPatternRouteLocked(target)
+			m.removeHTTPSRouteCertificatesLocked(target)
 			closeHTTPSRouteIdleConnections(target)
 		}
 	}
@@ -625,6 +627,9 @@ func (m *Manager) hasKnownDNSQuestion(msg *dns.Msg) bool {
 
 func (m *Manager) handlesDNSName(name string) bool {
 	name = normalizeDomain(name)
+	if handlesLocalhostName(name) {
+		return true
+	}
 	if m.handlesManagedDomainName(name) {
 		return true
 	}
@@ -635,6 +640,10 @@ func (m *Manager) handlesDNSName(name string) bool {
 
 func (m *Manager) handlesManagedDomainName(name string) bool {
 	return name == m.domain || strings.HasSuffix(name, "."+m.domain)
+}
+
+func handlesLocalhostName(name string) bool {
+	return name == "localhost" || strings.HasSuffix(name, ".localhost")
 }
 
 func (m *Manager) normalizeHTTPSRouteHost(name string) (string, bool, error) {
@@ -699,17 +708,34 @@ func (m *Manager) matchHTTPSRouteLocked(host string) *route {
 	}
 	var best *route
 	bestLabels := -1
+	bestConcreteLabels := -1
 	for _, candidate := range m.httpsPatternRoutes {
 		if candidate == nil || !routePatternMatchesHost(candidate.hostname, host) {
 			continue
 		}
-		labelCount := strings.Count(candidate.hostname, ".") + 1
-		if labelCount > bestLabels {
+		labelCount, concreteLabels := routePatternSpecificity(candidate.hostname)
+		if labelCount > bestLabels || (labelCount == bestLabels && concreteLabels > bestConcreteLabels) {
 			best = candidate
 			bestLabels = labelCount
+			bestConcreteLabels = concreteLabels
 		}
 	}
 	return best
+}
+
+func routePatternSpecificity(pattern string) (int, int) {
+	pattern = normalizeDomain(pattern)
+	if pattern == "" {
+		return 0, 0
+	}
+	labels := strings.Split(pattern, ".")
+	concreteLabels := 0
+	for _, label := range labels {
+		if label != "*" {
+			concreteLabels++
+		}
+	}
+	return len(labels), concreteLabels
 }
 
 func routePatternMatchesHost(pattern, host string) bool {
@@ -742,6 +768,25 @@ func (m *Manager) removeHTTPSPatternRouteLocked(target *route) {
 		if r == target {
 			m.httpsPatternRoutes = append(m.httpsPatternRoutes[:i], m.httpsPatternRoutes[i+1:]...)
 			return
+		}
+	}
+}
+
+func (m *Manager) removeHTTPSRouteCertificatesLocked(target *route) {
+	if target == nil {
+		return
+	}
+	if !target.wildcard {
+		delete(m.certCache, target.hostname)
+		return
+	}
+	if certName, ok := routeWildcardCertificateName(target); ok {
+		delete(m.certCache, certName)
+		return
+	}
+	for name := range m.certCache {
+		if routePatternMatchesHost(target.hostname, name) {
+			delete(m.certCache, name)
 		}
 	}
 }

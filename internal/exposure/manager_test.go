@@ -480,6 +480,56 @@ func TestRegisterHTTPSRoutesWildcardLocalhostPattern(t *testing.T) {
 	}
 }
 
+func TestHTTPSWildcardRouteSelectionPrefersMostSpecificPattern(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTCPPort(t))),
+		TLSDir:      t.TempDir(),
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		ownerID   string
+		sandboxID string
+		name      string
+		guestPort int32
+	}{
+		{ownerID: "owner-1", sandboxID: "sandbox-1", name: "*.*.sandbox-1.localhost", guestPort: 3000},
+		{ownerID: "owner-2", sandboxID: "sandbox-2", name: "*.api.sandbox-1.localhost", guestPort: 4000},
+	} {
+		if _, err := manager.Register(context.Background(), RegisterRequest{
+			OwnerID:   tc.ownerID,
+			SandboxID: tc.sandboxID,
+			Exposure: &cleanroomv1.PortExposure{
+				Protocol:  "https",
+				Name:      tc.name,
+				GuestPort: tc.guestPort,
+			},
+			Dialer: testDialer,
+		}); err != nil {
+			t.Fatalf("Register(%q) returned error: %v", tc.name, err)
+		}
+	}
+
+	manager.mu.RLock()
+	route := manager.matchHTTPSRouteLocked("foo.api.sandbox-1.localhost")
+	manager.mu.RUnlock()
+	if route == nil {
+		t.Fatal("expected wildcard route match")
+	}
+	if got, want := route.hostname, "*.api.sandbox-1.localhost"; got != want {
+		t.Fatalf("unexpected route host: got %q want %q", got, want)
+	}
+	if got, want := route.guestPort, 4000; got != want {
+		t.Fatalf("unexpected route guest port: got %d want %d", got, want)
+	}
+}
+
 func TestHTTPSCertificateGenerationUsesBoundedManagedWildcardFallback(t *testing.T) {
 	t.Parallel()
 
@@ -600,6 +650,69 @@ func TestHTTPSCertificateCacheLimitBoundsWildcardRouteCertificates(t *testing.T)
 	}
 	if _, err := manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: "buildkite.cleanroom.localhost"}); err != nil {
 		t.Fatalf("expected exact route certificate to bypass wildcard cache limit, got %v", err)
+	}
+}
+
+func TestReleaseOwnerEvictsWildcardRouteCertificates(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTCPPort(t))),
+		TLSDir:      t.TempDir(),
+	})
+	manager.certCacheLimit = 3
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "*.*.sandbox-1.localhost",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	for _, name := range []string{"a.b.sandbox-1.localhost", "c.d.sandbox-1.localhost"} {
+		if _, err := manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: name}); err != nil {
+			t.Fatalf("getHTTPSCertificate(%q) returned error: %v", name, err)
+		}
+	}
+
+	manager.ReleaseOwner("owner-1")
+	manager.mu.RLock()
+	for _, name := range []string{"a.b.sandbox-1.localhost", "c.d.sandbox-1.localhost"} {
+		if manager.certCache[name] != nil {
+			manager.mu.RUnlock()
+			t.Fatalf("expected released wildcard certificate %q to be evicted", name)
+		}
+	}
+	manager.mu.RUnlock()
+
+	_, err = manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-2",
+		SandboxID: "sandbox-2",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "*.*.sandbox-2.localhost",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err != nil {
+		t.Fatalf("Register second wildcard route returned error: %v", err)
+	}
+	for _, name := range []string{"a.b.sandbox-2.localhost", "c.d.sandbox-2.localhost"} {
+		if _, err := manager.getHTTPSCertificate(&tls.ClientHelloInfo{ServerName: name}); err != nil {
+			t.Fatalf("expected released certificates not to consume cache capacity, got %v", err)
+		}
 	}
 }
 
@@ -780,6 +893,37 @@ func TestDNSReturnsLoopbackForWildcardNames(t *testing.T) {
 	}
 	if !a.A.Equal(net.ParseIP("127.0.0.1")) {
 		t.Fatalf("unexpected A answer: got %v", a.A)
+	}
+}
+
+func TestDNSReturnsLoopbackForLocalhostNamesOutsideRoutes(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{})
+	for _, name := range []string{"localhost.", "tool.localhost."} {
+		t.Run(name, func(t *testing.T) {
+			msg := new(dns.Msg)
+			msg.SetQuestion(name, dns.TypeA)
+			w := &captureDNSResponseWriter{}
+			manager.handleDNS(w, msg)
+
+			if w.msg == nil {
+				t.Fatal("expected DNS response")
+			}
+			if got, want := w.msg.Rcode, dns.RcodeSuccess; got != want {
+				t.Fatalf("unexpected DNS rcode: got %d want %d", got, want)
+			}
+			if len(w.msg.Answer) != 1 {
+				t.Fatalf("expected one A answer, got %v", w.msg.Answer)
+			}
+			a, ok := w.msg.Answer[0].(*dns.A)
+			if !ok {
+				t.Fatalf("expected A answer, got %T", w.msg.Answer[0])
+			}
+			if !a.A.Equal(net.ParseIP("127.0.0.1")) {
+				t.Fatalf("unexpected A answer: got %v", a.A)
+			}
+		})
 	}
 }
 
