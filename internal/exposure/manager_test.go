@@ -3,6 +3,7 @@ package exposure
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -571,7 +572,7 @@ func TestHTTPSCertificateGenerationUsesBoundedManagedWildcardFallback(t *testing
 		t.Fatalf("expected fallback certificate to verify missing hostname: %v", err)
 	}
 	manager.mu.RLock()
-	if got, want := len(manager.certCache), cacheEntries+1; got != want {
+	if got, want := len(manager.certCache), cacheEntries; got != want {
 		manager.mu.RUnlock()
 		t.Fatalf("expected one wildcard fallback certificate cache entry: got %d want %d", got, want)
 	}
@@ -590,9 +591,62 @@ func TestHTTPSCertificateGenerationUsesBoundedManagedWildcardFallback(t *testing
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	if got, want := len(manager.certCache), cacheEntries+1; got != want {
+	if got, want := len(manager.certCache), cacheEntries; got != want {
 		t.Fatalf("expected rejected deep hostname not to populate certificate cache: got %d want %d", got, want)
 	}
+}
+
+func TestHTTPSDefaultCertificateCoversManagedWildcardWithoutSNI(t *testing.T) {
+	t.Parallel()
+
+	tlsDir := t.TempDir()
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTCPPort(t))),
+		TLSDir:      tlsDir,
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "buildkite",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	ca, err := EnsureRuntimeCertificateAuthority(Domain, tlsDir)
+	if err != nil {
+		t.Fatalf("load local certificate authority: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.Cert)
+
+	conn, err := tls.Dial("tcp", manager.httpsListen, &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return fmt.Errorf("missing peer certificate")
+			}
+			_, err := state.PeerCertificates[0].Verify(x509.VerifyOptions{
+				DNSName: "buildkite.cleanroom.localhost",
+				Roots:   roots,
+			})
+			return err
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no-SNI connection to receive managed wildcard certificate: %v", err)
+	}
+	_ = conn.Close()
 }
 
 func TestHTTPSCertificateCacheLimitBoundsWildcardRouteCertificates(t *testing.T) {

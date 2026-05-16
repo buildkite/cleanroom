@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/exposure"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
@@ -129,6 +130,9 @@ func expandConfiguredHTTPSExposures(cfg policy.ExposeHTTPSConfig, sandboxID stri
 			host = strings.TrimSpace(strings.ToLower(host))
 			if host == "" {
 				return nil, fmt.Errorf("expose.https.routes[%d].hosts[%d] expanded to an empty host", i, j)
+			}
+			if err := exposure.ValidateHTTPSRouteName(host); err != nil {
+				return nil, fmt.Errorf("expose.https.routes[%d].hosts[%d] is invalid: %w", i, j, err)
 			}
 			exposures = append(exposures, &cleanroomv1.PortExposure{
 				Protocol:  exposureProtocolHTTPS,

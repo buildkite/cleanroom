@@ -78,6 +78,24 @@ func TestExpandConfiguredHTTPSExposures(t *testing.T) {
 	}
 }
 
+func TestExpandConfiguredHTTPSExposuresValidatesExpandedHosts(t *testing.T) {
+	t.Parallel()
+
+	_, err := expandConfiguredHTTPSExposures(policy.ExposeHTTPSConfig{
+		Base: "{sandbox_id}.localhost",
+		Routes: []policy.ExposeHTTPSRoute{{
+			Port:  3000,
+			Hosts: []string{"bad_{base}"},
+		}},
+	}, "sandbox-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "expose.https.routes[0].hosts[0] is invalid") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveRequestedExposuresLoadsConfiguredHTTPS(t *testing.T) {
 	t.Parallel()
 

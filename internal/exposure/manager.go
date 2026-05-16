@@ -504,11 +504,12 @@ func (m *Manager) startHTTPS(ctx context.Context) error {
 		return nil
 	}
 
-	cert, err := GenerateServerCertificate(m.domain, m.tlsDir)
+	defaultCertName := m.defaultHTTPSCertificateName()
+	cert, err := GenerateServerCertificate(defaultCertName, m.tlsDir)
 	if err != nil {
 		return err
 	}
-	m.certCache[m.domain] = &cert
+	m.certCache[defaultCertName] = &cert
 	var listenConfig net.ListenConfig
 	ln, err := listenConfig.Listen(ctx, "tcp", m.httpsListen)
 	if err != nil {
@@ -525,7 +526,6 @@ func (m *Manager) startHTTPS(ctx context.Context) error {
 	m.httpsServer = &http.Server{
 		Handler: http.HandlerFunc(m.handleHTTPS),
 		TLSConfig: &tls.Config{
-			Certificates:   []tls.Certificate{cert},
 			GetCertificate: m.getHTTPSCertificate,
 			MinVersion:     tls.VersionTLS12,
 		},
@@ -647,6 +647,16 @@ func handlesLocalhostName(name string) bool {
 }
 
 func (m *Manager) normalizeHTTPSRouteHost(name string) (string, bool, error) {
+	return normalizeHTTPSRouteHostForDomain(name, m.domain)
+}
+
+// ValidateHTTPSRouteName reports whether name is valid for an HTTPS exposure route.
+func ValidateHTTPSRouteName(name string) error {
+	_, _, err := normalizeHTTPSRouteHostForDomain(name, Domain)
+	return err
+}
+
+func normalizeHTTPSRouteHostForDomain(name, domain string) (string, bool, error) {
 	name = normalizeDomain(name)
 	if name == "" {
 		return "", false, errors.New("missing https route name")
@@ -655,7 +665,7 @@ func (m *Manager) normalizeHTTPSRouteHost(name string) (string, bool, error) {
 		if err := validateDNSLabel(name); err != nil {
 			return "", false, fmt.Errorf("invalid https route name: %w", err)
 		}
-		return name + "." + m.domain, false, nil
+		return name + "." + domain, false, nil
 	}
 	host, wildcard, err := normalizeLocalhostRoutePattern(name)
 	if err != nil {
@@ -797,7 +807,7 @@ func (m *Manager) getHTTPSCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 		name = normalizeDomain(hello.ServerName)
 	}
 	if name == "" {
-		name = m.domain
+		name = m.defaultHTTPSCertificateName()
 	}
 	certName, wildcardRoute, allowed := m.certificateNameFor(name)
 	if !allowed {
@@ -829,6 +839,10 @@ func (m *Manager) getHTTPSCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 	}
 	m.certCache[certName] = &cert
 	return &cert, nil
+}
+
+func (m *Manager) defaultHTTPSCertificateName() string {
+	return "*." + m.domain
 }
 
 func (m *Manager) certificateNameFor(name string) (string, bool, bool) {
