@@ -74,6 +74,14 @@ func TestWriteDarwinVZConfigIncludesInitialMemoryBalloonTarget(t *testing.T) {
 	}
 }
 
+func TestDarwinVZMemoryBalloonGrowDoesNotBlindlySleep(t *testing.T) {
+	t.Parallel()
+
+	if darwinVZMemoryBalloonGrowSettle != 0 {
+		t.Fatalf("darwin-vz memory balloon grow settle = %s, want no fixed settle delay", darwinVZMemoryBalloonGrowSettle)
+	}
+}
+
 func TestExecuteInSandboxRestoresMemoryBalloonTargetBeforeGuestExec(t *testing.T) {
 	socketDir, err := os.MkdirTemp("", "cr-balloon-")
 	if err != nil {

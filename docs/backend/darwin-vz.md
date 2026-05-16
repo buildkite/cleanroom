@@ -75,9 +75,10 @@ contract.
 When `memory_mib` is above 1024 MiB, Go sends `initial_memory_balloon_target_mib=1024`
 so the helper can request a smaller guest memory target during boot. Before guest
 workload execution, Go sends `SetMemoryBalloonTarget` back to `memory_mib` and
-waits briefly for the guest to process the request. This keeps the user-facing
-memory contract as a ceiling while allowing the backend to optimize boot-time
-host memory pressure internally.
+does not add a fixed settle delay before sending the exec request. This keeps
+the user-facing memory contract as a ceiling while allowing the backend to
+optimize boot-time host memory pressure internally without adding unconditional
+latency to tiny commands.
 
 `StartVM` response fields:
 

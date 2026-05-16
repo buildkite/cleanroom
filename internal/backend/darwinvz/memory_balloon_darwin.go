@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var darwinVZMemoryBalloonGrowSettle = time.Second
+var darwinVZMemoryBalloonGrowSettle time.Duration
 
 func darwinVZInitialMemoryBalloonTargetMiB(memoryMiB int64) int64 {
 	if memoryMiB > darwinVZAdaptiveMemoryStartMiB {
