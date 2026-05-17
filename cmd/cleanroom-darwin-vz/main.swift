@@ -1209,7 +1209,7 @@ private final class VMRuntime {
                 } else {
                     lastError = HelperError.vm("guest vsock connect returned no connection")
                 }
-                usleep(100_000)
+                usleep(10_000)
             }
             if let lastError {
                 fputs("cleanroom-darwin-vz: vsock connect fallback to serial after error: \(lastError)\n", stderr)
