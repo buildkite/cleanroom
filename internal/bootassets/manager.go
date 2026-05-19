@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +21,15 @@ import (
 )
 
 var ErrNoManagedKernelAsset = errors.New("no managed kernel asset")
+
+const (
+	defaultGitHubAPIBase           = "https://api.github.com"
+	defaultGitHubRepository        = "buildkite/cleanroom"
+	darwinVZReleaseManifestPrefix  = "cleanroom-darwin-vz-minimal-rootfs-arm64-linux-"
+	darwinVZReleaseManifestSuffix  = ".manifest.json"
+	latestCleanroomReleaseSelector = "latest"
+	releaseManifestResolveTimeout  = 15 * time.Second
+)
 
 type Selector struct {
 	Backend string
@@ -48,16 +59,28 @@ type ResolveResult struct {
 }
 
 type Options struct {
-	HTTPClient *http.Client
-	AssetsDir  func() (string, error)
-	Specs      map[Selector]KernelSpec
+	HTTPClient       *http.Client
+	AssetsDir        func() (string, error)
+	Specs            map[Selector]KernelSpec
+	GitHubAPIBase    string
+	GitHubRepository string
 }
 
 type Manager struct {
-	client    *http.Client
-	assetsDir func() (string, error)
-	specs     map[Selector]KernelSpec
-	mu        sync.Mutex
+	client           *http.Client
+	assetsDir        func() (string, error)
+	specs            map[Selector]KernelSpec
+	githubAPIBase    string
+	githubRepository string
+	releaseSpecCache map[releaseKernelCacheKey]KernelSpec
+	mu               sync.Mutex
+}
+
+type releaseKernelCacheKey struct {
+	Backend string
+	GOOS    string
+	GOARCH  string
+	Release string
 }
 
 func New(opts Options) *Manager {
@@ -78,11 +101,22 @@ func New(opts Options) *Manager {
 	for k, v := range specs {
 		copied[k] = v
 	}
+	githubAPIBase := strings.TrimRight(strings.TrimSpace(opts.GitHubAPIBase), "/")
+	if githubAPIBase == "" {
+		githubAPIBase = defaultGitHubAPIBase
+	}
+	githubRepository := strings.TrimSpace(opts.GitHubRepository)
+	if githubRepository == "" {
+		githubRepository = defaultGitHubRepository
+	}
 
 	return &Manager{
-		client:    client,
-		assetsDir: assetsDir,
-		specs:     copied,
+		client:           client,
+		assetsDir:        assetsDir,
+		specs:            copied,
+		githubAPIBase:    githubAPIBase,
+		githubRepository: githubRepository,
+		releaseSpecCache: make(map[releaseKernelCacheKey]KernelSpec),
 	}
 }
 
@@ -129,6 +163,10 @@ func (m *Manager) KernelPath(backendName, goos, goarch string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("%w for backend=%s host=%s/%s", ErrNoManagedKernelAsset, backendName, goos, goarch)
 	}
+	return m.kernelPathForSpec(spec)
+}
+
+func (m *Manager) kernelPathForSpec(spec KernelSpec) (string, error) {
 	base, err := m.assetsDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve assets directory: %w", err)
@@ -137,11 +175,15 @@ func (m *Manager) KernelPath(backendName, goos, goarch string) (string, error) {
 }
 
 func (m *Manager) EnsureKernel(ctx context.Context, backendName, goos, goarch string) (EnsureResult, error) {
-	spec, ok := m.Lookup(backendName, goos, goarch)
-	if !ok {
-		return EnsureResult{}, fmt.Errorf("%w for backend=%s host=%s/%s", ErrNoManagedKernelAsset, backendName, goos, goarch)
+	return m.EnsureKernelWithVersion(ctx, backendName, goos, goarch, "")
+}
+
+func (m *Manager) EnsureKernelWithVersion(ctx context.Context, backendName, goos, goarch, appVersion string) (EnsureResult, error) {
+	spec, err := m.resolveKernelSpec(ctx, backendName, goos, goarch, appVersion)
+	if err != nil {
+		return EnsureResult{}, err
 	}
-	dest, err := m.KernelPath(backendName, goos, goarch)
+	dest, err := m.kernelPathForSpec(spec)
 	if err != nil {
 		return EnsureResult{}, err
 	}
@@ -187,6 +229,10 @@ func (m *Manager) EnsureKernel(ctx context.Context, backendName, goos, goarch st
 }
 
 func (m *Manager) ResolveKernelPath(ctx context.Context, backendName, goos, goarch, configuredPath string) (ResolveResult, error) {
+	return m.ResolveKernelPathWithVersion(ctx, backendName, goos, goarch, configuredPath, "")
+}
+
+func (m *Manager) ResolveKernelPathWithVersion(ctx context.Context, backendName, goos, goarch, configuredPath, appVersion string) (ResolveResult, error) {
 	trimmed := strings.TrimSpace(configuredPath)
 	if trimmed != "" {
 		absPath, err := filepath.Abs(trimmed)
@@ -197,7 +243,7 @@ func (m *Manager) ResolveKernelPath(ctx context.Context, backendName, goos, goar
 			return ResolveResult{Path: trimmed}, nil
 		}
 
-		ensured, err := m.EnsureKernel(ctx, backendName, goos, goarch)
+		ensured, err := m.EnsureKernelWithVersion(ctx, backendName, goos, goarch, appVersion)
 		if err != nil {
 			return ResolveResult{}, fmt.Errorf("configured kernel_image %q is not accessible and managed kernel resolution failed: %w", trimmed, err)
 		}
@@ -215,7 +261,7 @@ func (m *Manager) ResolveKernelPath(ctx context.Context, backendName, goos, goar
 		}, nil
 	}
 
-	ensured, err := m.EnsureKernel(ctx, backendName, goos, goarch)
+	ensured, err := m.EnsureKernelWithVersion(ctx, backendName, goos, goarch, appVersion)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -226,6 +272,207 @@ func (m *Manager) ResolveKernelPath(ctx context.Context, backendName, goos, goar
 		Spec:     ensured.Spec,
 		Notice:   fmt.Sprintf("using managed kernel asset %s (%s)", ensured.Spec.ID, cacheState(ensured.CacheHit)),
 	}, nil
+}
+
+func (m *Manager) resolveKernelSpec(ctx context.Context, backendName, goos, goarch, appVersion string) (KernelSpec, error) {
+	if spec, ok, err := m.resolveDarwinVZReleaseKernelSpec(ctx, backendName, goos, goarch, appVersion); ok && err == nil {
+		return spec, nil
+	}
+
+	if spec, ok := m.Lookup(backendName, goos, goarch); ok {
+		return spec, nil
+	}
+	return KernelSpec{}, fmt.Errorf("%w for backend=%s host=%s/%s", ErrNoManagedKernelAsset, backendName, goos, goarch)
+}
+
+func (m *Manager) resolveDarwinVZReleaseKernelSpec(ctx context.Context, backendName, goos, goarch, appVersion string) (KernelSpec, bool, error) {
+	backendName = strings.TrimSpace(backendName)
+	goos = strings.TrimSpace(goos)
+	goarch = strings.TrimSpace(goarch)
+	if backendName != "darwin-vz" || goos != "darwin" || goarch != "arm64" {
+		return KernelSpec{}, false, nil
+	}
+
+	release := cleanroomKernelReleaseSelector(appVersion)
+	cacheKey := releaseKernelCacheKey{
+		Backend: backendName,
+		GOOS:    goos,
+		GOARCH:  goarch,
+		Release: release,
+	}
+	m.mu.Lock()
+	if spec, ok := m.releaseSpecCache[cacheKey]; ok {
+		m.mu.Unlock()
+		return spec, true, nil
+	}
+	m.mu.Unlock()
+
+	spec, err := m.fetchDarwinVZReleaseKernelSpec(ctx, release)
+	if err != nil {
+		return KernelSpec{}, true, err
+	}
+
+	m.mu.Lock()
+	m.releaseSpecCache[cacheKey] = spec
+	m.mu.Unlock()
+	return spec, true, nil
+}
+
+type githubRelease struct {
+	TagName string               `json:"tag_name"`
+	Assets  []githubReleaseAsset `json:"assets"`
+}
+
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type kernelReleaseManifest struct {
+	ID      string `json:"id"`
+	Backend string `json:"backend"`
+	Profile string `json:"profile"`
+	Arch    string `json:"arch"`
+	Assets  struct {
+		Image    string `json:"image"`
+		Config   string `json:"config"`
+		SHA256   string `json:"sha256"`
+		Manifest string `json:"manifest"`
+	} `json:"assets"`
+	SHA256 string `json:"sha256"`
+}
+
+func (m *Manager) fetchDarwinVZReleaseKernelSpec(ctx context.Context, releaseSelector string) (KernelSpec, error) {
+	metadataCtx, cancel := context.WithTimeout(ctx, releaseManifestResolveTimeout)
+	defer cancel()
+
+	releaseURL := m.releaseURL(releaseSelector)
+	var release githubRelease
+	if err := m.downloadJSON(metadataCtx, releaseURL, &release); err != nil {
+		return KernelSpec{}, err
+	}
+
+	manifestAsset, ok := findDarwinVZKernelManifestAsset(release.Assets)
+	if !ok {
+		return KernelSpec{}, fmt.Errorf("darwin-vz kernel manifest asset not found in Cleanroom release %s", releaseSelector)
+	}
+
+	var manifest kernelReleaseManifest
+	if err := m.downloadJSON(metadataCtx, manifestAsset.BrowserDownloadURL, &manifest); err != nil {
+		return KernelSpec{}, fmt.Errorf("download darwin-vz kernel manifest %q: %w", manifestAsset.Name, err)
+	}
+	if err := validateDarwinVZKernelManifest(manifest); err != nil {
+		return KernelSpec{}, fmt.Errorf("invalid darwin-vz kernel manifest %q: %w", manifestAsset.Name, err)
+	}
+
+	imageAsset, ok := findReleaseAsset(release.Assets, manifest.Assets.Image)
+	if !ok {
+		return KernelSpec{}, fmt.Errorf("darwin-vz kernel image asset %q not found in Cleanroom release %s", manifest.Assets.Image, releaseSelector)
+	}
+	return KernelSpec{
+		ID:       manifest.ID,
+		Filename: manifest.Assets.Image,
+		URL:      imageAsset.BrowserDownloadURL,
+		SHA256:   manifest.SHA256,
+	}, nil
+}
+
+func (m *Manager) releaseURL(releaseSelector string) string {
+	if releaseSelector == latestCleanroomReleaseSelector {
+		return fmt.Sprintf("%s/repos/%s/releases/latest", m.githubAPIBase, m.githubRepository)
+	}
+	return fmt.Sprintf("%s/repos/%s/releases/tags/%s", m.githubAPIBase, m.githubRepository, neturl.PathEscape(releaseSelector))
+}
+
+func (m *Manager) downloadJSON(ctx context.Context, rawURL string, target any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "cleanroom")
+	req.Header.Set("Accept", "application/vnd.github+json, application/json")
+
+	res, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", rawURL, err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
+		return fmt.Errorf("download %s: unexpected status %d: %s", rawURL, res.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(target); err != nil {
+		return fmt.Errorf("decode %s: %w", rawURL, err)
+	}
+	return nil
+}
+
+func findDarwinVZKernelManifestAsset(assets []githubReleaseAsset) (githubReleaseAsset, bool) {
+	for _, asset := range assets {
+		if strings.HasPrefix(asset.Name, darwinVZReleaseManifestPrefix) && strings.HasSuffix(asset.Name, darwinVZReleaseManifestSuffix) {
+			return asset, strings.TrimSpace(asset.BrowserDownloadURL) != ""
+		}
+	}
+	return githubReleaseAsset{}, false
+}
+
+func findReleaseAsset(assets []githubReleaseAsset, name string) (githubReleaseAsset, bool) {
+	for _, asset := range assets {
+		if asset.Name == name {
+			return asset, strings.TrimSpace(asset.BrowserDownloadURL) != ""
+		}
+	}
+	return githubReleaseAsset{}, false
+}
+
+func validateDarwinVZKernelManifest(manifest kernelReleaseManifest) error {
+	switch {
+	case strings.TrimSpace(manifest.ID) == "":
+		return errors.New("missing id")
+	case manifest.Backend != "darwin-vz":
+		return fmt.Errorf("unexpected backend %q", manifest.Backend)
+	case manifest.Profile != "rootfs":
+		return fmt.Errorf("unexpected profile %q", manifest.Profile)
+	case manifest.Arch != "arm64":
+		return fmt.Errorf("unexpected arch %q", manifest.Arch)
+	case strings.TrimSpace(manifest.Assets.Image) == "":
+		return errors.New("missing image asset name")
+	case strings.TrimSpace(manifest.SHA256) == "":
+		return errors.New("missing image sha256")
+	default:
+		return nil
+	}
+}
+
+func cleanroomKernelReleaseSelector(version string) string {
+	version = strings.TrimSpace(version)
+	if isCleanroomReleaseVersion(version) {
+		if strings.HasPrefix(version, "v") {
+			return version
+		}
+		return "v" + version
+	}
+	return latestCleanroomReleaseSelector
+}
+
+func isCleanroomReleaseVersion(version string) bool {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (m *Manager) downloadAndVerify(ctx context.Context, spec KernelSpec, tmpPath string) error {
@@ -316,4 +563,8 @@ func ManagedKernelPathForHost(backendName string) (string, error) {
 
 func ResolveKernelPathForHost(ctx context.Context, backendName, configuredPath string) (ResolveResult, error) {
 	return defaultManager.ResolveKernelPath(ctx, backendName, runtime.GOOS, runtime.GOARCH, configuredPath)
+}
+
+func ResolveKernelPathForHostWithVersion(ctx context.Context, backendName, configuredPath, appVersion string) (ResolveResult, error) {
+	return defaultManager.ResolveKernelPathWithVersion(ctx, backendName, runtime.GOOS, runtime.GOARCH, configuredPath, appVersion)
 }

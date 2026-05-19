@@ -145,10 +145,13 @@ func TestConfigureBackendRuntimeConfigConfiguresDarwinVZCapabilities(t *testing.
 		},
 	}
 
-	configureBackendRuntimeConfig(backends, cfg)
+	configureBackendRuntimeConfig(backends, cfg, "1.2.3")
 
 	if got, want := darwinAdapter.ConfiguredNetworkMode, "filehandle"; got != want {
 		t.Fatalf("unexpected configured darwin-vz network mode: got %q want %q", got, want)
+	}
+	if got, want := darwinAdapter.Version, "1.2.3"; got != want {
+		t.Fatalf("unexpected configured darwin-vz version: got %q want %q", got, want)
 	}
 }
 

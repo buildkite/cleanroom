@@ -81,6 +81,7 @@ type Adapter struct {
 	metricsErr       error
 
 	ConfiguredNetworkMode string
+	Version               string
 }
 
 type imageEnsurer interface {
@@ -919,17 +920,26 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		}
 	}
 
-	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
+	managedKernelMessage := func() (string, bool) {
+		if runtime.GOARCH == "arm64" {
+			return "kernel image will be auto-managed from Cleanroom GitHub Releases (matching tag for released builds, latest for dev builds)", true
+		}
 		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
 			path, _ := bootassets.ManagedKernelPathForHost(a.Name())
-			appendCheck("kernel_image", "pass", fmt.Sprintf("kernel image will be auto-managed (%s -> %s)", spec.ID, path))
+			return fmt.Sprintf("kernel image will be auto-managed (%s -> %s)", spec.ID, path), true
+		}
+		return "", false
+	}
+
+	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
+		if message, ok := managedKernelMessage(); ok {
+			appendCheck("kernel_image", "pass", message)
 		} else {
 			appendCheck("kernel_image", "fail", "kernel image must be configured")
 		}
 	} else if _, err := os.Stat(configured); err != nil {
-		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
-			path, _ := bootassets.ManagedKernelPathForHost(a.Name())
-			appendCheck("kernel_image", "warn", fmt.Sprintf("configured kernel image is not accessible (%v); runtime will use managed kernel (%s -> %s)", err, spec.ID, path))
+		if message, ok := managedKernelMessage(); ok {
+			appendCheck("kernel_image", "warn", fmt.Sprintf("configured kernel image is not accessible (%v); runtime will use managed kernel: %s", err, message))
 		} else {
 			appendCheck("kernel_image", "fail", fmt.Sprintf("kernel image not accessible: %v", err))
 		}
@@ -2757,7 +2767,7 @@ func validateRootFSInspectable(rootFSPath string) error {
 }
 
 func (a *Adapter) resolveKernelPath(ctx context.Context, configuredPath string) (path, notice string, err error) {
-	resolved, err := bootassets.ResolveKernelPathForHost(ctx, a.Name(), configuredPath)
+	resolved, err := bootassets.ResolveKernelPathForHostWithVersion(ctx, a.Name(), configuredPath, a.Version)
 	if err != nil {
 		return "", "", err
 	}
