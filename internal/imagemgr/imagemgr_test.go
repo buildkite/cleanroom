@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -132,6 +133,60 @@ func TestEnsureRejectsIncompatibleImagePlatformFromCache(t *testing.T) {
 	}
 }
 
+func TestEnsureRetriesStalledRootFSStream(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	pulls := 0
+	manager, err := New(Options{
+		CacheDir:                cacheDir,
+		MetadataDBPath:          dbPath,
+		ResolveAttempts:         2,
+		RootFSStreamIdleTimeout: 5 * time.Millisecond,
+		PullImage: func(_ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+			pulls++
+			if pulls == 1 {
+				return newBlockingReadCloser(), OCIConfig{
+					OS:           "linux",
+					Architecture: NormalizePlatformArch(runtime.GOARCH),
+				}, nil
+			}
+			return io.NopCloser(bytes.NewReader(testRootFSTar(t))), OCIConfig{
+				OS:           "linux",
+				Architecture: NormalizePlatformArch(runtime.GOARCH),
+			}, nil
+		},
+		MaterializeRootFS: func(_ context.Context, stream io.Reader, outputPath string) (int64, error) {
+			if _, err := io.Copy(io.Discard, stream); err != nil {
+				return 0, err
+			}
+			if err := os.WriteFile(outputPath, []byte("fake-ext4"), 0o644); err != nil {
+				return 0, err
+			}
+			return int64(len("fake-ext4")), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	result, err := manager.Ensure(context.Background(), testImageRef)
+	if err != nil {
+		t.Fatalf("Ensure returned error after retry: %v", err)
+	}
+	if result.CacheHit {
+		t.Fatal("expected retry to materialize a fresh image")
+	}
+	if pulls != 2 {
+		t.Fatalf("expected stalled stream to be retried once, got %d pulls", pulls)
+	}
+}
+
 func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -164,6 +219,27 @@ func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
 	if !result.CacheHit {
 		t.Fatal("expected Ensure to return cache hit for existing rootfs artifact")
 	}
+}
+
+type blockingReadCloser struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newBlockingReadCloser() *blockingReadCloser {
+	return &blockingReadCloser{closed: make(chan struct{})}
+}
+
+func (r *blockingReadCloser) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, os.ErrClosed
+}
+
+func (r *blockingReadCloser) Close() error {
+	r.once.Do(func() {
+		close(r.closed)
+	})
+	return nil
 }
 
 func TestImportAndRemoveByDigestSelector(t *testing.T) {

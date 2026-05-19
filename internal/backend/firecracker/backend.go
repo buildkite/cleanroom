@@ -322,6 +322,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	if req.Policy.HasStageScopedNetwork() {
 		return errors.New("firecracker backend does not support stage-scoped network policies yet")
 	}
+	ctx = backend.ContextWithProvisionProgress(ctx, req.Progress)
 
 	a.sandboxMu.Lock()
 	if a.sandboxes == nil {
@@ -1471,9 +1472,15 @@ func (a *Adapter) ensureImageArtifact(ctx context.Context, imageRef string) (ima
 		return imageArtifact{}, fmt.Errorf("initialise image manager: %w", err)
 	}
 
+	backend.ReportProvisionProgress(ctx, "resolving sandbox image rootfs...")
 	result, err := mgr.Ensure(ctx, trimmedRef)
 	if err != nil {
 		return imageArtifact{}, fmt.Errorf("resolve image %q: %w", trimmedRef, err)
+	}
+	if result.CacheHit {
+		backend.ReportProvisionProgress(ctx, "using cached sandbox image rootfs...")
+	} else {
+		backend.ReportProvisionProgress(ctx, "materialized sandbox image rootfs...")
 	}
 
 	return imageArtifact{

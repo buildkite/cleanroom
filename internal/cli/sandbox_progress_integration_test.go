@@ -10,20 +10,50 @@ import (
 )
 
 type delayedPersistentAdapter struct {
-	provisionDelay time.Duration
-	runResult      backend.ExecutionResult
-	runStdout      string
-	runStderr      string
+	provisionDelay  time.Duration
+	progressMessage string
+	runResult       backend.ExecutionResult
+	runStdout       string
+	runStderr       string
 }
 
 func (a *delayedPersistentAdapter) Name() string { return "firecracker" }
 
-func (a *delayedPersistentAdapter) ProvisionSandbox(ctx context.Context, _ backend.ProvisionRequest) error {
+func (a *delayedPersistentAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	if req.Progress != nil && a.progressMessage != "" {
+		req.Progress(a.progressMessage)
+	}
 	select {
 	case <-time.After(a.provisionDelay):
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func TestSandboxCreateIntegrationShowsImageProgressMessages(t *testing.T) {
+	forceProgressTTY(t)
+
+	host, _ := startIntegrationServer(t, &delayedPersistentAdapter{
+		provisionDelay:  25 * time.Millisecond,
+		progressMessage: "resolving sandbox image rootfs...",
+	})
+	cwd := t.TempDir()
+
+	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
+		clientFlags: clientFlags{Host: host},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("SandboxCreateCommand.Run returned error: %v", outcome.err)
+	}
+	if !strings.Contains(outcome.stderr, "resolving sandbox image rootfs...") {
+		t.Fatalf("expected image progress message in stderr, got %q", outcome.stderr)
 	}
 }
 

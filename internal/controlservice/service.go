@@ -730,12 +730,19 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		)
 	}
 	emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PROVISION_SANDBOX, "provisioning sandbox")
+	var provisionProgress backend.ProvisionProgressFunc
+	if reporter != nil {
+		provisionProgress = func(message string) {
+			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PROVISION_SANDBOX, message)
+		}
+	}
 	provisionStarted := s.clock().Now()
 	var provisionDuration time.Duration
 	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 		SandboxID:          sandboxID,
 		Policy:             compiled,
 		CacheOutputVolumes: appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes),
+		Progress:           provisionProgress,
 		FirecrackerConfig:  firecrackerCfg,
 	}); err != nil {
 		provisionDuration = s.clock().Now().Sub(provisionStarted)
