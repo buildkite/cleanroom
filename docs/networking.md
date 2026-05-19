@@ -69,6 +69,29 @@ The URL is usually:
 https://buildkite.cleanroom.localhost:8143
 ```
 
+For projects that need several hostnames or wildcard labels, declare the routes
+in `cleanroom.yaml` and pass `--expose-https` without a value:
+
+```yaml
+expose:
+  https:
+    base: "{sandbox_id}.cleanroom.localhost"
+    routes:
+      - port: 3000
+        hosts:
+          - "{base}"
+          - "*.{base}"
+          - "*.*.{base}"
+```
+
+```bash
+cleanroom exec --expose-https -- npm run dev
+```
+
+`cleanroom dns install` manages `cleanroom.localhost`. Routes under another
+local suffix, such as `{sandbox_id}.localhost`, also work when that suffix
+resolves to the Cleanroom DNS listener.
+
 For an existing sandbox, use:
 
 ```bash

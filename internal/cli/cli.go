@@ -36,6 +36,7 @@ const (
 type policyLoader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
 	LoadRepository(cwd string) (policy.RepositoryConfig, string, error)
+	LoadExpose(cwd string) (policy.ExposeConfig, string, error)
 }
 
 type runtimeContext struct {
@@ -129,6 +130,7 @@ type hasExitCode interface {
 }
 
 func Run(args []string, version string) (runErr error) {
+	args = normalizeBareExposeHTTPSArgs(args)
 	runtimeCtx := &runtimeContext{
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,

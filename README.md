@@ -91,6 +91,9 @@ cleanroom exec --expose 15432:5432 -- postgres
 
 # Local HTTPS: usually https://buildkite.cleanroom.localhost:8143
 cleanroom exec --expose-https buildkite:3000 -- mise exec -- npm run dev
+
+# Or load HTTPS route names from expose.https in cleanroom.yaml
+cleanroom exec --expose-https -- mise exec -- npm run dev
 ```
 
 The installer starts the Cleanroom daemon. It does not install the macOS
@@ -105,6 +108,24 @@ sudo cleanroom dns install
 `cleanroom dns install` writes the resolver and trust material. The local DNS
 listener is started by `--expose-https` and `cleanroom expose` while exposures
 are active.
+
+Configured HTTPS routes can enumerate full local hostnames or use a shared base:
+
+```yaml
+expose:
+  https:
+    base: "{sandbox_id}.cleanroom.localhost"
+    routes:
+      - port: 3000
+        hosts:
+          - "{base}"
+          - "*.{base}"
+          - "*.*.{base}"
+```
+
+`cleanroom dns install` manages `cleanroom.localhost`. Routes under another
+local suffix, such as `{sandbox_id}.localhost`, also work when that suffix
+resolves to the Cleanroom DNS listener.
 
 Run Docker inside the microVM when the workload needs it:
 

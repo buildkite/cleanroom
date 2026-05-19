@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	"github.com/buildkite/cleanroom/internal/exposure"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
@@ -54,6 +57,35 @@ func TestStartClientExposuresRejectsUnsupportedSandboxPortDial(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not support sandbox port dialing") {
 		t.Fatalf("unexpected startClientExposures error: %v", err)
+	}
+}
+
+func TestPrevalidateRequestedExposuresChecksHTTPSCertificate(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tlsDir, err := exposure.DefaultTLSDir()
+	if err != nil {
+		t.Fatalf("DefaultTLSDir returned error: %v", err)
+	}
+	if err := os.MkdirAll(tlsDir, 0o700); err != nil {
+		t.Fatalf("create TLS dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tlsDir, exposure.LocalCertificateFilename), []byte("not a certificate"), 0o644); err != nil {
+		t.Fatalf("write invalid certificate: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tlsDir, exposure.LocalCertificateKeyFilename), []byte("not a key"), 0o600); err != nil {
+		t.Fatalf("write invalid key: %v", err)
+	}
+
+	err = prevalidateRequestedExposures(&runtimeContext{Loader: failingLoader{}}, t.TempDir(), []*cleanroomv1.PortExposure{{
+		Protocol:  exposureProtocolHTTPS,
+		Name:      "buildkite",
+		GuestPort: 3000,
+	}})
+	if err == nil {
+		t.Fatal("expected HTTPS exposure prevalidation to fail on invalid local certificate")
+	}
+	if !strings.Contains(err.Error(), "certificate PEM") {
+		t.Fatalf("unexpected prevalidation error: %v", err)
 	}
 }
 

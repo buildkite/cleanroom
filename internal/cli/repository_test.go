@@ -33,6 +33,10 @@ func (l repositoryIntegrationLoader) LoadRepository(_ string) (policy.Repository
 	return l.repository, "/repo/cleanroom.yaml", nil
 }
 
+func (l repositoryIntegrationLoader) LoadExpose(_ string) (policy.ExposeConfig, string, error) {
+	return policy.ExposeConfig{}, "/repo/cleanroom.yaml", nil
+}
+
 func (repositoryNotFoundLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
 	return &policy.CompiledPolicy{
 		Version:        1,
@@ -44,6 +48,10 @@ func (repositoryNotFoundLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy
 
 func (repositoryNotFoundLoader) LoadRepository(_ string) (policy.RepositoryConfig, string, error) {
 	return policy.RepositoryConfig{}, "", fmt.Errorf("%w: expected /tmp/cleanroom.yaml or /tmp/.buildkite/cleanroom.yaml", policy.ErrPolicyNotFound)
+}
+
+func (repositoryNotFoundLoader) LoadExpose(_ string) (policy.ExposeConfig, string, error) {
+	return policy.ExposeConfig{}, "", fmt.Errorf("%w: expected /tmp/cleanroom.yaml or /tmp/.buildkite/cleanroom.yaml", policy.ErrPolicyNotFound)
 }
 
 func initGitRepository(t *testing.T, remoteURL string) string {

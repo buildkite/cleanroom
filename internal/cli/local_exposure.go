@@ -32,14 +32,7 @@ func startClientExposures(ctx context.Context, client *controlclient.Client, san
 	}
 
 	manager := exposure.NewManager(exposure.Config{})
-	needsDNS := false
-	for _, req := range requested {
-		if req != nil && strings.TrimSpace(req.GetProtocol()) == exposureProtocolHTTPS {
-			needsDNS = true
-			break
-		}
-	}
-	if needsDNS {
+	if hasHTTPSExposure(requested) {
 		if err := manager.StartDNS(ctx); err != nil {
 			_ = manager.Close()
 			return nil, nil, err
@@ -64,6 +57,26 @@ func startClientExposures(ctx context.Context, client *controlclient.Client, san
 		registered = append(registered, exposed)
 	}
 	return manager, registered, nil
+}
+
+func prevalidateRequestedExposures(ctx *runtimeContext, cwd string, requested []*cleanroomv1.PortExposure) error {
+	if err := prevalidateConfiguredExposures(ctx, cwd, requested); err != nil {
+		return err
+	}
+	if !hasHTTPSExposure(requested) {
+		return nil
+	}
+	_, err := exposure.EnsureRuntimeCertificateAuthority(exposure.Domain, "")
+	return err
+}
+
+func hasHTTPSExposure(requested []*cleanroomv1.PortExposure) bool {
+	for _, req := range requested {
+		if req != nil && strings.TrimSpace(req.GetProtocol()) == exposureProtocolHTTPS {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureSandboxPortDialSupported(ctx context.Context, client *controlclient.Client, sandboxID string) error {

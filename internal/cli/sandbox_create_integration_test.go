@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 func stubPolicyUpdateResolver(t *testing.T, fn func(context.Context, string) (string, error)) func() {
@@ -135,6 +136,86 @@ func TestTopLevelCreateIntegrationReportsExposureSetupFailureAfterCreate(t *test
 	}
 	if got, want := terminateCalls, 0; got != want {
 		t.Fatalf("expected create to leave the created sandbox for inspection, got %d terminations", got)
+	}
+}
+
+func TestTopLevelCreatePrevalidatesConfiguredExposureBeforeCreate(t *testing.T) {
+	cwd := t.TempDir()
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		Chdir:       cwd,
+		ExposeHTTPS: []string{""},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: &configuredExposureLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected CreateCommand.Run to fail before creating a sandbox")
+	}
+	if !strings.Contains(outcome.err.Error(), "requires expose.https") {
+		t.Fatalf("unexpected CreateCommand.Run error: %v", outcome.err)
+	}
+	if strings.TrimSpace(outcome.stdout) != "" {
+		t.Fatalf("expected no sandbox id on stdout, got %q", outcome.stdout)
+	}
+	if strings.Contains(outcome.stderr, "sandbox_id=") {
+		t.Fatalf("expected no sandbox id on stderr before create, got %q", outcome.stderr)
+	}
+}
+
+func TestTopLevelCreateFromSnapshotLoadsConfiguredExposureFromChdir(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	base := t.TempDir()
+	cwd := t.TempDir()
+
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+	createSnapshotOutcome := runSnapshotCreateWithCapture(SnapshotCreateCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+		Name:        "golden",
+	}, runtimeContext{CWD: base})
+	if createSnapshotOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", createSnapshotOutcome.cause)
+	}
+	if createSnapshotOutcome.err != nil {
+		t.Fatalf("SnapshotCreateCommand.Run returned error: %v", createSnapshotOutcome.err)
+	}
+	snapshotID := strings.TrimSpace(createSnapshotOutcome.stdout)
+	if snapshotID == "" {
+		t.Fatalf("expected snapshot id output, got %q", createSnapshotOutcome.stdout)
+	}
+
+	loader := &configuredExposureLoader{
+		cfg: policy.ExposeConfig{HTTPS: policy.ExposeHTTPSConfig{
+			Base: "{sandbox_id}.localhost",
+			Routes: []policy.ExposeHTTPSRoute{{
+				Port:  3000,
+				Hosts: []string{"{base}"},
+			}},
+		}},
+	}
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		From:        snapshotID,
+		ExposeHTTPS: []string{""},
+	}, runtimeContext{
+		CWD:    base,
+		Loader: loader,
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected CreateCommand.Run to fail during exposure setup")
+	}
+	if got, want := loader.cwd, cwd; got != want {
+		t.Fatalf("expected configured exposure loader to use --chdir cwd: got %q want %q", got, want)
 	}
 }
 

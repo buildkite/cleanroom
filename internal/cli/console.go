@@ -27,7 +27,7 @@ type ConsoleCommand struct {
 	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	Env                 []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
 	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
-	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port>, or configured expose.https routes when omitted"`
 	PrintSandboxID      bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -82,11 +82,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	logger := newClientLogger()
 
-	host := c.resolvedHost(ctx.Config)
-	client, err := c.connect(ctx)
-	if err != nil {
-		return err
-	}
 	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
 	if err != nil {
 		return err
@@ -96,6 +91,14 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 	exposures, err := parseExposureFlags(c.Expose, c.ExposeHTTPS)
+	if err != nil {
+		return err
+	}
+	if err := prevalidateRequestedExposures(ctx, cwd, exposures); err != nil {
+		return err
+	}
+	host := c.resolvedHost(ctx.Config)
+	client, err := c.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -168,6 +171,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 			}
 		}
 		return joinExecutionAndWorkspaceCopyOutError(executionErr, copyOutErr)
+	}
+	exposures, err = resolveRequestedExposures(ctx, cwd, sandboxID, exposures)
+	if err != nil {
+		return err
 	}
 	if c.preAttach != nil {
 		if err := c.preAttach(rootCtx, client, sandboxID); err != nil {

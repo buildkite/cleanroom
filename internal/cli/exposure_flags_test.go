@@ -10,12 +10,12 @@ func TestParseExposureFlags(t *testing.T) {
 
 	exposures, err := parseExposureFlags(
 		[]string{"5432", "15432:5432"},
-		[]string{"buildkite:3000", "3001"},
+		[]string{"buildkite:3000", "3001", ""},
 	)
 	if err != nil {
 		t.Fatalf("parseExposureFlags returned error: %v", err)
 	}
-	if got, want := len(exposures), 4; got != want {
+	if got, want := len(exposures), 5; got != want {
 		t.Fatalf("unexpected exposure count: got %d want %d", got, want)
 	}
 	if got := exposures[0]; got.GetProtocol() != exposureProtocolTCP || got.GetHostPort() != 5432 || got.GetGuestPort() != 5432 {
@@ -29,6 +29,9 @@ func TestParseExposureFlags(t *testing.T) {
 	}
 	if got := exposures[3]; got.GetProtocol() != exposureProtocolHTTPS || got.GetName() != "" || got.GetGuestPort() != 3001 {
 		t.Fatalf("unexpected fourth exposure: %#v", got)
+	}
+	if got := exposures[4]; got.GetProtocol() != exposureProtocolHTTPS || got.GetName() != configuredHTTPSExposureSpec || got.GetGuestPort() != 0 {
+		t.Fatalf("unexpected configured exposure: %#v", got)
 	}
 }
 
@@ -45,7 +48,6 @@ func TestParseExposureFlagsRejectsInvalidSpecs(t *testing.T) {
 		{name: "tcp too many parts", tcpSpecs: []string{"a:b:c"}, want: "expected <guest-port>"},
 		{name: "tcp bad port", tcpSpecs: []string{"buildkite:5432"}, want: "host port"},
 		{name: "tcp out of range", tcpSpecs: []string{"70000"}, want: "out of range"},
-		{name: "https empty", httpsSpec: []string{""}, want: "empty exposure"},
 		{name: "https bad name", httpsSpec: []string{"Buildkite:3000"}, want: "lowercase"},
 		{name: "https too many parts", httpsSpec: []string{"buildkite:https:3000"}, want: "expected [name:]<guest-port>"},
 		{name: "https bad port", httpsSpec: []string{"buildkite:port"}, want: "port must be numeric"},

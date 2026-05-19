@@ -1446,6 +1446,142 @@ sandbox:
 	}
 }
 
+func TestLoadExposeNormalizesConfiguredHTTPS(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
+version: 1
+expose:
+  https:
+    base: "{sandbox_id}.LOCALHOST"
+    routes:
+      - port: 3000
+        hosts:
+          - "{base}"
+          - "{container_id}.localhost"
+          - "*.{base}"
+          - "*.{base}"
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	cfg, source, err := Loader{}.LoadExpose(dir)
+	if err != nil {
+		t.Fatalf("LoadExpose returned error: %v", err)
+	}
+	if got, want := source, filepath.Join(dir, PrimaryPolicyPath); got != want {
+		t.Fatalf("unexpected source: got %q want %q", got, want)
+	}
+	if got, want := cfg.HTTPS.Base, "{sandbox_id}.localhost"; got != want {
+		t.Fatalf("unexpected https base: got %q want %q", got, want)
+	}
+	if got, want := len(cfg.HTTPS.Routes), 1; got != want {
+		t.Fatalf("unexpected route count: got %d want %d", got, want)
+	}
+	if got, want := cfg.HTTPS.Routes[0].Port, 3000; got != want {
+		t.Fatalf("unexpected route port: got %d want %d", got, want)
+	}
+	if got, want := cfg.HTTPS.Routes[0].Hosts, []string{"{base}", "*.{base}"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected route hosts: got %v want %v", got, want)
+	}
+}
+
+func TestCompileValidatesExposeWithoutChangingHash(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	baseline, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("Compile baseline returned error: %v", err)
+	}
+
+	raw.Expose.HTTPS = rawExposeHTTPS{
+		Base: "{sandbox_id}.localhost",
+		Routes: []rawExposeHTTPSRoute{{
+			Port:  3000,
+			Hosts: []string{"{base}", "*.{base}", "*.*.{base}"},
+		}},
+	}
+	withExpose, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("Compile with expose returned error: %v", err)
+	}
+	if got, want := withExpose.Hash, baseline.Hash; got != want {
+		t.Fatalf("expected expose config to stay out of policy hash: got %q want %q", got, want)
+	}
+
+	raw.Expose.HTTPS.Routes[0].Port = 0
+	if _, err := Compile(raw); err == nil {
+		t.Fatal("expected Compile to validate expose config")
+	}
+}
+
+func TestCompileValidatesConfiguredHTTPSHosts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "external host", host: "google.com", want: "localhost"},
+		{name: "unscoped wildcard", host: "*.*.localhost", want: "concrete localhost subdomain"},
+		{
+			name: "expanded sandbox id exceeds label limit",
+			host: strings.Repeat("a", 40) + "-{sandbox_id}.localhost",
+			want: "longer than 63 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := baseRawPolicy()
+			raw.Expose.HTTPS = rawExposeHTTPS{
+				Base: "{sandbox_id}.localhost",
+				Routes: []rawExposeHTTPSRoute{{
+					Port:  3000,
+					Hosts: []string{tt.host},
+				}},
+			}
+
+			_, err := Compile(raw)
+			if err == nil {
+				t.Fatal("expected Compile to reject invalid expose host")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestCompileRejectsDuplicateExpandedConfiguredHTTPSHostsAcrossRoutes(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Expose.HTTPS = rawExposeHTTPS{
+		Base: "{sandbox_id}.localhost",
+		Routes: []rawExposeHTTPSRoute{
+			{Port: 3000, Hosts: []string{"{base}"}},
+			{Port: 4000, Hosts: []string{"{container_id}.localhost"}},
+		},
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected Compile to reject duplicate expanded expose host")
+	}
+	if !strings.Contains(err.Error(), "duplicates configured host") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestFromProtoRejectsMismatchedImageDigest(t *testing.T) {
 	t.Parallel()
 

@@ -49,7 +49,7 @@ func TestResolverFileContentRejectsNonIPNameserver(t *testing.T) {
 	}
 }
 
-func TestDNSInstallTrustsLeafCertificateInInvokingUserKeychain(t *testing.T) {
+func TestDNSInstallTrustsCertificateAuthorityInInvokingUserKeychain(t *testing.T) {
 	home := t.TempDir()
 	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
 	var calls [][]string
@@ -88,11 +88,8 @@ func TestDNSInstallTrustsLeafCertificateInInvokingUserKeychain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse generated certificate: %v", err)
 	}
-	if cert.IsCA {
-		t.Fatal("expected generated exposure certificate not to be a CA")
-	}
-	if err := cert.VerifyHostname("buildkite." + exposure.Domain); err != nil {
-		t.Fatalf("expected generated certificate to verify exposure hostname: %v", err)
+	if !cert.IsCA {
+		t.Fatal("expected generated exposure certificate to be a CA")
 	}
 	if strings.Contains(strings.Join(calls[0], " "), "System.keychain") {
 		t.Fatalf("did not expect install to trust the system keychain: %v", calls[0])
@@ -250,8 +247,8 @@ func TestDNSStatusReportsCertificateTrust(t *testing.T) {
 		"sudo", "-u", "lachlan", "security", "verify-cert",
 		"-c", cert.CertPath,
 		"-p", "ssl",
-		"-n", "buildkite." + exposure.Domain,
 		"-L",
+		"-l",
 		"-k", keychain,
 	}}
 	if !reflect.DeepEqual(calls, wantCalls) {

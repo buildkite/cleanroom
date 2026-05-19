@@ -452,7 +452,7 @@ func exposureCertificateTrustStatus(certPath string) (bool, string) {
 	if err != nil {
 		return false, err.Error()
 	}
-	if err := runExposureTrustSecurity("verify-cert", "-c", certPath, "-p", "ssl", "-n", "buildkite."+exposure.Domain, "-L", "-k", keychain); err != nil {
+	if err := runExposureTrustSecurity("verify-cert", "-c", certPath, "-p", "ssl", "-L", "-l", "-k", keychain); err != nil {
 		return false, err.Error()
 	}
 	return true, "trusted"

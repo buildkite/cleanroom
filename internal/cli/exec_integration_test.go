@@ -160,6 +160,10 @@ func (integrationLoader) LoadRepository(_ string) (policy.RepositoryConfig, stri
 	return policy.RepositoryConfig{}, "/repo/cleanroom.yaml", nil
 }
 
+func (integrationLoader) LoadExpose(_ string) (policy.ExposeConfig, string, error) {
+	return policy.ExposeConfig{}, "/repo/cleanroom.yaml", nil
+}
+
 type failingLoader struct{}
 
 func (failingLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
@@ -168,6 +172,10 @@ func (failingLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, e
 
 func (failingLoader) LoadRepository(_ string) (policy.RepositoryConfig, string, error) {
 	return policy.RepositoryConfig{}, "/repo/cleanroom.yaml", nil
+}
+
+func (failingLoader) LoadExpose(_ string) (policy.ExposeConfig, string, error) {
+	return policy.ExposeConfig{}, "/repo/cleanroom.yaml", nil
 }
 
 type execOutcome struct {
