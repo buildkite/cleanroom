@@ -8,6 +8,7 @@ import (
 )
 
 const expectedMiseVersion = "v2026.4.5"
+const expectedPICodingAgentVersion = "0.52.9"
 
 func publishedBaseDockerfiles() []string {
 	return []string{
@@ -29,6 +30,13 @@ func debianPublishedBaseDockerfiles() []string {
 func allPublishedBaseDockerfiles() []string {
 	paths := publishedBaseDockerfiles()
 	return append(paths, debianPublishedBaseDockerfiles()...)
+}
+
+func agentDockerfiles() []string {
+	return []string{
+		"Dockerfile.base-image-agents",
+		"Dockerfile.base-image-debian-agents",
+	}
 }
 
 func dockerfileHasTrimmedLine(dockerfile, want string) bool {
@@ -226,6 +234,39 @@ func TestPublishedBaseImagesTrustWorkspaceMiseConfig(t *testing.T) {
 			}
 			if !strings.Contains(string(raw), "mise settings add trusted_config_paths /workspace") {
 				t.Fatalf("%s does not trust /workspace for repo-local mise config", relPath)
+			}
+		})
+	}
+}
+
+func TestAgentBaseImagesInstallPinnedPICodingAgent(t *testing.T) {
+	t.Parallel()
+
+	for _, relPath := range agentDockerfiles() {
+		relPath := relPath
+		t.Run(relPath, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(filepath.Join(".", relPath))
+			if err != nil {
+				t.Fatalf("read %s: %v", relPath, err)
+			}
+
+			dockerfile := string(raw)
+			if !strings.Contains(dockerfile, "ARG PI_CODING_AGENT_VERSION="+expectedPICodingAgentVersion) {
+				t.Fatalf("%s does not pin pi-coding-agent to %s", relPath, expectedPICodingAgentVersion)
+			}
+			if !strings.Contains(dockerfile, `npm:@mariozechner/pi-coding-agent@"${PI_CODING_AGENT_VERSION}"`) {
+				t.Fatalf("%s does not install pi-coding-agent through mise", relPath)
+			}
+			if !strings.Contains(dockerfile, "ln -sf /root/.local/share/mise/shims/pi /usr/local/bin/pi") {
+				t.Fatalf("%s does not expose pi on the default PATH", relPath)
+			}
+			if !strings.Contains(dockerfile, `PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" pi --version`) {
+				t.Fatalf("%s does not smoke-test pi on the default PATH", relPath)
+			}
+			if strings.Count(dockerfile, "rm -rf /root/.cache /root/.npm /tmp/*") < 2 {
+				t.Fatalf("%s does not remove npm, node-gyp, and temporary build caches after install and smoke checks", relPath)
 			}
 		})
 	}
