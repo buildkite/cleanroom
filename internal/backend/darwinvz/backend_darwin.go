@@ -69,7 +69,7 @@ type Adapter struct {
 	executeInSandboxFn func(context.Context, context.Context, *sandboxInstance, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error)
 	helperRequestFn    func(context.Context, *helperSession, helperControlRequest) (helperControlResponse, error)
 
-	ensurePreparedRootFSFn func(context.Context, string, int64) (preparedRootFS, error)
+	ensurePreparedRootFSFn func(context.Context, string) (preparedRootFS, error)
 
 	GatewayRegistry  gatewayRegistry
 	GatewayPort      int
@@ -129,26 +129,28 @@ const preparedRuntimeRootFSVersion = "v9-darwin-vz"
 const runObservabilityFile = "execution-observability.json"
 
 type darwinVZRunObservation struct {
-	ExecutionID       string           `json:"execution_id"`
-	TraceID           string           `json:"trace_id,omitempty"`
-	Backend           string           `json:"backend"`
-	LaunchedVM        bool             `json:"launched_vm"`
-	ImageRef          string           `json:"image_ref,omitempty"`
-	ImageDigest       string           `json:"image_digest,omitempty"`
-	PlanPath          string           `json:"plan_path,omitempty"`
-	RunDir            string           `json:"run_dir,omitempty"`
-	ExitCode          int              `json:"exit_code,omitempty"`
-	Error             string           `json:"error,omitempty"`
-	GuestError        string           `json:"guest_error,omitempty"`
-	NetworkMode       string           `json:"network_mode,omitempty"`
-	NetworkSubnetCIDR string           `json:"network_subnet_cidr,omitempty"`
-	NetworkGuestIP    string           `json:"network_guest_ip,omitempty"`
-	NetworkGatewayIP  string           `json:"network_gateway_ip,omitempty"`
-	NetworkPrefixLen  int              `json:"network_prefix_len,omitempty"`
-	RootFSCopyMS      int64            `json:"rootfs_copy_ms,omitempty"`
-	VMReadyMS         int64            `json:"vm_ready_ms,omitempty"`
-	HelperTimingMS    map[string]int64 `json:"helper_timing_ms,omitempty"`
-	TotalMS           int64            `json:"total_ms,omitempty"`
+	ExecutionID         string           `json:"execution_id"`
+	TraceID             string           `json:"trace_id,omitempty"`
+	Backend             string           `json:"backend"`
+	LaunchedVM          bool             `json:"launched_vm"`
+	ImageRef            string           `json:"image_ref,omitempty"`
+	ImageDigest         string           `json:"image_digest,omitempty"`
+	PlanPath            string           `json:"plan_path,omitempty"`
+	RunDir              string           `json:"run_dir,omitempty"`
+	ExitCode            int              `json:"exit_code,omitempty"`
+	Error               string           `json:"error,omitempty"`
+	GuestError          string           `json:"guest_error,omitempty"`
+	NetworkMode         string           `json:"network_mode,omitempty"`
+	NetworkSubnetCIDR   string           `json:"network_subnet_cidr,omitempty"`
+	NetworkGuestIP      string           `json:"network_guest_ip,omitempty"`
+	NetworkGatewayIP    string           `json:"network_gateway_ip,omitempty"`
+	NetworkPrefixLen    int              `json:"network_prefix_len,omitempty"`
+	RootFSMinimumBytes  int64            `json:"rootfs_minimum_bytes,omitempty"`
+	RootFSMinimumSource string           `json:"rootfs_minimum_source,omitempty"`
+	RootFSCopyMS        int64            `json:"rootfs_copy_ms,omitempty"`
+	VMReadyMS           int64            `json:"vm_ready_ms,omitempty"`
+	HelperTimingMS      map[string]int64 `json:"helper_timing_ms,omitempty"`
+	TotalMS             int64            `json:"total_ms,omitempty"`
 }
 
 func traceIDFromSpanContext(spanContext trace.SpanContext) string {
@@ -235,6 +237,12 @@ func recordLaunchPhaseTraceEvents(ctx context.Context, backendName string, obser
 	if !span.IsRecording() {
 		return
 	}
+	if observation.RootFSMinimumBytes > 0 || strings.TrimSpace(observation.RootFSMinimumSource) != "" {
+		span.SetAttributes(
+			attribute.Int64(observability.AttrRootFSMinimumBytes, observation.RootFSMinimumBytes),
+			attribute.String(observability.AttrRootFSMinimumSource, rootFSMinimumSourceForObservation(observation)),
+		)
+	}
 	for _, phase := range darwinVZLaunchPhaseDurations(observation) {
 		span.AddEvent(
 			observability.EventLaunchPhase,
@@ -245,6 +253,17 @@ func recordLaunchPhaseTraceEvents(ctx context.Context, backendName string, obser
 			),
 		)
 	}
+}
+
+func rootFSMinimumSourceForObservation(observation darwinVZRunObservation) string {
+	source := strings.TrimSpace(observation.RootFSMinimumSource)
+	if observation.RootFSMinimumBytes <= 0 {
+		return backend.RootFSMinimumSourceUnset
+	}
+	if source == "" {
+		return backend.RootFSMinimumSourceUnknown
+	}
+	return source
 }
 
 func darwinVZLaunchPhaseDurations(observation darwinVZRunObservation) []darwinVZLaunchPhaseDuration {
@@ -543,13 +562,15 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	}
 	req.RunDir = runDir
 	observation := darwinVZRunObservation{
-		ExecutionID: req.ExecutionID,
-		TraceID:     traceIDFromSpanContext(trace.SpanContextFromContext(ctx)),
-		Backend:     a.Name(),
-		RunDir:      runDir,
-		ImageRef:    instance.ImageRef,
-		ImageDigest: instance.ImageDigest,
-		PlanPath:    instance.ConfigPath,
+		ExecutionID:         req.ExecutionID,
+		TraceID:             traceIDFromSpanContext(trace.SpanContextFromContext(ctx)),
+		Backend:             a.Name(),
+		RunDir:              runDir,
+		ImageRef:            instance.ImageRef,
+		ImageDigest:         instance.ImageDigest,
+		PlanPath:            instance.ConfigPath,
+		RootFSMinimumBytes:  instance.FirecrackerConfig.MinimumRootFSBytes,
+		RootFSMinimumSource: backend.EffectiveRootFSMinimumSource(instance.FirecrackerConfig),
 	}
 	applyDarwinVZNetworkMetadata(&observation, instance.NetworkMetadata)
 	launchObservabilityRecorded := false
@@ -1059,11 +1080,13 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		return nil, fmt.Errorf("create run directory: %w", err)
 	}
 	observation := darwinVZRunObservation{
-		ExecutionID: req.ExecutionID,
-		Backend:     a.Name(),
-		RunDir:      runDir,
-		ImageRef:    req.Policy.ImageRef,
-		ImageDigest: req.Policy.ImageDigest,
+		ExecutionID:         req.ExecutionID,
+		Backend:             a.Name(),
+		RunDir:              runDir,
+		ImageRef:            req.Policy.ImageRef,
+		ImageDigest:         req.Policy.ImageDigest,
+		RootFSMinimumBytes:  req.MinimumRootFSBytes,
+		RootFSMinimumSource: backend.EffectiveRootFSMinimumSource(req.FirecrackerConfig),
 	}
 	defer func() {
 		if err != nil && strings.TrimSpace(observation.Error) == "" {
@@ -1696,11 +1719,13 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		Network:        startedVM.NetworkMetadata,
 	}
 	a.recordLaunchPhaseObservability(ctx, darwinVZRunObservation{
-		Backend:        a.Name(),
-		LaunchedVM:     true,
-		RootFSCopyMS:   launchObservability.RootFSCopyMS,
-		VMReadyMS:      launchObservability.HelperTimingMS["vm_ready"],
-		HelperTimingMS: launchObservability.HelperTimingMS,
+		Backend:             a.Name(),
+		LaunchedVM:          true,
+		RootFSMinimumBytes:  cfg.MinimumRootFSBytes,
+		RootFSMinimumSource: backend.EffectiveRootFSMinimumSource(cfg),
+		RootFSCopyMS:        launchObservability.RootFSCopyMS,
+		VMReadyMS:           launchObservability.HelperTimingMS["vm_ready"],
+		HelperTimingMS:      launchObservability.HelperTimingMS,
 	})
 	launchObservability.Recorded = true
 	instance.LaunchObservability = launchObservability
@@ -2230,7 +2255,7 @@ func (a *Adapter) resolveRootFSPath(ctx context.Context, req backend.ExecutionRe
 	if ensurePrepared == nil {
 		ensurePrepared = a.ensurePreparedRuntimeRootFSFromImage
 	}
-	prepared, err := ensurePrepared(ctx, ref, req.MinimumRootFSBytes)
+	prepared, err := ensurePrepared(ctx, ref)
 	if err != nil {
 		return "", "", "", "", err
 	}
@@ -2275,14 +2300,14 @@ func (a *Adapter) RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledP
 		return "", err
 	}
 
-	preparedPath, err := preparedRuntimeRootFSPath(imageDigest, guestAgentHash, cfg.MinimumRootFSBytes)
+	preparedPath, err := preparedRuntimeRootFSPath(imageDigest, guestAgentHash)
 	if err != nil {
 		return "", err
 	}
 	return "prepared-rootfs:" + preparedPath, nil
 }
 
-func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imageRef string, minimumBytes int64) (preparedRootFS, error) {
+func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imageRef string) (preparedRootFS, error) {
 	artifact, err := a.ensureImageArtifact(ctx, imageRef)
 	if err != nil {
 		return preparedRootFS{}, err
@@ -2299,12 +2324,12 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		return preparedRootFS{}, err
 	}
 
-	preparedPath, err := preparedRuntimeRootFSPath(artifact.Digest, guestAgentHash, minimumBytes)
+	preparedPath, err := preparedRuntimeRootFSPath(artifact.Digest, guestAgentHash)
 	if err != nil {
 		return preparedRootFS{}, err
 	}
 	if _, err := os.Stat(preparedPath); err == nil {
-		if preparedRuntimeRootFSCacheHitIsValid(preparedPath, minimumBytes) {
+		if preparedRuntimeRootFSCacheHitIsValid(preparedPath) {
 			return preparedRootFS{
 				Ref:    artifact.Ref,
 				Digest: artifact.Digest,
@@ -2323,7 +2348,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 	defer a.runtimeImageMu.Unlock()
 
 	if _, err := os.Stat(preparedPath); err == nil {
-		if preparedRuntimeRootFSCacheHitIsValid(preparedPath, minimumBytes) {
+		if preparedRuntimeRootFSCacheHitIsValid(preparedPath) {
 			return preparedRootFS{
 				Ref:    artifact.Ref,
 				Digest: artifact.Digest,
@@ -2352,10 +2377,6 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		_ = os.Remove(tmpPath)
 		return preparedRootFS{}, err
 	}
-	if err := ensurePreparedRuntimeRootFSMinimumSize(ctx, tmpPath, minimumBytes); err != nil {
-		_ = os.Remove(tmpPath)
-		return preparedRootFS{}, fmt.Errorf("resize prepared runtime rootfs %q: %w", tmpPath, err)
-	}
 	if err := validatePreparedRuntimeRootFS(tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return preparedRootFS{}, fmt.Errorf("validate prepared runtime rootfs %q: %w", tmpPath, err)
@@ -2363,7 +2384,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 	if err := os.Rename(tmpPath, preparedPath); err != nil {
 		_ = os.Remove(tmpPath)
 		if _, statErr := os.Stat(preparedPath); statErr == nil {
-			if preparedRuntimeRootFSCacheHitIsValid(preparedPath, minimumBytes) {
+			if preparedRuntimeRootFSCacheHitIsValid(preparedPath) {
 				_ = writePreparedRuntimeRootFSMarker(preparedPath)
 				return preparedRootFS{
 					Ref:    artifact.Ref,
@@ -2391,8 +2412,7 @@ var preparedRuntimeRootFSRequiredPaths = []string{
 }
 
 var (
-	validatePreparedRuntimeRootFSFn        = validatePreparedRuntimeRootFS
-	ensurePreparedRuntimeRootFSMinimumSize = ext4image.EnsureMinimumSize
+	validatePreparedRuntimeRootFSFn = validatePreparedRuntimeRootFS
 )
 
 func validatePreparedRuntimeRootFS(path string) error {
@@ -2412,10 +2432,7 @@ type preparedRuntimeRootFSMarkerState struct {
 	changeTimeNanos int64
 }
 
-func preparedRuntimeRootFSCacheHitIsValid(path string, minimumBytes int64) bool {
-	if !preparedRuntimeRootFSMeetsMinimum(path, minimumBytes) {
-		return false
-	}
+func preparedRuntimeRootFSCacheHitIsValid(path string) bool {
 	if preparedRuntimeRootFSMarkerMatches(path) {
 		return true
 	}
@@ -2424,17 +2441,6 @@ func preparedRuntimeRootFSCacheHitIsValid(path string, minimumBytes int64) bool 
 	}
 	_ = writePreparedRuntimeRootFSMarker(path)
 	return true
-}
-
-func preparedRuntimeRootFSMeetsMinimum(path string, minimumBytes int64) bool {
-	if minimumBytes <= 0 {
-		return true
-	}
-	currentBytes, _, err := ext4image.PathSizeBytes(path)
-	if err != nil {
-		return false
-	}
-	return currentBytes >= minimumBytes
 }
 
 func preparedRuntimeRootFSMarkerPath(path string) string {
@@ -2504,17 +2510,17 @@ func writePreparedRuntimeRootFSMarker(path string) error {
 	return nil
 }
 
-func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string, minimumBytes int64) (string, error) {
+func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
 	cacheBase, err := paths.CacheBaseDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve cache base directory: %w", err)
 	}
-	key := runtimeRootFSCacheKey(imageDigest, guestAgentHash, minimumBytes)
+	key := runtimeRootFSCacheKey(imageDigest, guestAgentHash)
 	return filepath.Join(cacheBase, "darwin-vz", "runtime-rootfs", key+".ext4"), nil
 }
 
-func runtimeRootFSCacheKey(imageDigest, guestAgentHash string, minimumBytes int64) string {
-	keyMaterial := strings.TrimSpace(imageDigest) + "|" + guestAgentHash + "|" + runtime.GOARCH + "|" + preparedRuntimeRootFSVersion + "|" + guestRuntimeInitVersion + rootFSMinimumCacheKeySuffix(minimumBytes)
+func runtimeRootFSCacheKey(imageDigest, guestAgentHash string) string {
+	keyMaterial := strings.TrimSpace(imageDigest) + "|" + guestAgentHash + "|" + runtime.GOARCH + "|" + preparedRuntimeRootFSVersion + "|" + guestRuntimeInitVersion
 	sum := sha256.Sum256([]byte(keyMaterial))
 	return hex.EncodeToString(sum[:])
 }

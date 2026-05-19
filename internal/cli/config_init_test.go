@@ -84,8 +84,8 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 		if got, want := cfg.Backends.DarwinVZ.MemoryMiB, int64(4096); got != want {
 			t.Fatalf("expected backends.darwin-vz.memory_mib=%d, got %d", want, got)
 		}
-		if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(4<<30); got != want {
-			t.Fatalf("expected backends.darwin-vz.minimum_rootfs_bytes=%d, got %d", want, got)
+		if got := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes); got != 0 {
+			t.Fatalf("expected backends.darwin-vz.minimum_rootfs_bytes to default unset, got %d", got)
 		}
 		if got, want := cfg.Backends.DarwinVZ.Services.Docker.StorageDriver, "overlay2"; got != want {
 			t.Fatalf("expected backends.darwin-vz.services.docker.storage_driver=%q, got %q", want, got)
@@ -93,10 +93,7 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 		if !strings.Contains(string(raw), "memory_mib: 4096") {
 			t.Fatalf("expected generated config to include memory_mib: 4096, got:\n%s", raw)
 		}
-		if !strings.Contains(string(raw), "minimum_rootfs_bytes: 4GiB") {
-			t.Fatalf("expected generated config to include minimum_rootfs_bytes: 4GiB, got:\n%s", raw)
-		}
-		for _, forbidden := range []string{"kernel_image:", "rootfs:", "iptables:"} {
+		for _, forbidden := range []string{"kernel_image:", "rootfs:", "minimum_rootfs_bytes:", "iptables:"} {
 			if strings.Contains(string(raw), forbidden) {
 				t.Fatalf("expected generated config to omit zero-value field %q, got:\n%s", forbidden, raw)
 			}
@@ -204,8 +201,8 @@ func TestConfigInitDisablesDarwinVZSnapshotsWhenSupportUnavailable(t *testing.T)
 	if got, want := cfg.Backends.DarwinVZ.MemoryMiB, int64(4096); got != want {
 		t.Fatalf("expected backends.darwin-vz.memory_mib=%d, got %d", want, got)
 	}
-	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(4<<30); got != want {
-		t.Fatalf("expected backends.darwin-vz.minimum_rootfs_bytes=%d, got %d", want, got)
+	if got := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes); got != 0 {
+		t.Fatalf("expected backends.darwin-vz.minimum_rootfs_bytes to default unset, got %d", got)
 	}
 	if out := readStderr(); !strings.Contains(out, "darwin-vz snapshots remain disabled: helper unavailable") {
 		t.Fatalf("expected darwin-vz snapshot warning, got %q", out)
@@ -213,10 +210,7 @@ func TestConfigInitDisablesDarwinVZSnapshotsWhenSupportUnavailable(t *testing.T)
 	if !strings.Contains(string(raw), "memory_mib: 4096") {
 		t.Fatalf("expected generated config to include memory_mib: 4096, got:\n%s", raw)
 	}
-	if !strings.Contains(string(raw), "minimum_rootfs_bytes: 4GiB") {
-		t.Fatalf("expected generated config to include minimum_rootfs_bytes: 4GiB, got:\n%s", raw)
-	}
-	for _, forbidden := range []string{"enabled: false", "kernel_image:", "rootfs:", "iptables:"} {
+	for _, forbidden := range []string{"enabled: false", "kernel_image:", "rootfs:", "minimum_rootfs_bytes:", "iptables:"} {
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("expected generated config to omit zero-value field %q, got:\n%s", forbidden, raw)
 		}

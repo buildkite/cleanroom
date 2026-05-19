@@ -84,6 +84,10 @@ inputs.
 
 ## Cache Output Volume Size
 
+See [Storage](storage.md#cache-output-volumes) for how cache-output volumes fit
+alongside image artifacts, prepared runtime rootfs entries, writable rootfs
+copies, and snapshots.
+
 Cache output volumes are sparse ext4 images on the host. When Cleanroom creates
 a new volume — or restores one from an older snapshot — it enforces a minimum
 size. The default is 16 GiB.
