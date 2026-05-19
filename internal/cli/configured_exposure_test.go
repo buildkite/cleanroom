@@ -53,6 +53,16 @@ func TestNormalizeBareExposeHTTPSArgs(t *testing.T) {
 			args: []string{"exec", "--image", "ghcr.io/example/image:latest", "--expose-https", "--", "npm", "run", "dev"},
 			want: []string{"exec", "--image", "ghcr.io/example/image:latest", "--expose-https=" + configuredHTTPSExposureSpec, "--", "npm", "run", "dev"},
 		},
+		{
+			name: "bare exec flag before partial passthrough command",
+			args: []string{"exec", "--expose-https", "npm", "run", "dev"},
+			want: []string{"exec", "--expose-https=" + configuredHTTPSExposureSpec, "npm", "run", "dev"},
+		},
+		{
+			name: "explicit exec value before partial passthrough command",
+			args: []string{"exec", "--expose-https", "buildkite:3000", "npm", "run", "dev"},
+			want: []string{"exec", "--expose-https", "buildkite:3000", "npm", "run", "dev"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -107,6 +117,24 @@ func TestExpandConfiguredHTTPSExposuresValidatesExpandedHosts(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "expose.https.routes[0].hosts[0] is invalid") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExpandConfiguredHTTPSExposuresRejectsDuplicateHosts(t *testing.T) {
+	t.Parallel()
+
+	_, err := expandConfiguredHTTPSExposures(policy.ExposeHTTPSConfig{
+		Base: "{sandbox_id}.localhost",
+		Routes: []policy.ExposeHTTPSRoute{
+			{Port: 3000, Hosts: []string{"{base}"}},
+			{Port: 4000, Hosts: []string{"{base}"}},
+		},
+	}, "sandbox-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "duplicates configured host") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
+	"github.com/buildkite/cleanroom/internal/exposure"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/guestenv"
 	"github.com/buildkite/cleanroom/internal/ociref"
@@ -24,8 +25,9 @@ import (
 )
 
 const (
-	PrimaryPolicyPath  = "cleanroom.yaml"
-	FallbackPolicyPath = ".buildkite/cleanroom.yaml"
+	PrimaryPolicyPath             = "cleanroom.yaml"
+	FallbackPolicyPath            = ".buildkite/cleanroom.yaml"
+	ExposeHTTPSPreflightSandboxID = "00000000000000000000000000"
 )
 
 var ErrPolicyNotFound = errors.New("policy not found")
@@ -346,6 +348,14 @@ func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
 	if len(raw.Routes) == 0 {
 		return ExposeHTTPSConfig{}, errors.New("expose.https.routes must include at least one route")
 	}
+	expandedBase := base
+	if expandedBase != "" {
+		expandedBase = expandExposeHTTPSTemplate(expandedBase, ExposeHTTPSPreflightSandboxID, "")
+		expandedBase = strings.TrimSpace(strings.ToLower(expandedBase))
+	}
+	if strings.TrimSpace(raw.Base) != "" && expandedBase == "" {
+		return ExposeHTTPSConfig{}, errors.New("expose.https.base expanded to an empty host")
+	}
 	routes := make([]ExposeHTTPSRoute, 0, len(raw.Routes))
 	for i, route := range raw.Routes {
 		field := fmt.Sprintf("expose.https.routes[%d]", i)
@@ -362,6 +372,17 @@ func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
 			if host == "" {
 				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] cannot be empty", field, j)
 			}
+			if strings.Contains(host, "{base}") && expandedBase == "" {
+				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] uses {base} but expose.https.base is empty", field, j)
+			}
+			expandedHost := expandExposeHTTPSTemplate(host, ExposeHTTPSPreflightSandboxID, expandedBase)
+			expandedHost = strings.TrimSpace(strings.ToLower(expandedHost))
+			if expandedHost == "" {
+				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] expanded to an empty host", field, j)
+			}
+			if err := exposure.ValidateHTTPSRouteName(expandedHost); err != nil {
+				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] is invalid: %w", field, j, err)
+			}
 			if _, ok := seen[host]; ok {
 				continue
 			}
@@ -371,6 +392,13 @@ func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
 		routes = append(routes, ExposeHTTPSRoute{Port: route.Port, Hosts: hosts})
 	}
 	return ExposeHTTPSConfig{Base: base, Routes: routes}, nil
+}
+
+func expandExposeHTTPSTemplate(value, sandboxID, base string) string {
+	value = strings.ReplaceAll(value, "{sandbox_id}", sandboxID)
+	value = strings.ReplaceAll(value, "{container_id}", sandboxID)
+	value = strings.ReplaceAll(value, "{base}", base)
+	return value
 }
 
 func (l Loader) LoadAndCompile(root string) (*CompiledPolicy, string, error) {

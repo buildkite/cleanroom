@@ -798,6 +798,34 @@ func TestRegisterHTTPSRejectsExternalRouteHost(t *testing.T) {
 	}
 }
 
+func TestRegisterHTTPSRejectsUnscopedWildcardLocalhostRoute(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{TLSDir: t.TempDir()})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "*.*.localhost",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err == nil {
+		t.Fatal("expected unscoped wildcard host to be rejected")
+	}
+	if !strings.Contains(err.Error(), "concrete localhost subdomain") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestHTTPSProxyForwardsTrustedHeadersAndPreservesHost(t *testing.T) {
 	t.Parallel()
 

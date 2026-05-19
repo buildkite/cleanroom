@@ -10,8 +10,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
-const configuredHTTPSPreflightSandboxID = "cr-preflight"
-
 func normalizeBareExposeHTTPSArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil
@@ -36,6 +34,10 @@ func normalizeBareExposeHTTPSArgs(args []string) []string {
 			continue
 		}
 		if isPartialPassthroughCommand(out) {
+			if !looksLikeHTTPSExposureSpecValue(out[i+1]) {
+				out[i] = "--expose-https=" + configuredHTTPSExposureSpec
+				continue
+			}
 			i++
 		}
 	}
@@ -79,6 +81,22 @@ func cliFlagConsumesNextArg(arg string) bool {
 	}
 }
 
+func looksLikeHTTPSExposureSpecValue(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if strings.Contains(value, ":") {
+		return true
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func resolveRequestedExposures(ctx *runtimeContext, cwd, sandboxID string, requested []*cleanroomv1.PortExposure) ([]*cleanroomv1.PortExposure, error) {
 	if !hasConfiguredHTTPSExposure(requested) {
 		return requested, nil
@@ -111,7 +129,7 @@ func prevalidateConfiguredExposures(ctx *runtimeContext, cwd string, requested [
 	if err != nil {
 		return err
 	}
-	_, err = expandConfiguredHTTPSExposures(cfg, configuredHTTPSPreflightSandboxID)
+	_, err = expandConfiguredHTTPSExposures(cfg, policy.ExposeHTTPSPreflightSandboxID)
 	return err
 }
 
@@ -163,6 +181,7 @@ func expandConfiguredHTTPSExposures(cfg policy.ExposeHTTPSConfig, sandboxID stri
 	}
 
 	exposures := make([]*cleanroomv1.PortExposure, 0)
+	seenHosts := map[string]struct{}{}
 	for i, route := range cfg.Routes {
 		if route.Port < 1 || route.Port > 65535 {
 			return nil, fmt.Errorf("expose.https.routes[%d].port must be in range 1-65535", i)
@@ -182,6 +201,10 @@ func expandConfiguredHTTPSExposures(cfg policy.ExposeHTTPSConfig, sandboxID stri
 			if err := exposure.ValidateHTTPSRouteName(host); err != nil {
 				return nil, fmt.Errorf("expose.https.routes[%d].hosts[%d] is invalid: %w", i, j, err)
 			}
+			if _, ok := seenHosts[host]; ok {
+				return nil, fmt.Errorf("expose.https.routes[%d].hosts[%d] duplicates configured host %q", i, j, host)
+			}
+			seenHosts[host] = struct{}{}
 			exposures = append(exposures, &cleanroomv1.PortExposure{
 				Protocol:  exposureProtocolHTTPS,
 				GuestPort: int32(route.Port),

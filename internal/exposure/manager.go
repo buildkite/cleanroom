@@ -689,6 +689,7 @@ func normalizeLocalhostRoutePattern(host string) (string, bool, error) {
 
 	wildcard := false
 	seenConcrete := false
+	concreteLocalhostSubdomain := false
 	for i, label := range labels {
 		if label == "*" {
 			if seenConcrete {
@@ -701,6 +702,12 @@ func normalizeLocalhostRoutePattern(host string) (string, bool, error) {
 		if err := validateDNSLabel(label); err != nil {
 			return "", false, fmt.Errorf("label %d: %w", i, err)
 		}
+		if i < len(labels)-1 {
+			concreteLocalhostSubdomain = true
+		}
+	}
+	if wildcard && !concreteLocalhostSubdomain {
+		return "", false, errors.New("wildcard host must include a concrete localhost subdomain")
 	}
 	if !wildcard && labels[0] == "localhost" {
 		return "", false, errors.New("host must be a subdomain of localhost")

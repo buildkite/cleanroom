@@ -1521,6 +1521,45 @@ func TestCompileValidatesExposeWithoutChangingHash(t *testing.T) {
 	}
 }
 
+func TestCompileValidatesConfiguredHTTPSHosts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "external host", host: "google.com", want: "localhost"},
+		{name: "unscoped wildcard", host: "*.*.localhost", want: "concrete localhost subdomain"},
+		{
+			name: "expanded sandbox id exceeds label limit",
+			host: strings.Repeat("a", 40) + "-{sandbox_id}.localhost",
+			want: "longer than 63 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := baseRawPolicy()
+			raw.Expose.HTTPS = rawExposeHTTPS{
+				Base: "{sandbox_id}.localhost",
+				Routes: []rawExposeHTTPSRoute{{
+					Port:  3000,
+					Hosts: []string{tt.host},
+				}},
+			}
+
+			_, err := Compile(raw)
+			if err == nil {
+				t.Fatal("expected Compile to reject invalid expose host")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestFromProtoRejectsMismatchedImageDigest(t *testing.T) {
 	t.Parallel()
 
