@@ -17,18 +17,66 @@ func normalizeBareExposeHTTPSArgs(args []string) []string {
 		return nil
 	}
 	out := append([]string(nil), args...)
-	for i, arg := range out {
+	for i := 0; i < len(out); i++ {
+		arg := out[i]
 		if arg == "--" {
 			break
 		}
+		if isPartialPassthroughCommand(out) && i > 0 && !strings.HasPrefix(arg, "-") {
+			break
+		}
 		if arg != "--expose-https" {
+			if isPartialPassthroughCommand(out) && cliFlagConsumesNextArg(arg) && !strings.Contains(arg, "=") && i+1 < len(out) {
+				i++
+			}
 			continue
 		}
 		if i+1 >= len(out) || out[i+1] == "--" || strings.HasPrefix(out[i+1], "-") {
 			out[i] = "--expose-https=" + configuredHTTPSExposureSpec
+			continue
+		}
+		if isPartialPassthroughCommand(out) {
+			i++
 		}
 	}
 	return out
+}
+
+func isPartialPassthroughCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "exec", "console":
+		return true
+	default:
+		return false
+	}
+}
+
+func cliFlagConsumesNextArg(arg string) bool {
+	switch arg {
+	case "--backend",
+		"--chdir",
+		"--env",
+		"--expose",
+		"--expose-https",
+		"--from",
+		"--host",
+		"--image",
+		"--in",
+		"--launch-seconds",
+		"--repo-commit",
+		"--repo-url",
+		"--sandbox-id",
+		"--tls-ca",
+		"--tlsca",
+		"-c",
+		"-e":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveRequestedExposures(ctx *runtimeContext, cwd, sandboxID string, requested []*cleanroomv1.PortExposure) ([]*cleanroomv1.PortExposure, error) {

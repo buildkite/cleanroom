@@ -38,6 +38,21 @@ func TestNormalizeBareExposeHTTPSArgs(t *testing.T) {
 			args: []string{"exec", "--", "tool", "--expose-https"},
 			want: []string{"exec", "--", "tool", "--expose-https"},
 		},
+		{
+			name: "guest arg after partial passthrough command",
+			args: []string{"exec", "tool", "--expose-https"},
+			want: []string{"exec", "tool", "--expose-https"},
+		},
+		{
+			name: "console guest arg after partial passthrough command",
+			args: []string{"console", "tool", "--expose-https"},
+			want: []string{"console", "tool", "--expose-https"},
+		},
+		{
+			name: "bare exec flag after option value",
+			args: []string{"exec", "--image", "ghcr.io/example/image:latest", "--expose-https", "--", "npm", "run", "dev"},
+			want: []string{"exec", "--image", "ghcr.io/example/image:latest", "--expose-https=" + configuredHTTPSExposureSpec, "--", "npm", "run", "dev"},
+		},
 	}
 
 	for _, tt := range tests {
