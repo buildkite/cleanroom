@@ -22,6 +22,8 @@ func TestBuildKernelVerifiesCachedSourceWithChecksumStamp(t *testing.T) {
 		`-e ADVISE_SYSCALLS \`,
 		`-e VIRTIO_BALLOON \`,
 		`-e PAGE_REPORTING \`,
+		`-e RTC_CLASS \`,
+		`-e RTC_DRV_PL031 \`,
 	}
 	for _, want := range required {
 		if !strings.Contains(script, want) {

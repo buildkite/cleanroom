@@ -127,6 +127,13 @@ docker run --rm \
       -e BALLOON_COMPACTION \
       -e COMPACTION \
       -e PAGE_REPORTING \
+      -e ARM_AMBA \
+      -e RTC_CLASS \
+      -e RTC_HCTOSYS \
+      -e RTC_INTF_DEV \
+      -e RTC_INTF_PROC \
+      -e RTC_INTF_SYSFS \
+      -e RTC_DRV_PL031 \
       -e VSOCKETS \
       -e VIRTIO_VSOCKETS \
       -e NET \
