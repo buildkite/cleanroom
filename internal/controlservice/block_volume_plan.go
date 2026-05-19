@@ -20,6 +20,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+const (
+	blockVolumeAdaptiveHeadroomBytes   int64 = 1 << 30
+	blockVolumeAdaptiveHeadroomDivisor int64 = 4
+	blockVolumeMaxInt64                int64 = 9223372036854775807
+)
+
 type blockVolumeBlockPlan struct {
 	BlockName                       string
 	Command                         []string
@@ -37,6 +43,7 @@ type blockVolumeBlockPlan struct {
 	PriorServiceOutputKeysDigest    string
 	OutputVolumeLayoutVersion       string
 	ProducerVersion                 string
+	CacheOutputMinimumBytes         int64
 	CacheHit                        bool
 	LookupReason                    string
 	CacheRecord                     cachestore.Record
@@ -168,16 +175,74 @@ func lookupBlockVolumeCache(ctx context.Context, store cacheMetadataStore, stage
 	}
 	if !ok {
 		block.LookupReason = observability.CacheLookupReasonRecordNotFound
+		block.CacheOutputMinimumBytes = suggestedBlockVolumeMinimumBytes(ctx, store, stageName, backendName, compiled, block)
 		return block, nil
 	}
 	if reason := blockVolumeRecordMissReason(record, backendName, compiled, block); reason != "" {
 		block.LookupReason = reason
+		block.CacheOutputMinimumBytes = suggestedBlockVolumeMinimumBytes(ctx, store, stageName, backendName, compiled, block)
 		return block, nil
 	}
 	block.CacheHit = true
 	block.LookupReason = ""
 	block.CacheRecord = record
 	return block, nil
+}
+
+func suggestedBlockVolumeMinimumBytes(ctx context.Context, store cacheMetadataStore, stageName, backendName string, compiled *policy.CompiledPolicy, block blockVolumeBlockPlan) int64 {
+	if store == nil || compiled == nil {
+		return 0
+	}
+	records, err := store.List(ctx)
+	if err != nil {
+		return 0
+	}
+	var maxSize int64
+	for _, record := range records {
+		if !blockVolumeRecordCanInformMinimum(record, stageName, backendName, compiled, block) {
+			continue
+		}
+		if size := blockVolumeRecordMinimumBasisBytes(record); size > maxSize {
+			maxSize = size
+		}
+	}
+	return blockVolumeMinimumBytesWithHeadroom(maxSize)
+}
+
+func blockVolumeRecordMinimumBasisBytes(record cachestore.Record) int64 {
+	if record.ExclusiveSizeBytes > 0 {
+		return record.ExclusiveSizeBytes
+	}
+	return record.StorageSizeBytes
+}
+
+func blockVolumeRecordCanInformMinimum(record cachestore.Record, stageName, backendName string, compiled *policy.CompiledPolicy, block blockVolumeBlockPlan) bool {
+	if strings.TrimSpace(record.State) != cacheStateReady ||
+		strings.TrimSpace(record.Stage) != strings.TrimSpace(stageName) ||
+		strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) ||
+		strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) ||
+		strings.TrimSpace(record.CommandDigest) != strings.TrimSpace(block.CommandDigest) ||
+		strings.TrimSpace(record.EnvDigest) != strings.TrimSpace(block.EnvDigest) ||
+		strings.TrimSpace(record.NormalizedOutputsDigest) != strings.TrimSpace(block.NormalizedOutputsDigest) ||
+		strings.TrimSpace(record.ProducerVersion) != strings.TrimSpace(block.ProducerVersion) ||
+		blockVolumeRecordMinimumBasisBytes(record) <= 0 {
+		return false
+	}
+	return blockVolumeOutputRecordMissReason(block.Outputs, record.OutputRecords) == ""
+}
+
+func blockVolumeMinimumBytesWithHeadroom(sizeBytes int64) int64 {
+	if sizeBytes <= 0 {
+		return 0
+	}
+	headroom := sizeBytes / blockVolumeAdaptiveHeadroomDivisor
+	if headroom < blockVolumeAdaptiveHeadroomBytes {
+		headroom = blockVolumeAdaptiveHeadroomBytes
+	}
+	if sizeBytes > blockVolumeMaxInt64-headroom {
+		return blockVolumeMaxInt64
+	}
+	return sizeBytes + headroom
 }
 
 func dependencyBlockVolumePlanCacheKeys(plan dependencyBlockVolumePlan) []string {

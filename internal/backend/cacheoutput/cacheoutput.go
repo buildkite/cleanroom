@@ -17,7 +17,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
-const DefaultVolumeMinimumBytes int64 = 512 << 20
+const DefaultVolumeMinimumBytes int64 = 16 << 30
 const GuestMountRoot = "/run/cleanroom/cache-output-volumes"
 
 type PreparedMount struct {

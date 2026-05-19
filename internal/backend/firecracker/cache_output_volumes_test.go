@@ -370,6 +370,53 @@ func TestPrepareCacheOutputVolumesCfgMinimumBytesOverridesPackageDefault(t *test
 	}
 }
 
+func TestPrepareCacheOutputVolumesSpecMinimumBytesOverridesCfgMinimum(t *testing.T) {
+	runDir := t.TempDir()
+	prevDriverFn := rootFSVolumeStoreDriverFn
+	prevCreateEmpty := createEmptyCacheOutputExt4ImageFn
+	t.Cleanup(func() {
+		rootFSVolumeStoreDriverFn = prevDriverFn
+		createEmptyCacheOutputExt4ImageFn = prevCreateEmpty
+	})
+
+	var capturedMinimumBytes int64
+	createEmptyCacheOutputExt4ImageFn = func(_ context.Context, path string, minimumBytes int64) error {
+		capturedMinimumBytes = minimumBytes
+		return os.WriteFile(path, []byte("empty-ext4"), 0o644)
+	}
+	rootFSVolumeStoreDriverFn = func(backend.FirecrackerConfig) (volumestore.Driver, error) {
+		return resizingTestVolumeDriver{
+			ensureBaseVolumeFn: func(_ context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+				return volumestore.BaseVolume{Ref: "base:" + filepath.Base(req.SourcePath)}, nil
+			},
+			createWritableVolumeFn: func(_ context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+				return volumestore.WritableVolume{Ref: "volume:" + req.VolumeID, AttachmentPath: req.AttachmentPath}, nil
+			},
+		}, nil
+	}
+
+	_, cleanup, err := prepareCacheOutputVolumes(context.Background(), nil, backend.FirecrackerConfig{
+		MinimumCacheOutputVolumeBytes: 16 << 30,
+	}, "sandbox-1", runDir, []backend.CacheOutputVolumeSpec{{
+		Stage:        "service-volume",
+		BlockName:    "docker-images",
+		CacheKey:     "service-volume:v1:docker-images",
+		VolumeID:     "service-volume-def456",
+		MinimumBytes: 32 << 30,
+		DirMappings: []backend.CacheOutputDirMapping{
+			{GuestPath: "/var/lib/docker", Subpath: "dirs/0"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("prepareCacheOutputVolumes returned error: %v", err)
+	}
+	defer cleanup()
+
+	if got, want := capturedMinimumBytes, int64(32<<30); got != want {
+		t.Fatalf("minimumBytes passed to createEmptyCacheOutputExt4ImageFn: got %d want %d", got, want)
+	}
+}
+
 type resizingTestVolumeDriver struct {
 	ensureBaseVolumeFn     func(context.Context, volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error)
 	createWritableVolumeFn func(context.Context, volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error)

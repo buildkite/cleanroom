@@ -86,12 +86,22 @@ inputs.
 
 Cache output volumes are sparse ext4 images on the host. When Cleanroom creates
 a new volume — or restores one from an older snapshot — it enforces a minimum
-size. The default is 512 MiB.
+size. The default is 16 GiB.
 <!-- tracks cacheoutput.DefaultVolumeMinimumBytes -->
 
-If your service block pulls large container images into `/var/lib/docker`
-(Kafka, Postgres builds, schema-registry, and similar), you may need more
-headroom. Set `minimum_cache_output_volume_bytes` in your runtime config:
+Because the images are sparse, the default is logical capacity rather than
+immediate host disk use. Host disk is consumed by actual writes and filesystem
+metadata. For example, a 16 GiB Docker cache-output volume can occupy much less
+than 16 GiB on the host until Docker writes that data.
+
+Cleanroom also uses prior successful snapshots for the same block shape as a
+sizing hint. If a block's declared inputs change and it needs to rebuild, the
+next cold cache-output volume can be created with enough logical capacity for
+the previous successful output's allocated bytes plus headroom.
+
+Most users should not need to configure cache-output sizing. If a host needs a
+larger or smaller floor for every cache-output volume, set
+`minimum_cache_output_volume_bytes` in runtime config:
 
 ```yaml
 backends:
@@ -104,11 +114,9 @@ backends:
   firecracker:
     minimum_cache_output_volume_bytes: 16GiB
 ```
-
-Because the images are sparse, raising this value doesn't immediately consume
-host disk space — only actual writes do. Existing on-disk writable volumes keep
-their current size; the new minimum only applies when a volume is first created
-or restored from a snapshot that predates the setting.
+Existing on-disk writable volumes keep their current size; the new minimum only
+applies when a volume is first created or restored from a snapshot that predates
+the setting.
 
 ## Host Cache Peers
 

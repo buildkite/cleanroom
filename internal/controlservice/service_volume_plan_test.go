@@ -1694,6 +1694,7 @@ func cacheOutputVolumeSpecsEqual(left, right []backend.CacheOutputVolumeSpec) bo
 			left[i].BlockName != right[i].BlockName ||
 			left[i].CacheKey != right[i].CacheKey ||
 			left[i].VolumeID != right[i].VolumeID ||
+			left[i].MinimumBytes != right[i].MinimumBytes ||
 			left[i].SourceSnapshotRef != right[i].SourceSnapshotRef ||
 			left[i].StorageDriver != right[i].StorageDriver ||
 			left[i].StorageRef != right[i].StorageRef {

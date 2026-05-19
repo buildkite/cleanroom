@@ -192,3 +192,48 @@ func TestPrepareDarwinVZCacheOutputVolumesCfgMinimumBytesOverridesPackageDefault
 		t.Fatalf("minimumBytes passed to prepareDarwinVZCacheOutputWritableVolumeFn: got %d want %d", got, want)
 	}
 }
+
+func TestPrepareDarwinVZCacheOutputVolumesSpecMinimumBytesOverridesCfgMinimum(t *testing.T) {
+	runDir := t.TempDir()
+	prevCreateEmpty := createEmptyDarwinVZCacheOutputExt4ImageFn
+	prevPrepareFn := prepareDarwinVZCacheOutputWritableVolumeFn
+	t.Cleanup(func() {
+		createEmptyDarwinVZCacheOutputExt4ImageFn = prevCreateEmpty
+		prepareDarwinVZCacheOutputWritableVolumeFn = prevPrepareFn
+	})
+
+	var capturedEmptyMinimumBytes int64
+	createEmptyDarwinVZCacheOutputExt4ImageFn = func(_ context.Context, path string, minimumBytes int64) error {
+		capturedEmptyMinimumBytes = minimumBytes
+		return os.WriteFile(path, []byte("empty-ext4"), 0o644)
+	}
+	var capturedWritableMinimumBytes int64
+	prepareDarwinVZCacheOutputWritableVolumeFn = func(_ context.Context, _ backend.FirecrackerConfig, volumeID, attachmentPath, sourceRef string, minimumBytes int64) (volumestore.WritableVolume, func(), error) {
+		capturedWritableMinimumBytes = minimumBytes
+		return volumestore.WritableVolume{Ref: "volume:" + volumeID, AttachmentPath: attachmentPath}, func() {}, nil
+	}
+
+	_, cleanup, err := prepareDarwinVZCacheOutputVolumes(context.Background(), backend.FirecrackerConfig{
+		MinimumCacheOutputVolumeBytes: 16 << 30,
+	}, "sandbox-1", runDir, []backend.CacheOutputVolumeSpec{{
+		Stage:        "service-volume",
+		BlockName:    "docker-images",
+		CacheKey:     "service-volume:v1:docker-images",
+		VolumeID:     "service-volume-def456",
+		MinimumBytes: 32 << 30,
+		DirMappings: []backend.CacheOutputDirMapping{
+			{GuestPath: "/var/lib/docker", Subpath: "dirs/0"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("prepareDarwinVZCacheOutputVolumes returned error: %v", err)
+	}
+	defer cleanup()
+
+	if got, want := capturedEmptyMinimumBytes, int64(32<<30); got != want {
+		t.Fatalf("minimumBytes passed to createEmptyDarwinVZCacheOutputExt4ImageFn: got %d want %d", got, want)
+	}
+	if got, want := capturedWritableMinimumBytes, int64(32<<30); got != want {
+		t.Fatalf("minimumBytes passed to prepareDarwinVZCacheOutputWritableVolumeFn: got %d want %d", got, want)
+	}
+}

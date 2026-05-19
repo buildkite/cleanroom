@@ -90,6 +90,12 @@ func TestAPFSDriverSnapshotLifecycle(t *testing.T) {
 	if got, want := snapshot.StorageRef, filepath.Join(snapshotBaseDir, "darwin-vz", "snap-1", "rootfs.ext4"); got != want {
 		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
 	}
+	if got, want := snapshot.StorageSizeBytes, int64(len("snapshot-bytes")); got != want {
+		t.Fatalf("unexpected snapshot storage size: got %d want %d", got, want)
+	}
+	if got := snapshot.ExclusiveSizeBytes; got <= 0 {
+		t.Fatalf("expected snapshot exclusive size to be populated, got %d", got)
+	}
 
 	clone, err := driver.CloneSnapshotToVolume(context.Background(), CloneSnapshotToVolumeRequest{
 		VolumeID:       "sandbox-2",

@@ -48,6 +48,12 @@ func TestFileDriverPreservesSparseVolumeCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SnapshotVolume returned error: %v", err)
 	}
+	if got := snapshot.StorageSizeBytes; got != logicalSize {
+		t.Fatalf("unexpected snapshot storage size: got %d want %d", got, int64(logicalSize))
+	}
+	if got := snapshot.ExclusiveSizeBytes; got <= 0 || got > logicalSize/4 {
+		t.Fatalf("unexpected snapshot exclusive size: got %d logical %d", got, int64(logicalSize))
+	}
 	requireSparseVolumeForTest(t, snapshot.Ref, logicalSize)
 
 	clone, err := driver.CloneSnapshotToVolume(context.Background(), CloneSnapshotToVolumeRequest{

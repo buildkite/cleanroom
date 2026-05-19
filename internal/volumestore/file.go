@@ -115,7 +115,17 @@ func (d *pathDriver) SnapshotVolume(_ context.Context, req SnapshotVolumeRequest
 		_ = os.Remove(target)
 		return Snapshot{}, fmt.Errorf("copy snapshot volume %q: %w", volumeRef, err)
 	}
-	return Snapshot{Ref: target, StorageRef: target}, nil
+	info, err := os.Stat(target)
+	if err != nil {
+		_ = os.Remove(target)
+		return Snapshot{}, fmt.Errorf("stat snapshot volume %q: %w", target, err)
+	}
+	return Snapshot{
+		Ref:                target,
+		StorageRef:         target,
+		StorageSizeBytes:   info.Size(),
+		ExclusiveSizeBytes: allocatedFileSize(info),
+	}, nil
 }
 
 func (d *pathDriver) CloneSnapshotToVolume(_ context.Context, req CloneSnapshotToVolumeRequest) (WritableVolume, error) {

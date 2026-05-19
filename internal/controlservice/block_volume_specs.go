@@ -12,24 +12,26 @@ import (
 )
 
 type blockVolumeOutputSpecBlock struct {
-	Stage       string
-	BlockName   string
-	CacheKey    string
-	Outputs     policy.StageBlockOutputs
-	CacheHit    bool
-	CacheRecord cachestore.Record
+	Stage        string
+	BlockName    string
+	CacheKey     string
+	MinimumBytes int64
+	Outputs      policy.StageBlockOutputs
+	CacheHit     bool
+	CacheRecord  cachestore.Record
 }
 
 func dependencyBlockVolumeOutputSpecs(plan dependencyBlockVolumePlan) ([]backend.CacheOutputVolumeSpec, error) {
 	blocks := make([]blockVolumeOutputSpecBlock, 0, len(plan.Blocks))
 	for _, block := range plan.Blocks {
 		blocks = append(blocks, blockVolumeOutputSpecBlock{
-			Stage:       dependencyVolumeStageName,
-			BlockName:   block.BlockName,
-			CacheKey:    block.CacheKey,
-			Outputs:     block.Outputs,
-			CacheHit:    block.CacheHit,
-			CacheRecord: block.CacheRecord,
+			Stage:        dependencyVolumeStageName,
+			BlockName:    block.BlockName,
+			CacheKey:     block.CacheKey,
+			MinimumBytes: block.CacheOutputMinimumBytes,
+			Outputs:      block.Outputs,
+			CacheHit:     block.CacheHit,
+			CacheRecord:  block.CacheRecord,
 		})
 	}
 	return blockVolumeOutputSpecs(blocks)
@@ -39,12 +41,13 @@ func serviceBlockVolumeOutputSpecs(plan serviceBlockVolumePlan) ([]backend.Cache
 	blocks := make([]blockVolumeOutputSpecBlock, 0, len(plan.Blocks))
 	for _, block := range plan.Blocks {
 		blocks = append(blocks, blockVolumeOutputSpecBlock{
-			Stage:       serviceVolumeStageName,
-			BlockName:   block.BlockName,
-			CacheKey:    block.CacheKey,
-			Outputs:     block.Outputs,
-			CacheHit:    block.CacheHit,
-			CacheRecord: block.CacheRecord,
+			Stage:        serviceVolumeStageName,
+			BlockName:    block.BlockName,
+			CacheKey:     block.CacheKey,
+			MinimumBytes: block.CacheOutputMinimumBytes,
+			Outputs:      block.Outputs,
+			CacheHit:     block.CacheHit,
+			CacheRecord:  block.CacheRecord,
 		})
 	}
 	return blockVolumeOutputSpecs(blocks)
@@ -96,10 +99,11 @@ func blockVolumeOutputSpec(block blockVolumeOutputSpecBlock) (backend.CacheOutpu
 	}
 
 	spec := backend.CacheOutputVolumeSpec{
-		Stage:     stage,
-		BlockName: blockName,
-		CacheKey:  cacheKey,
-		VolumeID:  blockVolumeID(stage, cacheKey),
+		Stage:        stage,
+		BlockName:    blockName,
+		CacheKey:     cacheKey,
+		VolumeID:     blockVolumeID(stage, cacheKey),
+		MinimumBytes: block.MinimumBytes,
 	}
 	if block.CacheHit {
 		outputRecords, err := blockVolumeOutputRecordsByKey(block)
