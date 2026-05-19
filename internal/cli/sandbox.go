@@ -291,12 +291,16 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, from, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool, exposureSpecs, httpsExposureSpecs []string, launchSeconds int64, outputJSON bool) error {
+func runSandboxCreate(ctx *runtimeContext, cwd string, connectFlags clientFlags, backend, from, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool, exposureSpecs, httpsExposureSpecs []string, launchSeconds int64, outputJSON bool) error {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		cwd = ctx.CWD
+	}
 	exposures, err := parseExposureFlags(exposureSpecs, httpsExposureSpecs)
 	if err != nil {
 		return err
 	}
-	if err := prevalidateRequestedExposures(ctx, ctx.CWD, exposures); err != nil {
+	if err := prevalidateRequestedExposures(ctx, cwd, exposures); err != nil {
 		return err
 	}
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
@@ -347,7 +351,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 	if sandboxID == "" {
 		return errors.New("create sandbox: response missing sandbox id")
 	}
-	exposures, err = resolveRequestedExposures(ctx, ctx.CWD, sandboxID, exposures)
+	exposures, err = resolveRequestedExposures(ctx, cwd, sandboxID, exposures)
 	if err != nil {
 		_ = writeSandboxID(os.Stderr, sandboxID)
 		return err
@@ -368,22 +372,21 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, c.Docker, c.DangerouslyAllowAll, c.Expose, c.ExposeHTTPS, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, ctx.CWD, c.clientFlags, c.Backend, c.From, c.Image, c.Docker, c.DangerouslyAllowAll, c.Expose, c.ExposeHTTPS, c.LaunchSeconds, c.JSON)
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err := c.validate(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(c.From) != "" {
-		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, c.DangerouslyAllowAll, c.Expose, c.ExposeHTTPS, c.LaunchSeconds, c.JSON)
-	}
-	exposures, err := parseExposureFlags(c.Expose, c.ExposeHTTPS)
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
 	if err != nil {
 		return err
 	}
-
-	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if strings.TrimSpace(c.From) != "" {
+		return runSandboxCreate(ctx, cwd, c.clientFlags, c.Backend, c.From, c.Image, false, c.DangerouslyAllowAll, c.Expose, c.ExposeHTTPS, c.LaunchSeconds, c.JSON)
+	}
+	exposures, err := parseExposureFlags(c.Expose, c.ExposeHTTPS)
 	if err != nil {
 		return err
 	}
