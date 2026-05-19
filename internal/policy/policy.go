@@ -357,6 +357,7 @@ func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
 		return ExposeHTTPSConfig{}, errors.New("expose.https.base expanded to an empty host")
 	}
 	routes := make([]ExposeHTTPSRoute, 0, len(raw.Routes))
+	seenExpandedHosts := map[string]string{}
 	for i, route := range raw.Routes {
 		field := fmt.Sprintf("expose.https.routes[%d]", i)
 		if route.Port < 1 || route.Port > 65535 {
@@ -366,7 +367,7 @@ func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
 			return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts must include at least one host", field)
 		}
 		hosts := make([]string, 0, len(route.Hosts))
-		seen := map[string]struct{}{}
+		seenInRoute := map[string]struct{}{}
 		for j, host := range route.Hosts {
 			host = strings.TrimSpace(strings.ToLower(host))
 			if host == "" {
@@ -383,10 +384,14 @@ func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
 			if err := exposure.ValidateHTTPSRouteName(expandedHost); err != nil {
 				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] is invalid: %w", field, j, err)
 			}
-			if _, ok := seen[host]; ok {
+			if _, ok := seenInRoute[expandedHost]; ok {
 				continue
 			}
-			seen[host] = struct{}{}
+			if previous, ok := seenExpandedHosts[expandedHost]; ok {
+				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] duplicates configured host %q already declared at %s", field, j, expandedHost, previous)
+			}
+			seenInRoute[expandedHost] = struct{}{}
+			seenExpandedHosts[expandedHost] = fmt.Sprintf("%s.hosts[%d]", field, j)
 			hosts = append(hosts, host)
 		}
 		routes = append(routes, ExposeHTTPSRoute{Port: route.Port, Hosts: hosts})

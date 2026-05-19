@@ -248,6 +248,7 @@ func TestDNSStatusReportsCertificateTrust(t *testing.T) {
 		"-c", cert.CertPath,
 		"-p", "ssl",
 		"-L",
+		"-l",
 		"-k", keychain,
 	}}
 	if !reflect.DeepEqual(calls, wantCalls) {

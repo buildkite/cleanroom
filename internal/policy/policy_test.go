@@ -1459,6 +1459,7 @@ expose:
       - port: 3000
         hosts:
           - "{base}"
+          - "{container_id}.localhost"
           - "*.{base}"
           - "*.{base}"
 sandbox:
@@ -1557,6 +1558,27 @@ func TestCompileValidatesConfiguredHTTPSHosts(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestCompileRejectsDuplicateExpandedConfiguredHTTPSHostsAcrossRoutes(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Expose.HTTPS = rawExposeHTTPS{
+		Base: "{sandbox_id}.localhost",
+		Routes: []rawExposeHTTPSRoute{
+			{Port: 3000, Hosts: []string{"{base}"}},
+			{Port: 4000, Hosts: []string{"{container_id}.localhost"}},
+		},
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected Compile to reject duplicate expanded expose host")
+	}
+	if !strings.Contains(err.Error(), "duplicates configured host") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
