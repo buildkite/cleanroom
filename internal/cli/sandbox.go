@@ -522,6 +522,9 @@ func createSandboxWithProgress(
 			event := stream.Msg()
 			switch payload := event.Payload.(type) {
 			case *cleanroomv1.CreateSandboxEvent_Message:
+				if message := sandboxProgressMessage(payload.Message); message != "" {
+					progress.setMessage(message)
+				}
 				continue
 			case *cleanroomv1.CreateSandboxEvent_Stdout:
 				if stderr != nil && len(payload.Stdout) > 0 {

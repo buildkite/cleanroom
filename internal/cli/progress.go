@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,6 +13,8 @@ var (
 	sandboxProgressTickInterval = 100 * time.Millisecond
 )
 
+const defaultSandboxProgressMessage = "Preparing sandbox (first use may take a bit)..."
+
 var sandboxProgressFrames = []string{"⣾ ", "⣽ ", "⣻ ", "⢿ ", "⡿ ", "⣟ ", "⣯ ", "⣷ "}
 
 type sandboxProgress struct {
@@ -20,6 +23,7 @@ type sandboxProgress struct {
 	useANSI    bool
 	shown      bool
 	suppressed bool
+	message    string
 }
 
 func (p *sandboxProgress) renderStart() bool {
@@ -33,7 +37,7 @@ func (p *sandboxProgress) renderStart() bool {
 	}
 	p.shown = true
 	if p.stderr != nil {
-		writeSandboxProgressStart(p.stderr)
+		writeSandboxProgressStart(p.stderr, p.messageLocked())
 	}
 	return true
 }
@@ -49,9 +53,28 @@ func (p *sandboxProgress) renderFrame(frame string, elapsed time.Duration) bool 
 	}
 	p.shown = true
 	if p.stderr != nil {
-		writeSandboxProgressFrame(p.stderr, frame, elapsed)
+		writeSandboxProgressFrameMessage(p.stderr, frame, p.messageLocked(), elapsed)
 	}
 	return true
+}
+
+func (p *sandboxProgress) setMessage(message string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.suppressed {
+		return
+	}
+	message = sanitizeSandboxProgressMessage(message)
+	if message == "" || message == p.message {
+		return
+	}
+	p.message = message
+	if p.shown && !p.useANSI && p.stderr != nil {
+		writeSandboxProgressStart(p.stderr, p.messageLocked())
+	}
 }
 
 func (p *sandboxProgress) suppress() {
@@ -76,6 +99,13 @@ func (p *sandboxProgress) wasShown() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.shown
+}
+
+func (p *sandboxProgress) messageLocked() string {
+	if p == nil || p.message == "" {
+		return defaultSandboxProgressMessage
+	}
+	return p.message
 }
 
 func (p *sandboxProgress) complete(success bool, elapsed time.Duration) {
@@ -150,18 +180,26 @@ func withSandboxProgress(stderr *os.File, fn func(progress *sandboxProgress) err
 	return err
 }
 
-func writeSandboxProgressStart(stderr *os.File) {
+func writeSandboxProgressStart(stderr *os.File, messages ...string) {
 	if stderr == nil {
 		return
 	}
-	_, _ = fmt.Fprintln(stderr, "Preparing sandbox (first use may take a bit)...")
+	message := defaultSandboxProgressMessage
+	if len(messages) > 0 {
+		message = messages[0]
+	}
+	_, _ = fmt.Fprintln(stderr, sanitizeSandboxProgressMessage(message))
 }
 
 func writeSandboxProgressFrame(stderr *os.File, frame string, elapsed time.Duration) {
+	writeSandboxProgressFrameMessage(stderr, frame, defaultSandboxProgressMessage, elapsed)
+}
+
+func writeSandboxProgressFrameMessage(stderr *os.File, frame, message string, elapsed time.Duration) {
 	if stderr == nil {
 		return
 	}
-	_, _ = fmt.Fprintf(stderr, "\r\033[2K%s Preparing sandbox (first use may take a bit)... %s", frame, formatSandboxProgressDuration(elapsed))
+	_, _ = fmt.Fprintf(stderr, "\r\033[2K%s %s %s", frame, sanitizeSandboxProgressMessage(message), formatSandboxProgressDuration(elapsed))
 }
 
 func writeSandboxProgressComplete(stderr *os.File, success bool, elapsed time.Duration) {
@@ -193,4 +231,23 @@ func formatSandboxProgressDuration(elapsed time.Duration) string {
 		return elapsed.Round(10 * time.Millisecond).String()
 	}
 	return elapsed.Round(100 * time.Millisecond).String()
+}
+
+func sanitizeSandboxProgressMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return defaultSandboxProgressMessage
+	}
+	message = strings.ReplaceAll(message, "\r", " ")
+	message = strings.ReplaceAll(message, "\n", " ")
+	return strings.Join(strings.Fields(message), " ")
+}
+
+func sandboxProgressMessage(message string) string {
+	message = sanitizeSandboxProgressMessage(message)
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "sandbox image") || strings.Contains(lower, "rootfs") {
+		return message
+	}
+	return ""
 }

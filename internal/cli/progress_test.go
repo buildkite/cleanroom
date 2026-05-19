@@ -180,6 +180,34 @@ func TestWithSandboxProgressSuppressAfterSpinnerKeepsStreamedOutput(t *testing.T
 	}
 }
 
+func TestWithSandboxProgressCanUpdateImageMessage(t *testing.T) {
+	forceSandboxProgressTTY(t)
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
+		return withSandboxProgress(stderr, func(progress *sandboxProgress) error {
+			progress.setMessage("resolving sandbox image rootfs...")
+			time.Sleep(25 * time.Millisecond)
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withSandboxProgress returned error: %v", err)
+	}
+	if !strings.Contains(output, "resolving sandbox image rootfs...") {
+		t.Fatalf("expected updated image progress message, got %q", output)
+	}
+}
+
+func TestSandboxProgressMessageKeepsGenericPhaseMessagesHidden(t *testing.T) {
+	if got := sandboxProgressMessage("provisioning sandbox"); got != "" {
+		t.Fatalf("expected generic provisioning message to remain hidden, got %q", got)
+	}
+	if got := sandboxProgressMessage("resolving sandbox image rootfs..."); got == "" {
+		t.Fatal("expected image/rootfs progress message to be visible")
+	}
+}
+
 func TestWriteSandboxProgressFrameClearsTheLine(t *testing.T) {
 	tmpDir := t.TempDir()
 	stderrPath := filepath.Join(tmpDir, "stderr.log")

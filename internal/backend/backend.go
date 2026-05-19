@@ -247,6 +247,7 @@ type ProvisionRequest struct {
 	SandboxID          string
 	Policy             *policy.CompiledPolicy
 	CacheOutputVolumes []CacheOutputVolumeSpec
+	Progress           ProvisionProgressFunc
 	FirecrackerConfig
 }
 
