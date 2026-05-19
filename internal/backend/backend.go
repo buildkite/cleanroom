@@ -276,6 +276,7 @@ type CacheOutputVolumeSpec struct {
 	BlockName         string
 	CacheKey          string
 	VolumeID          string
+	MinimumBytes      int64
 	SourceSnapshotRef string
 	StorageDriver     string
 	StorageRef        string
@@ -413,7 +414,7 @@ type FirecrackerConfig struct {
 	// Backends may provide this as logical capacity or a larger backend default;
 	// it is not an exact host-disk allocation promise. Zero means fall back to
 	// the backend's package-level default.
-	MinimumCacheOutputVolumeBytes int64
+	MinimumCacheOutputVolumeBytes             int64
 	DarwinVZNetworkMode                       string
 	DarwinVZNetworkSubnet                     string
 	DarwinVZNetworkExternalInterface          string

@@ -41,8 +41,9 @@ func TestDependencyBlockVolumeOutputSpecsBuildsHitAndMissSpecs(t *testing.T) {
 				},
 			},
 			{
-				BlockName: "go-modules",
-				CacheKey:  "dependency-volume:v1:go-modules",
+				BlockName:               "go-modules",
+				CacheKey:                "dependency-volume:v1:go-modules",
+				CacheOutputMinimumBytes: 20 << 30,
 				Outputs: policy.StageBlockOutputs{
 					Dirs:  []string{"/root/go/pkg/mod"},
 					Files: []string{"/root/.cache/go-build/README"},
@@ -91,6 +92,9 @@ func TestDependencyBlockVolumeOutputSpecsBuildsHitAndMissSpecs(t *testing.T) {
 	}
 	if got, want := miss.FileMappings[0].Subpath, "files/0"; got != want {
 		t.Fatalf("unexpected miss file subpath: got %q want %q", got, want)
+	}
+	if got, want := miss.MinimumBytes, int64(20<<30); got != want {
+		t.Fatalf("unexpected miss minimum bytes: got %d want %d", got, want)
 	}
 	if hit.VolumeID == "" || miss.VolumeID == "" || hit.VolumeID == miss.VolumeID {
 		t.Fatalf("expected stable distinct volume IDs, got hit=%q miss=%q", hit.VolumeID, miss.VolumeID)

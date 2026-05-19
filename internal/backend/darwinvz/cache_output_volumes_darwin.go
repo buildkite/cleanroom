@@ -20,9 +20,9 @@ const defaultDarwinVZCacheOutputVolumeMinimumBytes int64 = cacheoutput.DefaultVo
 const darwinVZCacheOutputGuestMountRoot = cacheoutput.GuestMountRoot
 
 var (
-	darwinVZCacheOutputVolumeMinimumBytes          = defaultDarwinVZCacheOutputVolumeMinimumBytes
-	createEmptyDarwinVZCacheOutputExt4ImageFn      = createEmptyDarwinVZCacheOutputExt4Image
-	prepareDarwinVZCacheOutputWritableVolumeFn     = prepareDarwinVZCacheOutputWritableVolume
+	darwinVZCacheOutputVolumeMinimumBytes      = defaultDarwinVZCacheOutputVolumeMinimumBytes
+	createEmptyDarwinVZCacheOutputExt4ImageFn  = createEmptyDarwinVZCacheOutputExt4Image
+	prepareDarwinVZCacheOutputWritableVolumeFn = prepareDarwinVZCacheOutputWritableVolume
 )
 
 type preparedDarwinVZCacheOutputVolume struct {
@@ -37,6 +37,14 @@ func resolveDarwinVZCacheOutputVolumeMinimumBytes(cfg backend.FirecrackerConfig)
 		return cfg.MinimumCacheOutputVolumeBytes
 	}
 	return darwinVZCacheOutputVolumeMinimumBytes
+}
+
+func effectiveDarwinVZCacheOutputVolumeMinimumBytes(cfg backend.FirecrackerConfig, spec backend.CacheOutputVolumeSpec) int64 {
+	minimumBytes := resolveDarwinVZCacheOutputVolumeMinimumBytes(cfg)
+	if spec.MinimumBytes > minimumBytes {
+		return spec.MinimumBytes
+	}
+	return minimumBytes
 }
 
 func prepareDarwinVZCacheOutputVolumes(ctx context.Context, cfg backend.FirecrackerConfig, sandboxID, runDir string, specs []backend.CacheOutputVolumeSpec) ([]preparedDarwinVZCacheOutputVolume, func(), error) {
@@ -78,7 +86,7 @@ func prepareDarwinVZCacheOutputVolumes(ctx context.Context, cfg backend.Firecrac
 		}
 		runtimeVolumeID := darwinVZCacheOutputRuntimeVolumeID(sandboxID, spec.VolumeID, i)
 		attachmentPath := filepath.Join(runDir, fmt.Sprintf("cache-output-%02d.ext4", i))
-		volume, volumeCleanup, err := prepareDarwinVZCacheOutputWritableVolumeFn(ctx, volumeCfg, runtimeVolumeID, attachmentPath, sourceRef, resolveDarwinVZCacheOutputVolumeMinimumBytes(volumeCfg))
+		volume, volumeCleanup, err := prepareDarwinVZCacheOutputWritableVolumeFn(ctx, volumeCfg, runtimeVolumeID, attachmentPath, sourceRef, effectiveDarwinVZCacheOutputVolumeMinimumBytes(volumeCfg, spec))
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("cache output volume %q: %w", spec.VolumeID, err)
@@ -103,7 +111,7 @@ func darwinVZCacheOutputVolumeSource(ctx context.Context, cfg backend.Firecracke
 	}
 	if sourceRef == "" {
 		sourceRef = filepath.Join(runDir, "cache-output-empty-base.ext4")
-		if err := createEmptyDarwinVZCacheOutputExt4ImageFn(ctx, sourceRef, resolveDarwinVZCacheOutputVolumeMinimumBytes(volumeCfg)); err != nil {
+		if err := createEmptyDarwinVZCacheOutputExt4ImageFn(ctx, sourceRef, effectiveDarwinVZCacheOutputVolumeMinimumBytes(volumeCfg, spec)); err != nil {
 			return "", volumeCfg, fmt.Errorf("create empty cache output volume source: %w", err)
 		}
 		return sourceRef, volumeCfg, nil
