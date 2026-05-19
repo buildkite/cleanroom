@@ -4,6 +4,7 @@ ARG MISE_VERSION=v2026.4.5
 ARG CODEX_VERSION=0.106.0
 ARG CLAUDE_CODE_VERSION=2.1.63
 ARG GEMINI_CLI_VERSION=0.31.0
+ARG PI_CODING_AGENT_VERSION=0.52.9
 
 # `gemini` currently needs native build deps on Alpine and GNU `env` for `env -S`.
 RUN apk add --no-cache \
@@ -28,19 +29,25 @@ RUN mise settings add trusted_config_paths /workspace
 RUN mise use -g --pin \
   npm:@openai/codex@"${CODEX_VERSION}" \
   npm:@anthropic-ai/claude-code@"${CLAUDE_CODE_VERSION}" \
-  npm:@google/gemini-cli@"${GEMINI_CLI_VERSION}"
+  npm:@google/gemini-cli@"${GEMINI_CLI_VERSION}" \
+  npm:@mariozechner/pi-coding-agent@"${PI_CODING_AGENT_VERSION}" \
+  && npm cache clean --force \
+  && rm -rf /root/.cache /root/.npm /tmp/*
 
 # Ensure agent binaries are available on the default PATH even when OCI env
 # metadata is not propagated.
 RUN ln -sf /root/.local/share/mise/shims/codex /usr/local/bin/codex \
   && ln -sf /root/.local/share/mise/shims/claude /usr/local/bin/claude \
-  && ln -sf /root/.local/share/mise/shims/gemini /usr/local/bin/gemini
+  && ln -sf /root/.local/share/mise/shims/gemini /usr/local/bin/gemini \
+  && ln -sf /root/.local/share/mise/shims/pi /usr/local/bin/pi
 
 ENV PATH="/root/.local/share/mise/shims:${PATH}"
 
 RUN mise --version && node --version && npm --version && python3 --version \
   && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" codex --version \
   && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" claude --version \
-  && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" gemini --version
+  && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" gemini --version \
+  && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" pi --version \
+  && rm -rf /root/.cache /root/.npm /tmp/*
 
 CMD ["/bin/sh"]
