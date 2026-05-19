@@ -201,6 +201,39 @@ func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
 	}
 }
 
+func TestAgentBaseImagesAnnotatePinnedAgentCLIsForRenovate(t *testing.T) {
+	t.Parallel()
+
+	wantAnnotations := map[string]string{
+		"CODEX_VERSION":           "# renovate: datasource=npm depName=@openai/codex",
+		"CLAUDE_CODE_VERSION":     "# renovate: datasource=npm depName=@anthropic-ai/claude-code",
+		"GEMINI_CLI_VERSION":      "# renovate: datasource=npm depName=@google/gemini-cli",
+		"PI_CODING_AGENT_VERSION": "# renovate: datasource=npm depName=@mariozechner/pi-coding-agent",
+	}
+
+	for _, relPath := range []string{
+		"Dockerfile.base-image-agents",
+		"Dockerfile.base-image-debian-agents",
+	} {
+		relPath := relPath
+		t.Run(relPath, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(filepath.Join(".", relPath))
+			if err != nil {
+				t.Fatalf("read %s: %v", relPath, err)
+			}
+
+			dockerfile := string(raw)
+			for argName, annotation := range wantAnnotations {
+				if !strings.Contains(dockerfile, annotation+"\nARG "+argName+"=") {
+					t.Fatalf("%s does not annotate %s for Renovate", relPath, argName)
+				}
+			}
+		})
+	}
+}
+
 func TestPublishedBaseImagesExposeMiseShimsOnPATH(t *testing.T) {
 	t.Parallel()
 

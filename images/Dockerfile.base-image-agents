@@ -1,9 +1,13 @@
 FROM alpine:3.22
 
 ARG MISE_VERSION=v2026.4.5
+# renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.106.0
+# renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.63
+# renovate: datasource=npm depName=@google/gemini-cli
 ARG GEMINI_CLI_VERSION=0.31.0
+# renovate: datasource=npm depName=@mariozechner/pi-coding-agent
 ARG PI_CODING_AGENT_VERSION=0.52.9
 
 # `gemini` currently needs native build deps on Alpine and GNU `env` for `env -S`.
