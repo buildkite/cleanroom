@@ -110,6 +110,24 @@ Kernel:
 
 - if configured kernel exists, use it
 - otherwise resolve and cache a managed kernel asset under XDG data paths
+- `backends.darwin-vz.kernel_image` is an explicit local kernel path override
+
+To build the experimental minimal rootfs-profile kernel locally:
+
+```bash
+mise run build:kernel:darwin-vz-minimal-rootfs
+```
+
+Then point runtime config at the generated kernel:
+
+```yaml
+backends:
+  darwin-vz:
+    kernel_image: /path/to/cleanroom/dist/darwin-vz-minimal-rootfs-arm64-kernel-6.1.155-Image
+```
+
+Use `kernel_image` for local kernel experiments. The managed kernel fallback
+remains the default when `kernel_image` is empty or inaccessible.
 
 Rootfs:
 

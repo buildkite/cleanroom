@@ -28,6 +28,14 @@ run = "scripts/build-go.sh"
 description = "Build macOS darwin-vz helper into dist/"
 run = "{% if os() == \"macos\" %}scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app{% else %}true{% endif %}"
 
+[tasks."build:kernel:darwin-vz-minimal-initrd"]
+description = "Build minimal darwin-vz initrd-profile Linux kernel into dist/"
+run = "CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_PROFILE=initrd benchmarks/darwin-vz/minimal/build-kernel.sh"
+
+[tasks."build:kernel:darwin-vz-minimal-rootfs"]
+description = "Build minimal darwin-vz rootfs-profile Linux kernel into dist/"
+run = "CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_PROFILE=rootfs benchmarks/darwin-vz/minimal/build-kernel.sh"
+
 [tasks."build:image:alpine"]
 description = "Build local alpine base image"
 run = "docker build -f images/Dockerfile.base-image -t cleanroom-base:alpine ."

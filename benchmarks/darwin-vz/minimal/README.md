@@ -30,6 +30,15 @@ To build the minimal kernel first:
 scripts/benchmark-darwin-vz-minimal.sh --build-kernel --iterations 30
 ```
 
+To build the rootfs-profile kernel for the Cleanroom `darwin-vz` backend:
+
+```bash
+mise run build:kernel:darwin-vz-minimal-rootfs
+```
+
+Then set `backends.darwin-vz.kernel_image` to the generated
+`dist/darwin-vz-minimal-rootfs-arm64-kernel-6.1.155-Image` path.
+
 To test whether VZ releases host footprint after guest free-page reporting without an explicit balloon target:
 
 ```bash
