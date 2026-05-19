@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -53,12 +54,10 @@ func TestResolveRootFSPathDerivesFromPolicyImageRef(t *testing.T) {
 	t.Parallel()
 
 	adapter := New()
-	var gotMinimumBytes int64
-	adapter.ensurePreparedRootFSFn = func(_ context.Context, imageRef string, minimumBytes int64) (preparedRootFS, error) {
+	adapter.ensurePreparedRootFSFn = func(_ context.Context, imageRef string) (preparedRootFS, error) {
 		if got, want := imageRef, "ghcr.io/buildkite/cleanroom-base/alpine@sha256:def"; got != want {
 			t.Fatalf("unexpected image ref: got %q want %q", got, want)
 		}
-		gotMinimumBytes = minimumBytes
 		return preparedRootFS{
 			Ref:    imageRef,
 			Digest: "sha256:def",
@@ -92,9 +91,6 @@ func TestResolveRootFSPathDerivesFromPolicyImageRef(t *testing.T) {
 	if notice == "" {
 		t.Fatal("expected non-empty derivation notice")
 	}
-	if got, want := gotMinimumBytes, int64(9<<20); got != want {
-		t.Fatalf("unexpected minimum rootfs bytes: got %d want %d", got, want)
-	}
 }
 
 func TestResolveRootFSPathRequiresImageRefWhenRootFSUnset(t *testing.T) {
@@ -114,10 +110,7 @@ func TestResolveRootFSPathFallsBackWhenConfiguredRootFSMissing(t *testing.T) {
 	t.Parallel()
 
 	adapter := New()
-	adapter.ensurePreparedRootFSFn = func(_ context.Context, imageRef string, minimumBytes int64) (preparedRootFS, error) {
-		if minimumBytes != 0 {
-			t.Fatalf("unexpected minimum rootfs bytes: got %d want 0", minimumBytes)
-		}
+	adapter.ensurePreparedRootFSFn = func(_ context.Context, imageRef string) (preparedRootFS, error) {
 		return preparedRootFS{
 			Ref:    imageRef,
 			Digest: "sha256:xyz",
@@ -150,18 +143,49 @@ func TestResolveRootFSPathFallsBackWhenConfiguredRootFSMissing(t *testing.T) {
 	}
 }
 
-func TestRuntimeRootFSCacheKeyIncludesAlignedMinimumRootFSBytes(t *testing.T) {
+func TestRuntimeBaseKeyForImageIgnoresWritableRootFSMinimum(t *testing.T) {
 	t.Parallel()
 
-	baseKey := runtimeRootFSCacheKey("sha256:def", "guest-agent", 0)
-	minimumKey := runtimeRootFSCacheKey("sha256:def", "guest-agent", (9<<20)+1)
-	alignedEquivalentKey := runtimeRootFSCacheKey("sha256:def", "guest-agent", 12<<20)
-
-	if baseKey == minimumKey {
-		t.Fatal("expected minimum rootfs bytes to change prepared rootfs cache key")
+	adapter := New()
+	adapter.newImageManager = func() (imageEnsurer, error) {
+		return stubImageEnsurer{result: imagemgr.EnsureResult{
+			Record: imagemgr.Record{
+				Digest:     "sha256:def",
+				Ref:        "ghcr.io/buildkite/cleanroom-base/alpine@sha256:def",
+				RootFSPath: "/tmp/prepared-image.ext4",
+			},
+			CacheHit: true,
+		}}, nil
 	}
-	if minimumKey != alignedEquivalentKey {
-		t.Fatalf("expected cache key to use aligned minimum size: got %q want %q", minimumKey, alignedEquivalentKey)
+	adapter.guestAgentOnce.Do(func() {
+		adapter.guestAgentPath = "/tmp/cleanroom-guest-agent-linux-arm64"
+		adapter.guestAgentHash = "guest-agent"
+	})
+
+	baseKey, err := adapter.RuntimeBaseKey(context.Background(), &policy.CompiledPolicy{
+		ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:def",
+	}, backend.FirecrackerConfig{})
+	if err != nil {
+		t.Fatalf("RuntimeBaseKey without minimum returned error: %v", err)
+	}
+	minimumKey, err := adapter.RuntimeBaseKey(context.Background(), &policy.CompiledPolicy{
+		ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:def",
+	}, backend.FirecrackerConfig{
+		MinimumRootFSBytes: 9 << 20,
+	})
+	if err != nil {
+		t.Fatalf("RuntimeBaseKey with minimum returned error: %v", err)
+	}
+
+	if baseKey != minimumKey {
+		t.Fatalf("expected image-derived runtime base key to ignore writable minimum: got %q want %q", minimumKey, baseKey)
+	}
+	wantPath, err := preparedRuntimeRootFSPath("sha256:def", "guest-agent")
+	if err != nil {
+		t.Fatalf("preparedRuntimeRootFSPath returned error: %v", err)
+	}
+	if got, want := baseKey, "prepared-rootfs:"+wantPath; got != want {
+		t.Fatalf("unexpected image-derived runtime base key: got %q want %q", got, want)
 	}
 }
 
@@ -201,4 +225,13 @@ func TestRuntimeBaseKeyIncludesConfiguredRootFSMinimumRootFSBytes(t *testing.T) 
 	if minimumKey != alignedEquivalentKey {
 		t.Fatalf("expected configured rootfs runtime base key to align minimum size: got %q want %q", minimumKey, alignedEquivalentKey)
 	}
+}
+
+type stubImageEnsurer struct {
+	result imagemgr.EnsureResult
+	err    error
+}
+
+func (s stubImageEnsurer) Ensure(context.Context, string) (imagemgr.EnsureResult, error) {
+	return s.result, s.err
 }

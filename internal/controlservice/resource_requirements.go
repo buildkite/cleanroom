@@ -2,7 +2,9 @@ package controlservice
 
 import (
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const mibBytes int64 = 1 << 20
@@ -36,8 +38,16 @@ func withPolicyResourceMinimums(cfg backend.FirecrackerConfig, resources *policy
 	}
 	if resources.DiskBytes > cfg.MinimumRootFSBytes {
 		cfg.MinimumRootFSBytes = resources.DiskBytes
+		cfg.MinimumRootFSBytesSource = backend.RootFSMinimumSourcePolicy
 	}
 	return cfg
+}
+
+func rootFSMinimumTraceAttributes(cfg backend.FirecrackerConfig) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.Int64(observability.AttrRootFSMinimumBytes, cfg.MinimumRootFSBytes),
+		attribute.String(observability.AttrRootFSMinimumSource, backend.EffectiveRootFSMinimumSource(cfg)),
+	}
 }
 
 func bytesToMiBCeil(value int64) int64 {

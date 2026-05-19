@@ -155,6 +155,13 @@ structured logs where applicable:
 - `cleanroom.command.argc`
 - `cleanroom.command.name`
 - `cleanroom.command.summary`
+- `cleanroom.rootfs.minimum_bytes`
+- `cleanroom.rootfs.minimum_source`
+
+`cleanroom.rootfs.minimum_source` identifies the winning writable rootfs disk
+floor source, such as `config`, `policy`, `repository_bootstrap`, or
+`docker_repository_bootstrap`. See [Storage](storage.md#writable-sandbox-rootfs)
+for how those floors are resolved.
 
 ### Outcomes and reason codes
 

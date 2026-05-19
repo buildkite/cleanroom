@@ -29,13 +29,17 @@ func TestWithPolicyResourceMinimumsRaisesLowerRuntimeConfig(t *testing.T) {
 	if got.MinimumRootFSBytes != 16<<30 {
 		t.Fatalf("unexpected minimum_rootfs_bytes: got %d want %d", got.MinimumRootFSBytes, int64(16<<30))
 	}
+	if got, want := got.MinimumRootFSBytesSource, backend.RootFSMinimumSourcePolicy; got != want {
+		t.Fatalf("unexpected minimum_rootfs_bytes source: got %q want %q", got, want)
+	}
 }
 
 func TestWithPolicyResourceMinimumsPreservesHigherRuntimeConfig(t *testing.T) {
 	cfg := backend.FirecrackerConfig{
-		VCPUs:              8,
-		MemoryMiB:          8192,
-		MinimumRootFSBytes: 64 << 30,
+		VCPUs:                    8,
+		MemoryMiB:                8192,
+		MinimumRootFSBytes:       64 << 30,
+		MinimumRootFSBytesSource: backend.RootFSMinimumSourceConfig,
 	}
 
 	got := withPolicyResourceMinimums(cfg, &policy.Resources{
@@ -52,6 +56,9 @@ func TestWithPolicyResourceMinimumsPreservesHigherRuntimeConfig(t *testing.T) {
 	}
 	if got.MinimumRootFSBytes != cfg.MinimumRootFSBytes {
 		t.Fatalf("minimum_rootfs_bytes should preserve higher runtime ceiling: got %d want %d", got.MinimumRootFSBytes, cfg.MinimumRootFSBytes)
+	}
+	if got.MinimumRootFSBytesSource != cfg.MinimumRootFSBytesSource {
+		t.Fatalf("minimum_rootfs_bytes source should preserve higher runtime ceiling: got %q want %q", got.MinimumRootFSBytesSource, cfg.MinimumRootFSBytesSource)
 	}
 }
 

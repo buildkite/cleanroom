@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -402,6 +403,25 @@ const (
 	DefaultMemoryMiB int64 = 512
 )
 
+const (
+	RootFSMinimumSourceUnset                     = "unset"
+	RootFSMinimumSourceUnknown                   = "unknown"
+	RootFSMinimumSourceConfig                    = "config"
+	RootFSMinimumSourcePolicy                    = "policy"
+	RootFSMinimumSourceRepositoryBootstrap       = "repository_bootstrap"
+	RootFSMinimumSourceDockerRepositoryBootstrap = "docker_repository_bootstrap"
+)
+
+func EffectiveRootFSMinimumSource(cfg FirecrackerConfig) string {
+	if cfg.MinimumRootFSBytes <= 0 {
+		return RootFSMinimumSourceUnset
+	}
+	if source := strings.TrimSpace(cfg.MinimumRootFSBytesSource); source != "" {
+		return source
+	}
+	return RootFSMinimumSourceUnknown
+}
+
 type FirecrackerConfig struct {
 	BinaryPath      string
 	KernelImagePath string
@@ -409,7 +429,8 @@ type FirecrackerConfig struct {
 	// MinimumRootFSBytes is a writable rootfs capacity floor. Backends may
 	// provide this as logical capacity or a larger backend default; it is not an
 	// exact host-disk allocation promise.
-	MinimumRootFSBytes int64
+	MinimumRootFSBytes       int64
+	MinimumRootFSBytesSource string
 	// MinimumCacheOutputVolumeBytes is a per-cache-output-volume capacity floor.
 	// Backends may provide this as logical capacity or a larger backend default;
 	// it is not an exact host-disk allocation promise. Zero means fall back to

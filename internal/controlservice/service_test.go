@@ -7276,6 +7276,9 @@ func TestCreateSandboxSetsRepositoryBootstrapRootFSMinimum(t *testing.T) {
 	if got, want := adapter.provisionReq.FirecrackerConfig.MinimumRootFSBytes, repositoryBootstrapDockerMinimumRootFSBytes; got != want {
 		t.Fatalf("unexpected minimum_rootfs_bytes: got %d want %d", got, want)
 	}
+	if got, want := adapter.provisionReq.FirecrackerConfig.MinimumRootFSBytesSource, backend.RootFSMinimumSourceDockerRepositoryBootstrap; got != want {
+		t.Fatalf("unexpected minimum_rootfs_bytes source: got %q want %q", got, want)
+	}
 }
 
 func TestCreateExecutionRejectsWhenSandboxBusy(t *testing.T) {

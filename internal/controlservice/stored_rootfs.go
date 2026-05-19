@@ -14,6 +14,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type storedRootFSRecord struct {
@@ -113,6 +114,8 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	firecrackerCfg = withPolicyResourceMinimums(firecrackerCfg, effectivePolicy.Resources)
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withSnapshotDriver(backendName, firecrackerCfg, record.StorageDriver)
+	rootFSAttrs := rootFSMinimumTraceAttributes(firecrackerCfg)
+	trace.SpanFromContext(ctx).SetAttributes(rootFSAttrs...)
 
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
@@ -163,11 +166,12 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	s.ensureMapsLocked()
 	s.sandboxes[sandboxID] = state
 	s.mu.Unlock()
-	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_snapshot", []attribute.KeyValue{
+	restoreAttrs := append([]attribute.KeyValue{
 		attribute.String(observability.AttrBackend, backendName),
 		attribute.String(observability.AttrSandboxID, sandboxID),
 		attribute.String("cleanroom.source_kind", sourceKind),
-	}, func(ctx context.Context) error {
+	}, rootFSAttrs...)
+	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_snapshot", restoreAttrs, func(ctx context.Context) error {
 		return snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
 			SandboxID:          sandboxID,
 			SnapshotID:         provisionSnapshotID,

@@ -285,9 +285,8 @@ func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZS
 	switch defaultBackend {
 	case "darwin-vz":
 		tpl.Backends.DarwinVZ = &runtimeConfigDarwinVZ{
-			KernelImage:        "",
-			RootFS:             "",
-			MinimumRootFSBytes: "4GiB",
+			KernelImage: "",
+			RootFS:      "",
 			Services: runtimeConfigServices{
 				Docker: runtimeConfigDockerService{
 					StartupTimeoutSeconds: 20,

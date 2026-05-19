@@ -90,6 +90,9 @@ cleanroom system prune --all --older-than 7d
 `system prune` protects active sandboxes and does not delete explicit snapshots
 by default. Use `cleanroom snapshot rm` for named snapshots.
 
+See [Storage](storage.md#inspect-and-prune) for storage categories, sizing
+sources, and startup diagnostics.
+
 ## Observability
 
 Cleanroom can emit OTLP traces and metrics, and can write structured logs:

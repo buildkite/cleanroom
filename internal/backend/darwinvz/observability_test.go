@@ -45,12 +45,14 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 	helperTimingMS[darwinVZTimingRootFSInspectValidate] = 14
 
 	obs := darwinVZRunObservation{
-		ExecutionID:    "run-123",
-		Backend:        "darwin-vz",
-		LaunchedVM:     true,
-		RunDir:         runDir,
-		RootFSCopyMS:   27,
-		HelperTimingMS: helperTimingMS,
+		ExecutionID:         "run-123",
+		Backend:             "darwin-vz",
+		LaunchedVM:          true,
+		RunDir:              runDir,
+		RootFSMinimumBytes:  16 << 30,
+		RootFSMinimumSource: backend.RootFSMinimumSourceDockerRepositoryBootstrap,
+		RootFSCopyMS:        27,
+		HelperTimingMS:      helperTimingMS,
 	}
 	applyDarwinVZHelperTimings(&obs, obs.HelperTimingMS)
 
@@ -75,6 +77,12 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 	}
 	if got, want := payload["rootfs_copy_ms"], float64(27); got != want {
 		t.Fatalf("unexpected rootfs_copy_ms: got %v want %v", got, want)
+	}
+	if got, want := payload["rootfs_minimum_bytes"], float64(16<<30); got != want {
+		t.Fatalf("unexpected rootfs_minimum_bytes: got %v want %v", got, want)
+	}
+	if got, want := payload["rootfs_minimum_source"], backend.RootFSMinimumSourceDockerRepositoryBootstrap; got != want {
+		t.Fatalf("unexpected rootfs_minimum_source: got %v want %v", got, want)
 	}
 	if got, want := payload["total_ms"], float64(1500); got != want {
 		t.Fatalf("unexpected total_ms: got %v want %v", got, want)
@@ -141,8 +149,10 @@ func TestRecordLaunchPhaseObservabilityAddsTraceEvents(t *testing.T) {
 	ctx, span := tracerProvider.Tracer("test").Start(context.Background(), "cleanroom.test")
 	adapter := &Adapter{}
 	adapter.recordLaunchPhaseObservability(ctx, darwinVZRunObservation{
-		RootFSCopyMS: 27,
-		VMReadyMS:    321,
+		RootFSCopyMS:        27,
+		VMReadyMS:           321,
+		RootFSMinimumBytes:  16 << 30,
+		RootFSMinimumSource: backend.RootFSMinimumSourceDockerRepositoryBootstrap,
 		HelperTimingMS: map[string]int64{
 			darwinVZTimingGuestExecReadyProbe: 401,
 			darwinVZTimingGuestAgentStartup:   35,
@@ -161,6 +171,12 @@ func TestRecordLaunchPhaseObservabilityAddsTraceEvents(t *testing.T) {
 	requireLaunchPhaseEvent(t, spans[0], darwinVZTimingGuestAgentStartup, "35")
 	requireNoLaunchPhaseEvent(t, spans[0], "helper_zero")
 	requireNoLaunchPhaseEvent(t, spans[0], "helper_"+darwinVZTimingGuestAgentStartup)
+	if got, want := spanAttributeValue(spans[0], observability.AttrRootFSMinimumBytes), fmt.Sprint(16<<30); got != want {
+		t.Fatalf("unexpected rootfs minimum bytes span attribute: got %q want %q", got, want)
+	}
+	if got, want := spanAttributeValue(spans[0], observability.AttrRootFSMinimumSource), backend.RootFSMinimumSourceDockerRepositoryBootstrap; got != want {
+		t.Fatalf("unexpected rootfs minimum source span attribute: got %q want %q", got, want)
+	}
 }
 
 func TestDarwinVZGuestBootTimingBootArgRequiresRecordingSpan(t *testing.T) {
@@ -331,6 +347,15 @@ func requireNoLaunchPhaseEvent(t *testing.T, span sdktrace.ReadOnlySpan, phase s
 
 func eventAttributeValue(event sdktrace.Event, key string) string {
 	for _, attr := range event.Attributes {
+		if string(attr.Key) == key {
+			return fmt.Sprint(attr.Value.AsInterface())
+		}
+	}
+	return ""
+}
+
+func spanAttributeValue(span sdktrace.ReadOnlySpan, key string) string {
+	for _, attr := range span.Attributes() {
 		if string(attr.Key) == key {
 			return fmt.Sprint(attr.Value.AsInterface())
 		}

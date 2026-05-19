@@ -215,6 +215,9 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
 		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
 		out.MinimumRootFSBytes = int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes)
+		if out.MinimumRootFSBytes > 0 {
+			out.MinimumRootFSBytesSource = backend.RootFSMinimumSourceConfig
+		}
 		out.DarwinVZNetworkMode = cfg.Backends.DarwinVZ.Network.Mode
 		out.DarwinVZNetworkSubnet = cfg.Backends.DarwinVZ.Network.Subnet
 		out.DarwinVZNetworkExternalInterface = cfg.Backends.DarwinVZ.Network.ExternalInterface

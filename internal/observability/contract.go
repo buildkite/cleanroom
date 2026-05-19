@@ -88,6 +88,8 @@ const (
 	AttrVMLaunched             = "cleanroom.vm.launched"
 	AttrLaunchPhase            = "cleanroom.launch.phase"
 	AttrLaunchPhaseDurationMS  = "cleanroom.launch.phase.duration_ms"
+	AttrRootFSMinimumBytes     = "cleanroom.rootfs.minimum_bytes"
+	AttrRootFSMinimumSource    = "cleanroom.rootfs.minimum_source"
 	AttrExitCode               = "cleanroom.exit_code"
 
 	LogFieldTraceID     = "trace_id"

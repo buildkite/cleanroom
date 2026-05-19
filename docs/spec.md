@@ -180,6 +180,7 @@ explicit request-time changeset input.
 - `sandbox.resources.memory` and `sandbox.resources.disk` must be positive byte sizes. They accept raw bytes or size strings such as `4096MiB`, `8GiB`, or `16GiB`.
 - Resource floors raise the effective backend runtime settings when the host runtime config is lower; they do not lower larger host defaults.
 - Backends decide how effective resource ceilings map to host resources.
+- See [Storage](storage.md#writable-sandbox-rootfs) for how disk floors apply to the writable rootfs and how they differ from image and cache-output sizing.
 - Sandbox API responses include `effective_resources`, which reports the resolved vCPU, memory, and disk ceilings after backend config, defaults, and policy resource floors are merged.
 - `effective_resources.vcpus` is a launch-time CPU ceiling; Cleanroom does not hotplug CPUs into an already running sandbox.
 - `sandbox.docker.required` defaults to `false`; when true, Cleanroom starts the guest Docker daemon for the sandbox.

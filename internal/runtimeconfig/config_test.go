@@ -1577,6 +1577,9 @@ func TestMergeBackendConfig(t *testing.T) {
 	if got, want := darwinCfg.MinimumRootFSBytes, int64(2147483648); got != want {
 		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
 	}
+	if got, want := darwinCfg.MinimumRootFSBytesSource, backend.RootFSMinimumSourceConfig; got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes source: got %q want %q", got, want)
+	}
 	if got, want := darwinCfg.DarwinVZNetworkMode, "filehandle"; got != want {
 		t.Fatalf("unexpected darwin-vz network mode: got %q want %q", got, want)
 	}

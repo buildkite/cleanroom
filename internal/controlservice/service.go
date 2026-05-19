@@ -486,6 +486,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withPolicyResourceMinimums(firecrackerCfg, compiled.Resources)
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
+	span.SetAttributes(rootFSMinimumTraceAttributes(firecrackerCfg)...)
 
 	var replacedWorkspaceStageRecord *cachestore.Record
 	var replacedDependencyStageRecord *cachestore.Record
