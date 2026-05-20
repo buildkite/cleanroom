@@ -8,6 +8,7 @@ import (
 )
 
 const miseBuildkitePluginRef = "github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0"
+const miseBuildkitePluginVersion = "2026.5.12"
 const setupGoBuildkitePluginRef = "github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91"
 
 func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
@@ -27,6 +28,7 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		`- label: ":shell: Shellcheck"
     plugins:
       - ` + miseBuildkitePluginRef + `:
+          version: "` + miseBuildkitePluginVersion + `"
     command: shellcheck`,
 		`- label: ":test_tube: Test (Linux)"
     plugins:
@@ -70,6 +72,7 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
     if: build.tag != null
     plugins:
       - ` + miseBuildkitePluginRef + `:
+          version: "` + miseBuildkitePluginVersion + `"
     command: scripts/ci-buildkite-release.sh`,
 	} {
 		if !strings.Contains(pipeline, snippet) {
