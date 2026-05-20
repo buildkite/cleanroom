@@ -69,6 +69,63 @@ func TestEnsureCachesAndReusesImage(t *testing.T) {
 	}
 }
 
+func TestEnsureReusesDigestCacheFileWhenMetadataIsMissing(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("create cache dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	rootFSPath := filepath.Join(cacheDir, strings.TrimPrefix(digest, "sha256:")+".ext4")
+	if err := os.WriteFile(rootFSPath, []byte("fake-ext4"), 0o644); err != nil {
+		t.Fatalf("write cached rootfs: %v", err)
+	}
+
+	pulls := 0
+	manager, err := New(Options{
+		CacheDir:       cacheDir,
+		MetadataDBPath: dbPath,
+		PullImage: func(context.Context, string) (io.ReadCloser, OCIConfig, error) {
+			pulls++
+			return nil, OCIConfig{}, errors.New("registry should not be used")
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	result, err := manager.Ensure(context.Background(), testImageRef)
+	if err != nil {
+		t.Fatalf("Ensure returned error: %v", err)
+	}
+	if !result.CacheHit {
+		t.Fatal("expected digest cache file to be reused as a cache hit")
+	}
+	if pulls != 0 {
+		t.Fatalf("expected no registry pulls, got %d", pulls)
+	}
+	if got := result.Record.RootFSPath; got != rootFSPath {
+		t.Fatalf("unexpected rootfs path: got %q want %q", got, rootFSPath)
+	}
+
+	items, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected recovered metadata row, got %d entries", len(items))
+	}
+	if got := items[0].Digest; got != digest {
+		t.Fatalf("unexpected recovered digest: got %q want %q", got, digest)
+	}
+}
+
 func TestEnsureRejectsIncompatibleImagePlatformOnPull(t *testing.T) {
 	t.Parallel()
 
@@ -184,6 +241,43 @@ func TestEnsureRetriesStalledRootFSStream(t *testing.T) {
 	}
 	if pulls != 2 {
 		t.Fatalf("expected stalled stream to be retried once, got %d pulls", pulls)
+	}
+}
+
+func TestEnsureRetriesTimedOutImageResolve(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	pulls := 0
+	manager, err := New(Options{
+		CacheDir:              cacheDir,
+		MetadataDBPath:        dbPath,
+		ResolveAttempts:       2,
+		ResolveAttemptTimeout: 5 * time.Millisecond,
+		PullImage: func(ctx context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+			pulls++
+			<-ctx.Done()
+			return nil, OCIConfig{}, ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	_, err = manager.Ensure(context.Background(), testImageRef)
+	if err == nil {
+		t.Fatal("expected Ensure to fail after timed out resolve attempts")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline error, got %v", err)
+	}
+	if pulls != 2 {
+		t.Fatalf("expected timed out resolve to be retried once, got %d pulls", pulls)
 	}
 }
 
