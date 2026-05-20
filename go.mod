@@ -18,7 +18,7 @@ require (
 	github.com/mdlayher/netlink v1.11.2
 	github.com/mdlayher/vsock v1.2.1
 	github.com/miekg/dns v1.1.72
-	github.com/quic-go/quic-go v0.54.1
+	github.com/quic-go/quic-go v0.59.1
 	github.com/sirupsen/logrus v1.9.4
 	go.jetify.com/typeid v1.3.0
 	go.opentelemetry.io/otel v1.43.0
@@ -98,7 +98,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/prometheus v0.64.0 // indirect
-	go.uber.org/mock v0.5.0 // indirect
+	go.uber.org/mock v0.5.2 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 // indirect
