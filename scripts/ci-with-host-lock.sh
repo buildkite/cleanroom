@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-
 usage() {
   echo "usage: $0 <lock-key> <command> [args...]" >&2
 }
@@ -91,46 +89,6 @@ run_wrapped_command() {
   return "$status"
 }
 
-if [[ "${1:-}" == "--internal-run-wrapped" ]]; then
-  shift
-  run_wrapped_command "$@"
-  exit $?
-fi
-
-run_with_file_lock() {
-  local lock_dir="${CLEANROOM_CI_HOST_LOCK_DIR:-/tmp/cleanroom-ci-host-locks}"
-  local lock_file="$lock_dir/$safe_lock_key.lock"
-  local lock_fd
-  local status
-
-  mkdir -p "$lock_dir"
-  chmod 1777 "$lock_dir" 2>/dev/null || true
-  touch "$lock_file"
-  chmod 666 "$lock_file" 2>/dev/null || true
-
-  if command -v flock >/dev/null 2>&1; then
-    echo "--- :lock: Acquire host file lock ($lock_key at $lock_file)"
-    exec {lock_fd}>"$lock_file"
-    flock "$lock_fd"
-    set +e
-    run_wrapped_command "$@"
-    status=$?
-    set -e
-    flock -u "$lock_fd" || true
-    exec {lock_fd}>&-
-    return "$status"
-  fi
-
-  if command -v lockf >/dev/null 2>&1; then
-    echo "--- :lock: Acquire host file lock ($lock_key at $lock_file)"
-    lockf "$lock_file" "$SCRIPT_PATH" --internal-run-wrapped "$@"
-    return $?
-  fi
-
-  echo "buildkite-agent lock failed and no host file-lock command is available for: $lock_key" >&2
-  return 127
-}
-
 if [[ "$#" -lt 2 ]]; then
   usage
   exit 64
@@ -139,7 +97,7 @@ fi
 lock_key="$1"
 shift
 
-safe_lock_key="${lock_key//[^A-Za-z0-9_.-]/_}"
+buildkite_lock_wait_timeout="${CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT:-${BUILDKITE_LOCK_WAIT_TIMEOUT:-45m}}"
 token=""
 
 release_buildkite_lock() {
@@ -164,34 +122,13 @@ release_buildkite_lock() {
   exit "$status"
 }
 
-if command -v buildkite-agent >/dev/null 2>&1; then
-  buildkite_lock_wait_timeout="${CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT:-${BUILDKITE_LOCK_WAIT_TIMEOUT:-45m}}"
-  echo "--- :lock: Acquire Buildkite host lock ($lock_key)"
-  acquire_err="$(mktemp "${TMPDIR:-/tmp}/cleanroom-host-lock.XXXXXX")"
-  trap release_buildkite_lock EXIT
-
-  set +e
-  token="$(buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key" 2>"$acquire_err")"
-  acquire_status=$?
-  set -e
-
-  if [[ "$acquire_status" -eq 0 ]]; then
-    rm -f "$acquire_err"
-    run_wrapped_command "$@"
-    exit $?
-  fi
-
-  trap - EXIT
-  token=""
-  if grep -Eiq 'timeout|timed out|deadline' "$acquire_err"; then
-    cat "$acquire_err" >&2 || true
-    rm -f "$acquire_err"
-    exit "$acquire_status"
-  fi
-
-  echo "buildkite-agent lock acquire failed; falling back to host file lock" >&2
-  cat "$acquire_err" >&2 || true
-  rm -f "$acquire_err"
+if ! command -v buildkite-agent >/dev/null 2>&1; then
+  echo "buildkite-agent is required for host locks" >&2
+  exit 127
 fi
 
-run_with_file_lock "$@"
+echo "--- :lock: Acquire Buildkite host lock ($lock_key)"
+trap release_buildkite_lock EXIT
+token="$(buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key")"
+
+run_wrapped_command "$@"

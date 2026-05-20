@@ -185,17 +185,11 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 		`git -C "$workspace_dir" remote set-url origin "$source_origin_url"`,
 		`cd "$workspace_dir" && "$@"`,
 		`trap release_buildkite_lock EXIT`,
+		`buildkite-agent is required for host locks`,
 		`buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key"`,
 		`buildkite-agent lock release "$lock_key" "$token"`,
 		`buildkite-agent lock release failed for: $lock_key`,
-		`buildkite-agent lock acquire failed; falling back to host file lock`,
-		`grep -Eiq 'timeout|timed out|deadline' "$acquire_err"`,
 		`CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT:-${BUILDKITE_LOCK_WAIT_TIMEOUT:-45m}`,
-		`CLEANROOM_CI_HOST_LOCK_DIR:-/tmp/cleanroom-ci-host-locks`,
-		`chmod 1777 "$lock_dir"`,
-		`chmod 666 "$lock_file"`,
-		`flock "$lock_fd"`,
-		`lockf "$lock_file" "$SCRIPT_PATH" --internal-run-wrapped "$@"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-with-host-lock.sh to contain %q", needle)
@@ -203,6 +197,16 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 	}
 	if strings.Contains(script, `buildkite-agent lock release "$lock_key" "$token" || true`) {
 		t.Fatalf("expected ci-with-host-lock.sh to fail successful jobs when Buildkite lock release fails")
+	}
+	for _, needle := range []string{
+		`falling back to host file lock`,
+		`CLEANROOM_CI_HOST_LOCK_DIR`,
+		`flock`,
+		`lockf`,
+	} {
+		if strings.Contains(script, needle) {
+			t.Fatalf("expected ci-with-host-lock.sh to use Buildkite agent locks only, found %q", needle)
+		}
 	}
 }
 
