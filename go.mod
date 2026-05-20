@@ -7,7 +7,7 @@ require (
 	connectrpc.com/otelconnect v0.9.0
 	github.com/alecthomas/kong v1.14.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
-	github.com/buildkite/content-cache v1.2.1-0.20260419015425-0213634165a8
+	github.com/buildkite/content-cache v1.3.0
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/log v0.4.2
 	github.com/containers/gvisor-tap-vsock v0.8.7
