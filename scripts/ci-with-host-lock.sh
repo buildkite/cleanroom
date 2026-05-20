@@ -42,7 +42,10 @@ run_wrapped_command() {
 
   local workspace_parent="${CLEANROOM_CI_WORKSPACE_PARENT:-${TMPDIR:-/tmp}}"
   local workspace_dir
+  local source_origin_url
   local status
+
+  source_origin_url="$(git config --get remote.origin.url || true)"
 
   mkdir -p "$workspace_parent"
   workspace_dir="$(mktemp -d "$workspace_parent/cleanroom-ci-workspace.XXXXXX")"
@@ -64,6 +67,17 @@ run_wrapped_command() {
   if [[ "$status" -ne 0 ]]; then
     rm -rf "$workspace_dir"
     return "$status"
+  fi
+
+  if [[ -n "$source_origin_url" ]]; then
+    set +e
+    git -C "$workspace_dir" remote set-url origin "$source_origin_url"
+    status=$?
+    set -e
+    if [[ "$status" -ne 0 ]]; then
+      rm -rf "$workspace_dir"
+      return "$status"
+    fi
   fi
 
   set +e
