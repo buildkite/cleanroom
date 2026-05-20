@@ -171,7 +171,7 @@ func Run(args []string, version string) (runErr error) {
 			"firecracker": firecracker.New(),
 			"darwin-vz":   darwinvz.New(),
 		}
-		configureBackendRuntimeConfig(runtimeCtx.Backends, cfg)
+		configureBackendRuntimeConfig(runtimeCtx.Backends, cfg, version)
 
 		if commandUsesStartupObservability(ctx) {
 			obsRuntime, err := observability.Start(context.Background(), observability.Options{
@@ -216,9 +216,10 @@ func commandUsesStartupObservability(ctx *kong.Context) bool {
 	return !strings.HasPrefix(strings.TrimSpace(ctx.Command()), "daemon ")
 }
 
-func configureBackendRuntimeConfig(backends map[string]backend.Adapter, cfg runtimeconfig.Config) {
+func configureBackendRuntimeConfig(backends map[string]backend.Adapter, cfg runtimeconfig.Config, version string) {
 	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
 		darwinAdapter.ConfiguredNetworkMode = strings.TrimSpace(cfg.Backends.DarwinVZ.Network.Mode)
+		darwinAdapter.Version = strings.TrimSpace(version)
 	}
 }
 

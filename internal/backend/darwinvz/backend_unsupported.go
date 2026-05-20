@@ -21,6 +21,7 @@ type Adapter struct {
 	MeterProvider    metric.MeterProvider
 
 	ConfiguredNetworkMode string
+	Version               string
 }
 
 func New() *Adapter {

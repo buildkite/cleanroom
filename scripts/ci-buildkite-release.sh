@@ -42,6 +42,21 @@ download_darwin_release_artifacts() {
   done
 }
 
+download_kernel_release_artifacts() {
+  local archive_path
+
+  mkdir -p "${RELEASE_EXTRA_DIR}"
+  rm -rf "${RELEASE_EXTRA_DIR}/kernels"
+  rm -f "${RELEASE_EXTRA_DIR}/kernels.tar.gz"
+
+  buildkite-agent artifact download "release-extra/kernels.tar.gz" "${REPO_ROOT}"
+
+  archive_path="${RELEASE_EXTRA_DIR}/kernels.tar.gz"
+  [[ -f "${archive_path}" ]] || die "missing downloaded kernel release archive: ${archive_path}"
+  tar -xzf "${archive_path}" -C "${RELEASE_EXTRA_DIR}"
+  [[ -d "${RELEASE_EXTRA_DIR}/kernels" ]] || die "missing extracted kernel release directory: ${RELEASE_EXTRA_DIR}/kernels"
+}
+
 build_linux_release_extras() {
   mkdir -p "${RELEASE_EXTRA_DIR}/linux_amd64" "${RELEASE_EXTRA_DIR}/linux_arm64"
 
@@ -53,7 +68,7 @@ build_linux_release_extras() {
 
 publish_github_release() {
   local github_token release_json upload_url
-  local -a pkg_assets
+  local -a extra_assets pkg_assets kernel_assets
 
   github_token="$(normalize_secret_value "$(fetch_secret CLEANROOM_GITHUB_RELEASE_TOKEN)")"
   [[ -n "${github_token}" ]] || die "CLEANROOM_GITHUB_RELEASE_TOKEN is empty"
@@ -82,7 +97,12 @@ publish_github_release() {
     "${RELEASE_EXTRA_DIR}/darwin_amd64/cleanroom_Darwin_x86_64.pkg.sha256"
   )
 
-  for asset_path in "${pkg_assets[@]}"; do
+  mapfile -t kernel_assets < <(find "${RELEASE_EXTRA_DIR}/kernels" -maxdepth 1 -type f | sort)
+  [[ "${#kernel_assets[@]}" -gt 0 ]] || die "missing kernel release assets in ${RELEASE_EXTRA_DIR}/kernels"
+
+  extra_assets=("${pkg_assets[@]}" "${kernel_assets[@]}")
+
+  for asset_path in "${extra_assets[@]}"; do
     local asset_name asset_id
 
     [[ -f "${asset_path}" ]] || die "missing release asset: ${asset_path}"
@@ -134,6 +154,9 @@ git fetch --tags origin
 
 echo "--- :package: Download signed macOS release artifacts"
 download_darwin_release_artifacts
+
+echo "--- :package: Download kernel release artifacts"
+download_kernel_release_artifacts
 
 echo "--- :hammer: Build Linux release extras"
 build_linux_release_extras

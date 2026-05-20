@@ -481,6 +481,6 @@ func (s *DaemonCommand) reloadRuntimeConfig(ctx *runtimeContext) error {
 			"darwin-vz":   darwinvz.New(),
 		}
 	}
-	configureBackendRuntimeConfig(ctx.Backends, cfg)
+	configureBackendRuntimeConfig(ctx.Backends, cfg, ctx.Version)
 	return nil
 }

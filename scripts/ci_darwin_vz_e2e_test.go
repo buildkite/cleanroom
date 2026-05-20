@@ -232,10 +232,15 @@ func TestBuildkiteReleaseScriptPublishesGitHubRelease(t *testing.T) {
 		`fetch_secret CLEANROOM_GITHUB_RELEASE_TOKEN`,
 		`[[ -n "${BUILDKITE_TAG:-}" ]] || die "BUILDKITE_TAG is required for release publishing"`,
 		`buildkite-agent artifact download "release-extra/darwin_*.tar.gz"`,
+		`buildkite-agent artifact download "release-extra/kernels.tar.gz"`,
 		`tar -xzf "${archive_path}" -C "${RELEASE_EXTRA_DIR}"`,
+		`[[ -d "${RELEASE_EXTRA_DIR}/kernels" ]] || die "missing extracted kernel release directory: ${RELEASE_EXTRA_DIR}/kernels"`,
 		`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"`,
 		`GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"`,
 		`goreleaser release --clean`,
+		`mapfile -t kernel_assets < <(find "${RELEASE_EXTRA_DIR}/kernels" -maxdepth 1 -type f | sort)`,
+		`extra_assets=("${pkg_assets[@]}" "${kernel_assets[@]}")`,
+		`for asset_path in "${extra_assets[@]}"; do`,
 		`"${GITHUB_API_BASE}/releases/tags/${BUILDKITE_TAG}"`,
 		`"${GITHUB_API_BASE}/releases/assets/${asset_id}"`,
 		`"${upload_url}?name=${asset_name}"`,
@@ -244,6 +249,55 @@ func TestBuildkiteReleaseScriptPublishesGitHubRelease(t *testing.T) {
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-buildkite-release.sh to contain %q", needle)
+		}
+	}
+}
+
+func TestBuildkiteDarwinVZKernelReleaseScriptBuildsArtifacts(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-darwin-vz-kernel-release.sh")
+	if err != nil {
+		t.Fatalf("read ci-darwin-vz-kernel-release.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`KERNEL_RELEASE_DIR="${REPO_ROOT}/release-extra/kernels"`,
+		`"${SCRIPT_DIR}/build-darwin-vz-minimal-kernel-release.sh" "${KERNEL_RELEASE_DIR}"`,
+		`tar -C "${REPO_ROOT}/release-extra" -czf "${REPO_ROOT}/release-extra/kernels.tar.gz" kernels`,
+		`buildkite-agent artifact upload "release-extra/kernels.tar.gz"`,
+		`buildkite-agent artifact upload "release-extra/kernels/*"`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-darwin-vz-kernel-release.sh to contain %q", needle)
+		}
+	}
+}
+
+func TestDarwinVZMinimalKernelReleaseScriptPinsRootFSAssets(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("build-darwin-vz-minimal-kernel-release.sh")
+	if err != nil {
+		t.Fatalf("read build-darwin-vz-minimal-kernel-release.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`KERNEL_VERSION="${CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_VERSION:-6.1.155}"`,
+		`KERNEL_PROFILE="${CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_PROFILE:-rootfs}"`,
+		`release kernel profile must be rootfs`,
+		`release kernel arch must be arm64`,
+		`ASSET_BASE="${CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_ASSET_BASE:-cleanroom-darwin-vz-minimal-${KERNEL_PROFILE}-${KERNEL_ARCH}-linux-${KERNEL_VERSION}}"`,
+		`CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_DOCKER_IMAGE="${DOCKER_IMAGE}"`,
+		`CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_TARBALL_SHA256="${KERNEL_TARBALL_SHA256}"`,
+		`"manifest": os.environ["ASSET_BASE"] + ".manifest.json",`,
+		`"repository": os.environ["SOURCE_REPOSITORY"],`,
+		`"tag": os.environ["RELEASE_TAG"],`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected build-darwin-vz-minimal-kernel-release.sh to contain %q", needle)
 		}
 	}
 }
