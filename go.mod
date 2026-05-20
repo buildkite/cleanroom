@@ -13,9 +13,9 @@ require (
 	github.com/containers/gvisor-tap-vsock v0.8.7
 	github.com/creack/pty v1.1.24
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
-	github.com/florianl/go-nflog/v2 v2.2.0
+	github.com/florianl/go-nflog/v2 v2.3.0
 	github.com/google/go-containerregistry v0.20.2
-	github.com/mdlayher/netlink v1.7.2
+	github.com/mdlayher/netlink v1.9.1-0.20260312172110-2a932c0fc1ae
 	github.com/mdlayher/vsock v1.2.1
 	github.com/miekg/dns v1.1.72
 	github.com/quic-go/quic-go v0.54.1
@@ -75,7 +75,7 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
-	github.com/mdlayher/socket v0.5.0 // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
