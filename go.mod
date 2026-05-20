@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	connectrpc.com/connect v1.19.2
 	connectrpc.com/otelconnect v0.9.0
-	github.com/alecthomas/kong v1.14.0
+	github.com/alecthomas/kong v1.15.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/buildkite/content-cache v1.2.1-0.20260419015425-0213634165a8
 	github.com/charmbracelet/lipgloss v1.1.0
