@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -281,6 +282,60 @@ func TestEnsureRetriesTimedOutImageResolve(t *testing.T) {
 	}
 }
 
+func TestEnsureKeepsActiveRootFSStreamPastResolveAttemptDeadline(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	pulls := 0
+	manager, err := New(Options{
+		CacheDir:              cacheDir,
+		MetadataDBPath:        dbPath,
+		ResolveAttemptTimeout: 5 * time.Millisecond,
+		MaterializeRootFS: func(_ context.Context, stream io.Reader, outputPath string) (int64, error) {
+			if _, err := io.Copy(io.Discard, stream); err != nil {
+				return 0, err
+			}
+			if err := os.WriteFile(outputPath, []byte("fake-ext4"), 0o644); err != nil {
+				return 0, err
+			}
+			return int64(len("fake-ext4")), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	manager.pullImage = func(resolveCtx, streamCtx context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		pulls++
+		if err := resolveCtx.Err(); err != nil {
+			return nil, OCIConfig{}, err
+		}
+		return &delayedContextReadCloser{
+				reader: bytes.NewReader(testRootFSTar(t)),
+				ctx:    streamCtx,
+				delay:  25 * time.Millisecond,
+			}, OCIConfig{
+				OS:           "linux",
+				Architecture: NormalizePlatformArch(runtime.GOARCH),
+			}, nil
+	}
+
+	result, err := manager.Ensure(context.Background(), testImageRef)
+	if err != nil {
+		t.Fatalf("Ensure returned error for active stream after resolve deadline: %v", err)
+	}
+	if result.CacheHit {
+		t.Fatal("expected active stream to materialize a fresh image")
+	}
+	if pulls != 1 {
+		t.Fatalf("expected one pull for active stream, got %d", pulls)
+	}
+}
+
 func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +373,28 @@ func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
 type blockingReadCloser struct {
 	closed chan struct{}
 	once   sync.Once
+}
+
+type delayedContextReadCloser struct {
+	reader  *bytes.Reader
+	ctx     context.Context
+	delay   time.Duration
+	checked bool
+}
+
+func (r *delayedContextReadCloser) Read(p []byte) (int, error) {
+	if !r.checked {
+		time.Sleep(r.delay)
+		r.checked = true
+		if err := r.ctx.Err(); err != nil {
+			return 0, fmt.Errorf("stream context should remain active after resolve deadline: %w", err)
+		}
+	}
+	return r.reader.Read(p)
+}
+
+func (r *delayedContextReadCloser) Close() error {
+	return nil
 }
 
 func newBlockingReadCloser() *blockingReadCloser {
@@ -575,7 +652,7 @@ func newTestManager(t *testing.T, pullFn func(context.Context, string) (io.ReadC
 	}
 
 	if manager.pullImage == nil {
-		manager.pullImage = func(_ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		manager.pullImage = func(_, _ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
 			return io.NopCloser(bytes.NewReader(testRootFSTar(t))), OCIConfig{}, nil
 		}
 	}

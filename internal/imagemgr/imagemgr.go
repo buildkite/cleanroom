@@ -73,12 +73,14 @@ type Options struct {
 	RootFSStreamIdleTimeout time.Duration
 }
 
+type pullImageFunc func(resolveCtx, streamCtx context.Context, ref string) (io.ReadCloser, OCIConfig, error)
+
 type Manager struct {
 	cacheDir                string
 	metadataDBPath          string
 	mkfsBinary              string
 	now                     func() time.Time
-	pullImage               func(context.Context, string) (io.ReadCloser, OCIConfig, error)
+	pullImage               pullImageFunc
 	materialize             func(context.Context, io.Reader, string) (int64, error)
 	resolveAttempts         int
 	resolveAttemptTimeout   time.Duration
@@ -145,7 +147,9 @@ func New(opts Options) (*Manager, error) {
 		manager.rootFSStreamIdleTimeout = opts.RootFSStreamIdleTimeout
 	}
 	if opts.PullImage != nil {
-		manager.pullImage = opts.PullImage
+		manager.pullImage = func(resolveCtx, _ context.Context, ref string) (io.ReadCloser, OCIConfig, error) {
+			return opts.PullImage(resolveCtx, ref)
+		}
 	} else {
 		manager.pullImage = pullImageFromRegistry
 	}
@@ -207,7 +211,7 @@ func (m *Manager) Ensure(ctx context.Context, ref string) (EnsureResult, error) 
 	var lastErr error
 	for attempt := 1; attempt <= m.resolveAttempts; attempt++ {
 		attemptCtx, cancelAttempt := m.resolveAttemptContext(ctx)
-		tarStream, config, err := m.pullImage(attemptCtx, parsedRef.Original)
+		tarStream, config, err := m.pullImage(attemptCtx, ctx, parsedRef.Original)
 		if err != nil {
 			cancelAttempt()
 			lastErr = err
@@ -340,7 +344,7 @@ func (m *Manager) resolveOCIConfigFromRegistry(ctx context.Context, ref string) 
 	if m == nil || m.pullImage == nil {
 		return OCIConfig{}, fmt.Errorf("image puller is not configured")
 	}
-	stream, config, err := m.pullImage(ctx, ref)
+	stream, config, err := m.pullImage(ctx, ctx, ref)
 	if stream != nil {
 		_ = stream.Close()
 	}
