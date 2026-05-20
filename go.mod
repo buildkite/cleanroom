@@ -3,7 +3,7 @@ module github.com/buildkite/cleanroom
 go 1.26.2
 
 require (
-	connectrpc.com/connect v1.19.2
+	connectrpc.com/connect v1.20.0
 	connectrpc.com/otelconnect v0.9.0
 	github.com/alecthomas/kong v1.15.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
