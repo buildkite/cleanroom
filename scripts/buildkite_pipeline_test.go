@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const miseBuildkitePluginRef = "github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0"
+const miseBuildkitePluginRef = "github.com/lox/mise-buildkite-plugin#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2"
 const miseBuildkitePluginVersion = "2026.5.12"
 const setupGoBuildkitePluginRef = "github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91"
 
