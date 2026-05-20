@@ -111,6 +111,29 @@ func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
 	}
 }
 
+func TestCiExamplesDarwinVZUsesCgroupCapableKernelForDockerSmoke(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-examples-darwin-vz.sh")
+	if err != nil {
+		t.Fatalf("read ci-examples-darwin-vz.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		"DARWIN_VZ_DOCKER_KERNEL_URL",
+		"DARWIN_VZ_DOCKER_KERNEL_SHA256",
+		"ensure_darwin_vz_docker_kernel",
+		"Download cgroup-capable darwin-vz Docker kernel",
+		`DARWIN_VZ_KERNEL_IMAGE="$(ensure_darwin_vz_docker_kernel)"`,
+		`echo "    kernel_image: $DARWIN_VZ_KERNEL_IMAGE" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-examples-darwin-vz.sh to contain %q", needle)
+		}
+	}
+}
+
 func TestBuildDarwinVZHelperUsesSharedPackager(t *testing.T) {
 	t.Helper()
 

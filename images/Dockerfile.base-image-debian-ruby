@@ -1,6 +1,6 @@
 FROM ruby:3.4.9-slim-bookworm
 
-ARG MISE_VERSION=v2026.4.5
+ARG MISE_VERSION=v2026.5.12
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \

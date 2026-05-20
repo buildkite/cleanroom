@@ -4,6 +4,37 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
+DARWIN_VZ_DOCKER_KERNEL_URL="${CLEANROOM_DARWIN_VZ_DOCKER_KERNEL_URL:-https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/aarch64/vmlinux-6.1.155}"
+DARWIN_VZ_DOCKER_KERNEL_SHA256="${CLEANROOM_DARWIN_VZ_DOCKER_KERNEL_SHA256:-61baeae1ac6197be4fc5c71fa78df266acdc33c54570290d2f611c2b42c105be}"
+DARWIN_VZ_DOCKER_KERNEL_PATH="${CLEANROOM_DARWIN_VZ_DOCKER_KERNEL_PATH:-$HOME/.cache/cleanroom/ci-kernels/darwin-vz-docker-vmlinux-6.1.155}"
+
+ensure_darwin_vz_docker_kernel() {
+  local kernel_path="$DARWIN_VZ_DOCKER_KERNEL_PATH"
+  local tmp_kernel
+
+  mkdir -p "$(dirname "$kernel_path")"
+
+  if [[ -f "$kernel_path" ]]; then
+    if printf '%s  %s\n' "$DARWIN_VZ_DOCKER_KERNEL_SHA256" "$kernel_path" | shasum -a 256 -c - >/dev/null 2>&1; then
+      printf '%s\n' "$kernel_path"
+      return 0
+    fi
+    rm -f "$kernel_path"
+  fi
+
+  tmp_kernel="${kernel_path}.tmp.$$"
+  echo "--- :penguin: Download cgroup-capable darwin-vz Docker kernel" >&2
+  if ! curl -fsSL "$DARWIN_VZ_DOCKER_KERNEL_URL" -o "$tmp_kernel"; then
+    rm -f "$tmp_kernel"
+    return 1
+  fi
+  if ! printf '%s  %s\n' "$DARWIN_VZ_DOCKER_KERNEL_SHA256" "$tmp_kernel" | shasum -a 256 -c - >/dev/null; then
+    rm -f "$tmp_kernel"
+    return 1
+  fi
+  mv "$tmp_kernel" "$kernel_path"
+  printf '%s\n' "$kernel_path"
+}
 
 echo "--- :hammer: Building binaries"
 scripts/build-go.sh
@@ -43,6 +74,9 @@ export XDG_DATA_HOME="$tmpdir/d"
 export CLEANROOM_DARWIN_VZ_HELPER="$helper_path"
 
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
+if [[ -z "$DARWIN_VZ_KERNEL_IMAGE" ]]; then
+  DARWIN_VZ_KERNEL_IMAGE="$(ensure_darwin_vz_docker_kernel)"
+fi
 mkdir -p "$XDG_CONFIG_HOME/cleanroom"
 cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: darwin-vz

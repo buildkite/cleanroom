@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const expectedMiseVersion = "v2026.4.5"
+const expectedMiseVersion = "v2026.5.12"
 const expectedPICodingAgentVersion = "0.52.9"
 
 func publishedBaseDockerfiles() []string {
