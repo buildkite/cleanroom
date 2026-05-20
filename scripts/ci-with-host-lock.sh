@@ -16,19 +16,22 @@ shift
 safe_lock_key="${lock_key//[^A-Za-z0-9_.-]/_}"
 
 run_with_file_lock() {
-  local lock_dir="${TMPDIR:-/tmp}/cleanroom-ci-host-locks"
+  local lock_dir="${CLEANROOM_CI_HOST_LOCK_DIR:-/tmp/cleanroom-ci-host-locks}"
   local lock_file="$lock_dir/$safe_lock_key.lock"
 
   mkdir -p "$lock_dir"
+  chmod 1777 "$lock_dir" 2>/dev/null || true
+  touch "$lock_file"
+  chmod 666 "$lock_file" 2>/dev/null || true
 
   if command -v flock >/dev/null 2>&1; then
-    echo "--- :lock: Acquire host file lock ($lock_key)"
+    echo "--- :lock: Acquire host file lock ($lock_key at $lock_file)"
     flock "$lock_file" "$@"
     return $?
   fi
 
   if command -v lockf >/dev/null 2>&1; then
-    echo "--- :lock: Acquire host file lock ($lock_key)"
+    echo "--- :lock: Acquire host file lock ($lock_key at $lock_file)"
     lockf "$lock_file" "$@"
     return $?
   fi

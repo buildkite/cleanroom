@@ -181,6 +181,9 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 		`buildkite-agent lock release "$lock_key" "$token"`,
 		`trap release_buildkite_lock EXIT`,
 		`buildkite-agent lock acquire failed; falling back to host file lock`,
+		`CLEANROOM_CI_HOST_LOCK_DIR:-/tmp/cleanroom-ci-host-locks`,
+		`chmod 1777 "$lock_dir"`,
+		`chmod 666 "$lock_file"`,
 		`flock "$lock_file" "$@"`,
 		`lockf "$lock_file" "$@"`,
 	} {
