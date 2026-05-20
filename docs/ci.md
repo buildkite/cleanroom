@@ -20,6 +20,9 @@ Backend E2E and examples smoke jobs use `scripts/ci-with-host-lock.sh` to
 serialize VM work per physical host instead of pipeline-wide concurrency
 groups. The wrapper prefers Buildkite agent locks when the agent's `agent-api`
 experiment is enabled, and falls back to OS-level host file locks otherwise.
+Native Buildkite lock acquisition waits up to 45 minutes by default; set
+`CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT` or `BUILDKITE_LOCK_WAIT_TIMEOUT` to
+override that duration.
 Fallback locks live under `/tmp/cleanroom-ci-host-locks` by default so separate
 Buildkite jobs still coordinate even when each job has its own `TMPDIR`; set
 `CLEANROOM_CI_HOST_LOCK_DIR` to override that path on a host.

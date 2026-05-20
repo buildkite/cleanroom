@@ -14,6 +14,7 @@ lock_key="$1"
 shift
 
 safe_lock_key="${lock_key//[^A-Za-z0-9_.-]/_}"
+token=""
 
 run_with_file_lock() {
   local lock_dir="${CLEANROOM_CI_HOST_LOCK_DIR:-/tmp/cleanroom-ci-host-locks}"
@@ -42,21 +43,49 @@ run_with_file_lock() {
 
 release_buildkite_lock() {
   local status=$?
+  local release_status=0
+
   if [[ -n "${token:-}" ]]; then
     echo "--- :unlock: Release host lock ($lock_key)"
-    buildkite-agent lock release "$lock_key" "$token" || true
+    set +e
+    buildkite-agent lock release "$lock_key" "$token"
+    release_status=$?
+    set -e
+
+    if [[ "$release_status" -ne 0 ]]; then
+      echo "buildkite-agent lock release failed for: $lock_key" >&2
+      if [[ "$status" -eq 0 ]]; then
+        status="$release_status"
+      fi
+    fi
   fi
+
   exit "$status"
 }
 
 if command -v buildkite-agent >/dev/null 2>&1; then
+  buildkite_lock_wait_timeout="${CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT:-${BUILDKITE_LOCK_WAIT_TIMEOUT:-45m}}"
   echo "--- :lock: Acquire Buildkite host lock ($lock_key)"
   acquire_err="$(mktemp "${TMPDIR:-/tmp}/cleanroom-host-lock.XXXXXX")"
-  if token="$(buildkite-agent lock acquire "$lock_key" 2>"$acquire_err")"; then
+  trap release_buildkite_lock EXIT
+
+  set +e
+  token="$(buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key" 2>"$acquire_err")"
+  acquire_status=$?
+  set -e
+
+  if [[ "$acquire_status" -eq 0 ]]; then
     rm -f "$acquire_err"
-    trap release_buildkite_lock EXIT
     "$@"
     exit $?
+  fi
+
+  trap - EXIT
+  token=""
+  if grep -Eiq 'timeout|timed out|deadline' "$acquire_err"; then
+    cat "$acquire_err" >&2 || true
+    rm -f "$acquire_err"
+    exit "$acquire_status"
   fi
 
   echo "buildkite-agent lock acquire failed; falling back to host file lock" >&2
