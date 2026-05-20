@@ -177,9 +177,12 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 
 	script := string(content)
 	for _, needle := range []string{
-		`token="$(buildkite-agent lock acquire "$lock_key")"`,
+		`token="$(buildkite-agent lock acquire "$lock_key"`,
 		`buildkite-agent lock release "$lock_key" "$token"`,
-		`trap cleanup EXIT`,
+		`trap release_buildkite_lock EXIT`,
+		`buildkite-agent lock acquire failed; falling back to host file lock`,
+		`flock "$lock_file" "$@"`,
+		`lockf "$lock_file" "$@"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-with-host-lock.sh to contain %q", needle)

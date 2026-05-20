@@ -17,10 +17,9 @@ The public repo owns the pipeline definition and the product-facing CI scripts:
 - `images/`
 
 Backend E2E and examples smoke jobs use `scripts/ci-with-host-lock.sh` to
-serialize VM work per physical host with Buildkite agent locks instead of
-pipeline-wide concurrency groups. Agents in the `cleanroom` and `cleanroom-mac`
-queues must run with the Buildkite `agent-api` experiment enabled so
-`buildkite-agent lock acquire` and `buildkite-agent lock release` are available.
+serialize VM work per physical host instead of pipeline-wide concurrency
+groups. The wrapper prefers Buildkite agent locks when the agent's `agent-api`
+experiment is enabled, and falls back to OS-level host file locks otherwise.
 
 On tagged builds, `scripts/ci-darwin-vz-kernel-release.sh` builds the
 experimental Apple Silicon `darwin-vz` minimal rootfs-profile kernel and uploads

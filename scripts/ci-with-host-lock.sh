@@ -13,15 +13,31 @@ fi
 lock_key="$1"
 shift
 
-if ! command -v buildkite-agent >/dev/null 2>&1; then
-  echo "buildkite-agent is required to acquire host lock: $lock_key" >&2
-  exit 127
-fi
+safe_lock_key="${lock_key//[^A-Za-z0-9_.-]/_}"
 
-echo "--- :lock: Acquire host lock ($lock_key)"
-token="$(buildkite-agent lock acquire "$lock_key")"
+run_with_file_lock() {
+  local lock_dir="${TMPDIR:-/tmp}/cleanroom-ci-host-locks"
+  local lock_file="$lock_dir/$safe_lock_key.lock"
 
-cleanup() {
+  mkdir -p "$lock_dir"
+
+  if command -v flock >/dev/null 2>&1; then
+    echo "--- :lock: Acquire host file lock ($lock_key)"
+    flock "$lock_file" "$@"
+    return $?
+  fi
+
+  if command -v lockf >/dev/null 2>&1; then
+    echo "--- :lock: Acquire host file lock ($lock_key)"
+    lockf "$lock_file" "$@"
+    return $?
+  fi
+
+  echo "buildkite-agent lock failed and no host file-lock command is available for: $lock_key" >&2
+  return 127
+}
+
+release_buildkite_lock() {
   local status=$?
   if [[ -n "${token:-}" ]]; then
     echo "--- :unlock: Release host lock ($lock_key)"
@@ -29,6 +45,20 @@ cleanup() {
   fi
   exit "$status"
 }
-trap cleanup EXIT
 
-"$@"
+if command -v buildkite-agent >/dev/null 2>&1; then
+  echo "--- :lock: Acquire Buildkite host lock ($lock_key)"
+  acquire_err="$(mktemp "${TMPDIR:-/tmp}/cleanroom-host-lock.XXXXXX")"
+  if token="$(buildkite-agent lock acquire "$lock_key" 2>"$acquire_err")"; then
+    rm -f "$acquire_err"
+    trap release_buildkite_lock EXIT
+    "$@"
+    exit $?
+  fi
+
+  echo "buildkite-agent lock acquire failed; falling back to host file lock" >&2
+  cat "$acquire_err" >&2 || true
+  rm -f "$acquire_err"
+fi
+
+run_with_file_lock "$@"
