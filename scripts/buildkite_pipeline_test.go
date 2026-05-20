@@ -53,10 +53,6 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
     command: scripts/ci-macos-release-pkg.sh`,
-		`- label: ":penguin: darwin-vz kernel release assets"
-    key: darwin-vz-kernel-release-assets
-    if: build.tag != null
-    command: scripts/ci-darwin-vz-kernel-release.sh`,
 		`- label: ":fire: E2E (Firecracker)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
@@ -87,9 +83,6 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 	if !strings.Contains(pipeline, "command: scripts/ci-macos-release-pkg.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the macOS release pkg step")
 	}
-	if !strings.Contains(pipeline, "command: scripts/ci-darwin-vz-kernel-release.sh") {
-		t.Fatalf("expected .buildkite/pipeline.yml to include the darwin-vz kernel release step")
-	}
 	if !strings.Contains(pipeline, "command: scripts/ci-buildkite-release.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the Buildkite release publish step")
 	}
@@ -103,8 +96,6 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		"scripts/ci-examples-darwin-vz.sh",
 		"scripts/build-macos-release-pkg.sh",
 		"scripts/notarize-macos-package.sh",
-		"scripts/build-darwin-vz-minimal-kernel-release.sh",
-		"scripts/ci-darwin-vz-kernel-release.sh",
 	} {
 		if !strings.Contains(pipeline, needle) {
 			t.Fatalf("expected .buildkite/pipeline.yml shellcheck command to include %q", needle)
@@ -114,6 +105,8 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		"scripts/bootstrap-buildkite-agent.sh",
 		"scripts/bootstrap-buildkite-agent-macos.sh",
 		"scripts/ci-bootstrap-linux-ssm.sh",
+		"scripts/build-darwin-vz-minimal-kernel-release.sh",
+		"scripts/ci-darwin-vz-kernel-release.sh",
 	} {
 		if strings.Contains(pipeline, needle) {
 			t.Fatalf("expected .buildkite/pipeline.yml shellcheck command not to include %q", needle)
@@ -259,7 +252,6 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 		"ci-darwin-vz-e2e.sh",
 		"ci-darwin-vz-filehandle-e2e.sh",
 		"ci-macos-release-pkg.sh",
-		"ci-darwin-vz-kernel-release.sh",
 		"ci-buildkite-release.sh",
 	} {
 		path := path
@@ -319,8 +311,6 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 		`scripts/build-macos-release-pkg.sh`,
 		`scripts/notarize-macos-package.sh`,
 		`scripts/ci-macos-release-pkg.sh`,
-		`scripts/build-darwin-vz-minimal-kernel-release.sh`,
-		`scripts/ci-darwin-vz-kernel-release.sh`,
 		`scripts/ci-buildkite-release.sh`,
 	} {
 		if !strings.Contains(mise, needle) {

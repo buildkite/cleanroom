@@ -23,12 +23,12 @@ import (
 var ErrNoManagedKernelAsset = errors.New("no managed kernel asset")
 
 const (
-	defaultGitHubAPIBase           = "https://api.github.com"
-	defaultGitHubRepository        = "buildkite/cleanroom"
-	darwinVZReleaseManifestPrefix  = "cleanroom-darwin-vz-minimal-rootfs-arm64-linux-"
-	darwinVZReleaseManifestSuffix  = ".manifest.json"
-	latestCleanroomReleaseSelector = "latest"
-	releaseManifestResolveTimeout  = 15 * time.Second
+	defaultGitHubAPIBase                 = "https://api.github.com"
+	defaultKernelReleaseGitHubRepository = "buildkite/cleanroom-kernels"
+	defaultKernelReleaseSelector         = "v0.1.0"
+	darwinVZReleaseManifestPrefix        = "cleanroom-darwin-vz-minimal-rootfs-arm64-linux-"
+	darwinVZReleaseManifestSuffix        = ".manifest.json"
+	releaseManifestResolveTimeout        = 15 * time.Second
 )
 
 type Selector struct {
@@ -59,10 +59,12 @@ type ResolveResult struct {
 }
 
 type Options struct {
-	HTTPClient       *http.Client
-	AssetsDir        func() (string, error)
-	Specs            map[Selector]KernelSpec
-	GitHubAPIBase    string
+	HTTPClient    *http.Client
+	AssetsDir     func() (string, error)
+	Specs         map[Selector]KernelSpec
+	GitHubAPIBase string
+	// GitHubRepository is the repository that hosts release-backed managed
+	// kernel artifacts.
 	GitHubRepository string
 }
 
@@ -107,7 +109,7 @@ func New(opts Options) *Manager {
 	}
 	githubRepository := strings.TrimSpace(opts.GitHubRepository)
 	if githubRepository == "" {
-		githubRepository = defaultGitHubRepository
+		githubRepository = defaultKernelReleaseGitHubRepository
 	}
 
 	return &Manager{
@@ -293,7 +295,7 @@ func (m *Manager) resolveDarwinVZReleaseKernelSpec(ctx context.Context, backendN
 		return KernelSpec{}, false, nil
 	}
 
-	release := cleanroomKernelReleaseSelector(appVersion)
+	release := defaultKernelReleaseSelector
 	cacheKey := releaseKernelCacheKey{
 		Backend: backendName,
 		GOOS:    goos,
@@ -354,7 +356,7 @@ func (m *Manager) fetchDarwinVZReleaseKernelSpec(ctx context.Context, releaseSel
 
 	manifestAsset, ok := findDarwinVZKernelManifestAsset(release.Assets)
 	if !ok {
-		return KernelSpec{}, fmt.Errorf("darwin-vz kernel manifest asset not found in Cleanroom release %s", releaseSelector)
+		return KernelSpec{}, fmt.Errorf("darwin-vz kernel manifest asset not found in kernel release %s", releaseSelector)
 	}
 
 	var manifest kernelReleaseManifest
@@ -367,7 +369,7 @@ func (m *Manager) fetchDarwinVZReleaseKernelSpec(ctx context.Context, releaseSel
 
 	imageAsset, ok := findReleaseAsset(release.Assets, manifest.Assets.Image)
 	if !ok {
-		return KernelSpec{}, fmt.Errorf("darwin-vz kernel image asset %q not found in Cleanroom release %s", manifest.Assets.Image, releaseSelector)
+		return KernelSpec{}, fmt.Errorf("darwin-vz kernel image asset %q not found in kernel release %s", manifest.Assets.Image, releaseSelector)
 	}
 	return KernelSpec{
 		ID:       manifest.ID,
@@ -378,9 +380,6 @@ func (m *Manager) fetchDarwinVZReleaseKernelSpec(ctx context.Context, releaseSel
 }
 
 func (m *Manager) releaseURL(releaseSelector string) string {
-	if releaseSelector == latestCleanroomReleaseSelector {
-		return fmt.Sprintf("%s/repos/%s/releases/latest", m.githubAPIBase, m.githubRepository)
-	}
 	return fmt.Sprintf("%s/repos/%s/releases/tags/%s", m.githubAPIBase, m.githubRepository, neturl.PathEscape(releaseSelector))
 }
 
@@ -443,36 +442,6 @@ func validateDarwinVZKernelManifest(manifest kernelReleaseManifest) error {
 	default:
 		return nil
 	}
-}
-
-func cleanroomKernelReleaseSelector(version string) string {
-	version = strings.TrimSpace(version)
-	if isCleanroomReleaseVersion(version) {
-		if strings.HasPrefix(version, "v") {
-			return version
-		}
-		return "v" + version
-	}
-	return latestCleanroomReleaseSelector
-}
-
-func isCleanroomReleaseVersion(version string) bool {
-	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
-	parts := strings.Split(version, ".")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 func (m *Manager) downloadAndVerify(ctx context.Context, spec KernelSpec, tmpPath string) error {
