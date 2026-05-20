@@ -29,6 +29,7 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
     plugins:
       - ` + miseBuildkitePluginRef + `:
           version: "` + miseBuildkitePluginVersion + `"
+          install_args: shellcheck
     command: shellcheck`,
 		`- label: ":test_tube: Test (Linux)"
     plugins:
