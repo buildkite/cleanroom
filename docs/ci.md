@@ -26,6 +26,11 @@ override that duration.
 Fallback locks live under `/tmp/cleanroom-ci-host-locks` by default so separate
 Buildkite jobs still coordinate even when each job has its own `TMPDIR`; set
 `CLEANROOM_CI_HOST_LOCK_DIR` to override that path on a host.
+Because Buildkite checks out and cleans the shared agent worktree before the
+command starts, the wrapper clones the checked-out commit into a temporary
+per-job workspace before running the backend smoke script. Set
+`CLEANROOM_CI_ISOLATE_WORKSPACE=0` to disable this, or
+`CLEANROOM_CI_WORKSPACE_PARENT` to choose the temporary workspace parent.
 
 On tagged builds, `scripts/ci-darwin-vz-kernel-release.sh` builds the
 experimental Apple Silicon `darwin-vz` minimal rootfs-profile kernel and uploads

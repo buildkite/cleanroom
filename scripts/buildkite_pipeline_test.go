@@ -177,6 +177,11 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 
 	script := string(content)
 	for _, needle := range []string{
+		`workspace_isolation_enabled()`,
+		`CLEANROOM_CI_ISOLATE_WORKSPACE:-auto`,
+		`CLEANROOM_CI_WORKSPACE_PARENT:-${TMPDIR:-/tmp}`,
+		`git clone --local --no-hardlinks --quiet "$PWD" "$workspace_dir"`,
+		`cd "$workspace_dir" && "$@"`,
 		`trap release_buildkite_lock EXIT`,
 		`buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key"`,
 		`buildkite-agent lock release "$lock_key" "$token"`,
@@ -187,8 +192,8 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 		`CLEANROOM_CI_HOST_LOCK_DIR:-/tmp/cleanroom-ci-host-locks`,
 		`chmod 1777 "$lock_dir"`,
 		`chmod 666 "$lock_file"`,
-		`flock "$lock_file" "$@"`,
-		`lockf "$lock_file" "$@"`,
+		`flock "$lock_fd"`,
+		`lockf "$lock_file" "$SCRIPT_PATH" --internal-run-wrapped "$@"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-with-host-lock.sh to contain %q", needle)
