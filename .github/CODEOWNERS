@@ -1,3 +1,4 @@
 /scripts/cleanroom-root-helper.sh @lox
+/scripts/ci-with-host-lock.sh @lox
 /scripts/ci-cleanroom-e2e.sh @lox
 /.github/CODEOWNERS @lox

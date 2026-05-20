@@ -41,11 +41,11 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		`- label: ":apple: E2E (darwin-vz)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
-    command: scripts/ci-darwin-vz-e2e.sh`,
+    command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-darwin-vz-e2e.sh`,
 		`- label: ":apple: E2E (darwin-vz filehandle)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
-    command: scripts/ci-darwin-vz-filehandle-e2e.sh`,
+    command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-darwin-vz-filehandle-e2e.sh`,
 		`- label: ":package: macOS release pkg"
     key: macos-release-pkg
     if: build.tag != null || build.branch == "codex/macos-notarized-release-pkg"
@@ -59,15 +59,15 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		`- label: ":fire: E2E (Firecracker)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
-    command: scripts/ci-cleanroom-e2e.sh`,
+    command: scripts/ci-with-host-lock.sh cleanroom-firecracker scripts/ci-cleanroom-e2e.sh`,
 		`- label: ":book: Examples (macOS)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
-    command: scripts/ci-examples-darwin-vz.sh`,
+    command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-examples-darwin-vz.sh`,
 		`- label: ":book: Examples (Linux)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
-    command: scripts/ci-examples-firecracker.sh`,
+    command: scripts/ci-with-host-lock.sh cleanroom-firecracker scripts/ci-examples-firecracker.sh`,
 		`- label: ":rocket: Publish release"
     if: build.tag != null
     plugins:
@@ -80,7 +80,7 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(pipeline, "command: scripts/ci-darwin-vz-filehandle-e2e.sh") {
+	if !strings.Contains(pipeline, "scripts/ci-darwin-vz-filehandle-e2e.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the darwin-vz filehandle e2e step")
 	}
 	if !strings.Contains(pipeline, "command: scripts/ci-macos-release-pkg.sh") {
@@ -96,6 +96,7 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		"scripts/base-image-tag.sh",
 		"scripts/install-global.sh",
 		"scripts/e2e-observability.sh",
+		"scripts/ci-with-host-lock.sh",
 		"scripts/ci-example-smoke.sh",
 		"scripts/ci-examples-firecracker.sh",
 		"scripts/ci-examples-darwin-vz.sh",
@@ -130,6 +131,14 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		t.Fatalf("expected .buildkite/pipeline.yml to set the darwin-vz vmnet helper bundle identifier")
 	}
 	for _, needle := range []string{
+		"concurrency_group: cleanroom-e2e",
+		"concurrency_group: cleanroom-darwin-vz-e2e",
+	} {
+		if strings.Contains(pipeline, needle) {
+			t.Fatalf("expected .buildkite/pipeline.yml to use host locks instead of global concurrency group %q", needle)
+		}
+	}
+	for _, needle := range []string{
 		"CLEANROOM_KERNEL_IMAGE",
 		"CLEANROOM_FIRECRACKER_BINARY",
 		"CLEANROOM_PRIVILEGED_MODE",
@@ -147,6 +156,34 @@ func TestBuildkiteCommandHookIsRemoved(t *testing.T) {
 	_, err := os.Stat("../.buildkite/hooks/command")
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected .buildkite/hooks/command to be removed, got err=%v", err)
+	}
+}
+
+func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
+	t.Parallel()
+
+	info, err := os.Stat("ci-with-host-lock.sh")
+	if err != nil {
+		t.Fatalf("stat ci-with-host-lock.sh: %v", err)
+	}
+	if info.Mode()&0111 == 0 {
+		t.Fatalf("expected ci-with-host-lock.sh to be executable")
+	}
+
+	content, err := os.ReadFile("ci-with-host-lock.sh")
+	if err != nil {
+		t.Fatalf("read ci-with-host-lock.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`token="$(buildkite-agent lock acquire "$lock_key")"`,
+		`buildkite-agent lock release "$lock_key" "$token"`,
+		`trap cleanup EXIT`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-with-host-lock.sh to contain %q", needle)
+		}
 	}
 }
 
@@ -193,6 +230,7 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 
 	for _, path := range []string{
 		"ci-cleanroom-e2e.sh",
+		"ci-with-host-lock.sh",
 		"ci-example-smoke.sh",
 		"ci-examples-firecracker.sh",
 		"ci-examples-darwin-vz.sh",
@@ -251,6 +289,7 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 		`[tasks.lint-shell]`,
 		`scripts/base-image-tag.sh`,
 		`scripts/e2e-observability.sh`,
+		`scripts/ci-with-host-lock.sh`,
 		`scripts/ci-example-smoke.sh`,
 		`scripts/ci-examples-firecracker.sh`,
 		`scripts/ci-examples-darwin-vz.sh`,
