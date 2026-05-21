@@ -8,7 +8,7 @@ import (
 )
 
 const expectedMiseVersion = "v2026.5.12"
-const expectedPICodingAgentVersion = "0.52.9"
+const expectedPICodingAgentVersion = "0.73.1"
 
 func publishedBaseDockerfiles() []string {
 	return []string{
