@@ -177,19 +177,13 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 
 	script := string(content)
 	for _, needle := range []string{
-		`workspace_isolation_enabled()`,
-		`CLEANROOM_CI_ISOLATE_WORKSPACE:-auto`,
-		`CLEANROOM_CI_WORKSPACE_PARENT:-${TMPDIR:-/tmp}`,
-		`source_origin_url="$(git config --get remote.origin.url || true)"`,
-		`git clone --local --no-hardlinks --quiet "$PWD" "$workspace_dir"`,
-		`git -C "$workspace_dir" remote set-url origin "$source_origin_url"`,
-		`cd "$workspace_dir" && "$@"`,
 		`trap release_buildkite_lock EXIT`,
 		`buildkite-agent is required for host locks`,
 		`buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key"`,
 		`buildkite-agent lock release "$lock_key" "$token"`,
 		`buildkite-agent lock release failed for: $lock_key`,
 		`CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT:-${BUILDKITE_LOCK_WAIT_TIMEOUT:-45m}`,
+		`"$@"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-with-host-lock.sh to contain %q", needle)
@@ -203,9 +197,13 @@ func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
 		`CLEANROOM_CI_HOST_LOCK_DIR`,
 		`flock`,
 		`lockf`,
+		`CLEANROOM_CI_ISOLATE_WORKSPACE`,
+		`CLEANROOM_CI_WORKSPACE_PARENT`,
+		`git clone`,
+		`cleanroom-ci-workspace`,
 	} {
 		if strings.Contains(script, needle) {
-			t.Fatalf("expected ci-with-host-lock.sh to use Buildkite agent locks only, found %q", needle)
+			t.Fatalf("expected ci-with-host-lock.sh to stay a Buildkite lock wrapper only, found %q", needle)
 		}
 	}
 }

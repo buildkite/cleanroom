@@ -22,11 +22,8 @@ groups. The wrapper uses Buildkite agent locks, so the CI agents must run with
 the `agent-api` experiment enabled. Lock acquisition waits up to 45 minutes by
 default; set `CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT` or
 `BUILDKITE_LOCK_WAIT_TIMEOUT` to override that duration.
-Because Buildkite checks out and cleans the shared agent worktree before the
-command starts, the wrapper clones the checked-out commit into a temporary
-per-job workspace before running the backend smoke script. Set
-`CLEANROOM_CI_ISOLATE_WORKSPACE=0` to disable this, or
-`CLEANROOM_CI_WORKSPACE_PARENT` to choose the temporary workspace parent.
+CI agent configuration is responsible for giving concurrent jobs distinct
+checkout directories before the command wrapper starts.
 
 On tagged builds, `scripts/ci-darwin-vz-kernel-release.sh` builds the
 experimental Apple Silicon `darwin-vz` minimal rootfs-profile kernel and uploads

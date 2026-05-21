@@ -5,90 +5,6 @@ usage() {
   echo "usage: $0 <lock-key> <command> [args...]" >&2
 }
 
-workspace_isolation_enabled() {
-  case "${CLEANROOM_CI_ISOLATE_WORKSPACE:-auto}" in
-    0 | false | no)
-      return 1
-      ;;
-    1 | true | yes)
-      return 0
-      ;;
-    auto | "")
-      [[ -n "${BUILDKITE:-}" ]]
-      ;;
-    *)
-      echo "unsupported CLEANROOM_CI_ISOLATE_WORKSPACE value: $CLEANROOM_CI_ISOLATE_WORKSPACE" >&2
-      return 2
-      ;;
-  esac
-}
-
-run_wrapped_command() {
-  local isolate_status
-  set +e
-  workspace_isolation_enabled
-  isolate_status=$?
-  set -e
-
-  if [[ "$isolate_status" -eq 1 ]]; then
-    "$@"
-    return $?
-  fi
-  if [[ "$isolate_status" -ne 0 ]]; then
-    return "$isolate_status"
-  fi
-
-  local workspace_parent="${CLEANROOM_CI_WORKSPACE_PARENT:-${TMPDIR:-/tmp}}"
-  local workspace_dir
-  local source_origin_url
-  local status
-
-  source_origin_url="$(git config --get remote.origin.url || true)"
-
-  mkdir -p "$workspace_parent"
-  workspace_dir="$(mktemp -d "$workspace_parent/cleanroom-ci-workspace.XXXXXX")"
-  echo "--- :file_folder: Isolate CI workspace ($workspace_dir)"
-
-  set +e
-  git clone --local --no-hardlinks --quiet "$PWD" "$workspace_dir"
-  status=$?
-  set -e
-  if [[ "$status" -ne 0 ]]; then
-    rm -rf "$workspace_dir"
-    return "$status"
-  fi
-
-  set +e
-  git -C "$workspace_dir" checkout --detach --quiet HEAD
-  status=$?
-  set -e
-  if [[ "$status" -ne 0 ]]; then
-    rm -rf "$workspace_dir"
-    return "$status"
-  fi
-
-  if [[ -n "$source_origin_url" ]]; then
-    set +e
-    git -C "$workspace_dir" remote set-url origin "$source_origin_url"
-    status=$?
-    set -e
-    if [[ "$status" -ne 0 ]]; then
-      rm -rf "$workspace_dir"
-      return "$status"
-    fi
-  fi
-
-  set +e
-  (
-    cd "$workspace_dir" && "$@"
-  )
-  status=$?
-  set -e
-
-  rm -rf "$workspace_dir"
-  return "$status"
-}
-
 if [[ "$#" -lt 2 ]]; then
   usage
   exit 64
@@ -131,4 +47,4 @@ echo "--- :lock: Acquire Buildkite host lock ($lock_key)"
 trap release_buildkite_lock EXIT
 token="$(buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key")"
 
-run_wrapped_command "$@"
+"$@"
