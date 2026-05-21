@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/cacheoutput"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
-	charmlog "github.com/charmbracelet/log"
 )
 
 const defaultCacheOutputVolumeMinimumBytes int64 = cacheoutput.DefaultVolumeMinimumBytes

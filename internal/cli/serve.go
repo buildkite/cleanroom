@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"charm.land/log/v2"
 	"connectrpc.com/connect"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
@@ -31,7 +32,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorystore"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
-	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )

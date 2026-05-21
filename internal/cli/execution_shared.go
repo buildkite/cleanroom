@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/log/v2"
 	"connectrpc.com/connect"
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
-	"github.com/charmbracelet/log"
 	"github.com/quic-go/quic-go"
 	"go.opentelemetry.io/otel/trace"
 )

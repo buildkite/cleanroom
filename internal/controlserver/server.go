@@ -15,6 +15,7 @@ import (
 
 	"crypto/tls"
 
+	"charm.land/log/v2"
 	"connectrpc.com/connect"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlservice"
@@ -22,7 +23,6 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
-	"github.com/charmbracelet/log"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"google.golang.org/protobuf/types/known/timestamppb"

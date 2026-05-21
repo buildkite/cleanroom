@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/content-cache/backend"
 	"github.com/buildkite/content-cache/download"
 	ccfetch "github.com/buildkite/content-cache/protocol/fetch"
@@ -20,7 +21,6 @@ import (
 	ccrubygems "github.com/buildkite/content-cache/protocol/rubygems"
 	"github.com/buildkite/content-cache/store"
 	"github.com/buildkite/content-cache/store/metadb"
-	"github.com/charmbracelet/log"
 
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"

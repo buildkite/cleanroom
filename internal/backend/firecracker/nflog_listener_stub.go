@@ -5,8 +5,8 @@ package firecracker
 import (
 	"net/netip"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
-	charmlog "github.com/charmbracelet/log"
 )
 
 type nflogListenerConfig struct {

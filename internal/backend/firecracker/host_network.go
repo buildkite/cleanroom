@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
-	charmlog "github.com/charmbracelet/log"
 )
 
 type hostNetworkConfig struct {

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/observability"
-	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"

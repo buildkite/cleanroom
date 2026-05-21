@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
-	"github.com/charmbracelet/log"
 	"golang.org/x/term"
 )
 

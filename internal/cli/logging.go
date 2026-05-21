@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
-	"github.com/charmbracelet/log"
 )
 
 func newLogger(rawLevel string, cfg runtimeconfig.ObservabilityConfig, component string) (*log.Logger, error) {

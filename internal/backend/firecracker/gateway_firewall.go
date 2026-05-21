@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
-	charmlog "github.com/charmbracelet/log"
 )
 
 // SetupGatewayFirewall installs global iptables rules that restrict access to

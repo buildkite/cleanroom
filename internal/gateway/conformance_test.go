@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/policy"
-	"github.com/charmbracelet/log"
 )
 
 func TestUpstreamTransportIsolationDisablesSharedPooling(t *testing.T) {
