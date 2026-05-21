@@ -3,7 +3,7 @@ steps:
     plugins:
       - github.com/lox/mise-buildkite-plugin#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
-    command: shellcheck -x scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/build-darwin-vz-minimal-kernel-release.sh scripts/ci-darwin-vz-kernel-release.sh scripts/ci-buildkite-release.sh
+    command: shellcheck -x scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/build-darwin-vz-minimal-kernel-release.sh scripts/ci-darwin-vz-kernel-release.sh scripts/ci-buildkite-release.sh
     cache:
       paths:
         - "~/.local/share/mise"
@@ -45,18 +45,14 @@ steps:
   - label: ":apple: E2E (darwin-vz)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: scripts/ci-darwin-vz-e2e.sh
-    concurrency: 1
-    concurrency_group: cleanroom-darwin-vz-e2e
+    command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-darwin-vz-e2e.sh
     agents:
       queue: cleanroom-mac
 
   - label: ":apple: E2E (darwin-vz filehandle)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: scripts/ci-darwin-vz-filehandle-e2e.sh
-    concurrency: 1
-    concurrency_group: cleanroom-darwin-vz-e2e
+    command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-darwin-vz-filehandle-e2e.sh
     agents:
       queue: cleanroom-mac
 
@@ -86,27 +82,21 @@ steps:
   - label: ":fire: E2E (Firecracker)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: scripts/ci-cleanroom-e2e.sh
-    concurrency: 1
-    concurrency_group: cleanroom-e2e
+    command: scripts/ci-with-host-lock.sh cleanroom-firecracker scripts/ci-cleanroom-e2e.sh
     agents:
       queue: cleanroom
 
   - label: ":book: Examples (macOS)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: scripts/ci-examples-darwin-vz.sh
-    concurrency: 1
-    concurrency_group: cleanroom-darwin-vz-e2e
+    command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-examples-darwin-vz.sh
     agents:
       queue: cleanroom-mac
 
   - label: ":book: Examples (Linux)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: scripts/ci-examples-firecracker.sh
-    concurrency: 1
-    concurrency_group: cleanroom-e2e
+    command: scripts/ci-with-host-lock.sh cleanroom-firecracker scripts/ci-examples-firecracker.sh
     agents:
       queue: cleanroom
 
