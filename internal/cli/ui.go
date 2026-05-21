@@ -2,15 +2,16 @@ package cli
 
 import (
 	"fmt"
+	stdcolor "image/color"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/endpoint"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/log"
+	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
 )
 
@@ -94,104 +95,50 @@ type terminalPalette struct {
 }
 
 func defaultTerminalPalette() terminalPalette {
-	styles := log.DefaultStyles()
+	info := terminalStyleFromLipgloss(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")))
 	return terminalPalette{
-		icon:      terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]),
-		title:     terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]),
-		text:      terminalStyleFromLipgloss(styles.Message),
-		value:     terminalStyleFromLipgloss(styles.Value),
-		muted:     terminalStyleFromLipgloss(styles.Separator),
-		separator: terminalStyleFromLipgloss(styles.Separator),
-		key:       terminalStyleFromLipgloss(styles.Key),
-		debug:     terminalStyleFromLipgloss(styles.Levels[log.DebugLevel]),
-		info:      terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]),
-		warn:      terminalStyleFromLipgloss(styles.Levels[log.WarnLevel]),
-		error:     terminalStyleFromLipgloss(styles.Levels[log.ErrorLevel]),
+		icon:      info,
+		title:     info,
+		text:      terminalStyleFromLipgloss(lipgloss.NewStyle()),
+		value:     terminalStyleFromLipgloss(lipgloss.NewStyle()),
+		muted:     terminalStyleFromLipgloss(lipgloss.NewStyle().Faint(true)),
+		separator: terminalStyleFromLipgloss(lipgloss.NewStyle().Faint(true)),
+		key:       terminalStyleFromLipgloss(lipgloss.NewStyle().Faint(true)),
+		debug:     terminalStyleFromLipgloss(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))),
+		info:      info,
+		warn:      terminalStyleFromLipgloss(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("192"))),
+		error:     terminalStyleFromLipgloss(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("204"))),
 	}
 }
 
-func terminalForegroundCode(color lipgloss.TerminalColor) string {
+func terminalForegroundCode(color stdcolor.Color) string {
 	switch c := color.(type) {
+	case nil:
+		return ""
 	case lipgloss.NoColor:
 		return ""
-	case lipgloss.Color:
-		return terminalForegroundCodeFromString(string(c))
-	case lipgloss.ANSIColor:
+	case ansi.BasicColor:
 		return "38;5;" + strconv.FormatUint(uint64(c), 10)
-	case lipgloss.CompleteColor:
-		if code := terminalForegroundCodeFromString(c.ANSI256); code != "" {
-			return code
-		}
-		if code := terminalForegroundCodeFromString(c.TrueColor); code != "" {
-			return code
-		}
-		return terminalForegroundCodeFromString(c.ANSI)
-	case lipgloss.AdaptiveColor:
-		if code := terminalForegroundCodeFromString(c.Dark); code != "" {
-			return code
-		}
-		return terminalForegroundCodeFromString(c.Light)
-	case lipgloss.CompleteAdaptiveColor:
-		if code := terminalForegroundCode(lipgloss.CompleteColor(c.Dark)); code != "" {
-			return code
-		}
-		return terminalForegroundCode(lipgloss.CompleteColor(c.Light))
-	default:
-		return ""
-	}
-}
-
-func terminalForegroundCodeFromString(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if strings.HasPrefix(value, "#") {
-		r, g, b, ok := parseHexColor(value)
-		if !ok {
+	case ansi.IndexedColor:
+		return "38;5;" + strconv.FormatUint(uint64(c), 10)
+	case lipgloss.RGBColor:
+		return fmt.Sprintf("38;2;%d;%d;%d", c.R, c.G, c.B)
+	case stdcolor.RGBA:
+		if c.A == 0 {
 			return ""
 		}
-		return fmt.Sprintf("38;2;%d;%d;%d", r, g, b)
-	}
-	if _, err := strconv.Atoi(value); err == nil {
-		return "38;5;" + value
-	}
-	return ""
-}
-
-func parseHexColor(value string) (int, int, int, bool) {
-	trimmed := strings.TrimPrefix(value, "#")
-	switch len(trimmed) {
-	case 3:
-		r, err := strconv.ParseUint(strings.Repeat(string(trimmed[0]), 2), 16, 8)
-		if err != nil {
-			return 0, 0, 0, false
+		return fmt.Sprintf("38;2;%d;%d;%d", c.R, c.G, c.B)
+	case stdcolor.NRGBA:
+		if c.A == 0 {
+			return ""
 		}
-		g, err := strconv.ParseUint(strings.Repeat(string(trimmed[1]), 2), 16, 8)
-		if err != nil {
-			return 0, 0, 0, false
-		}
-		b, err := strconv.ParseUint(strings.Repeat(string(trimmed[2]), 2), 16, 8)
-		if err != nil {
-			return 0, 0, 0, false
-		}
-		return int(r), int(g), int(b), true
-	case 6:
-		r, err := strconv.ParseUint(trimmed[0:2], 16, 8)
-		if err != nil {
-			return 0, 0, 0, false
-		}
-		g, err := strconv.ParseUint(trimmed[2:4], 16, 8)
-		if err != nil {
-			return 0, 0, 0, false
-		}
-		b, err := strconv.ParseUint(trimmed[4:6], 16, 8)
-		if err != nil {
-			return 0, 0, 0, false
-		}
-		return int(r), int(g), int(b), true
+		return fmt.Sprintf("38;2;%d;%d;%d", c.R, c.G, c.B)
 	default:
-		return 0, 0, 0, false
+		r, g, b, a := c.RGBA()
+		if a == 0 {
+			return ""
+		}
+		return fmt.Sprintf("38;2;%d;%d;%d", uint8(r>>8), uint8(g>>8), uint8(b>>8))
 	}
 }
 
