@@ -8,7 +8,7 @@ require (
 	github.com/alecthomas/kong v1.15.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/buildkite/content-cache v1.3.0
-	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/charmbracelet/lipgloss/v2 v2.0.3
 	github.com/charmbracelet/log v0.4.2
 	github.com/containers/gvisor-tap-vsock v0.8.7
 	github.com/creack/pty v1.1.24
