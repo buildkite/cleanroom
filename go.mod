@@ -8,7 +8,6 @@ require (
 	github.com/alecthomas/kong v1.15.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/buildkite/content-cache v1.3.0
-	github.com/charmbracelet/log v0.4.2
 	github.com/containers/gvisor-tap-vsock v0.8.7
 	github.com/creack/pty v1.1.24
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
@@ -53,6 +52,7 @@ require (
 
 require (
 	charm.land/lipgloss/v2 v2.0.3
+	charm.land/log/v2 v2.0.0
 	github.com/apparentlymart/go-cidr v1.1.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
