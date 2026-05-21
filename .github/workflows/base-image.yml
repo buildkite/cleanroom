@@ -124,7 +124,7 @@ jobs:
         run: |
           echo "base_tag=$(scripts/base-image-tag.sh '${{ matrix.image.name }}' '${{ matrix.image.dockerfile }}')" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: digests__${{ matrix.image.name }}__*
           path: ${{ runner.temp }}/digests
