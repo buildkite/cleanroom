@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
-	"github.com/charmbracelet/log"
 )
 
 func TestRenderStartupHeaderPlain(t *testing.T) {
@@ -216,30 +215,32 @@ func TestRenderDaemonStatusReportColorUsesLoggerPalette(t *testing.T) {
 	}
 }
 
-func TestDefaultTerminalPaletteUsesLoggerDefaults(t *testing.T) {
-	styles := log.DefaultStyles()
+func TestDefaultTerminalPaletteMatchesExpectedStyles(t *testing.T) {
 	palette := defaultTerminalPalette()
+	tests := []struct {
+		name string
+		got  terminalStyle
+		want terminalStyle
+	}{
+		{name: "icon", got: palette.icon, want: terminalStyle{foregroundCode: "38;5;86", bold: true}},
+		{name: "title", got: palette.title, want: terminalStyle{foregroundCode: "38;5;86", bold: true}},
+		{name: "text", got: palette.text, want: terminalStyle{}},
+		{name: "value", got: palette.value, want: terminalStyle{}},
+		{name: "muted", got: palette.muted, want: terminalStyle{faint: true}},
+		{name: "separator", got: palette.separator, want: terminalStyle{faint: true}},
+		{name: "key", got: palette.key, want: terminalStyle{faint: true}},
+		{name: "debug", got: palette.debug, want: terminalStyle{foregroundCode: "38;5;63", bold: true}},
+		{name: "info", got: palette.info, want: terminalStyle{foregroundCode: "38;5;86", bold: true}},
+		{name: "warn", got: palette.warn, want: terminalStyle{foregroundCode: "38;5;192", bold: true}},
+		{name: "error", got: palette.error, want: terminalStyle{foregroundCode: "38;5;204", bold: true}},
+	}
 
-	if got, want := palette.text, terminalStyleFromLipgloss(styles.Message); got != want {
-		t.Fatalf("message style mismatch: got %+v want %+v", got, want)
-	}
-	if got, want := palette.value, terminalStyleFromLipgloss(styles.Value); got != want {
-		t.Fatalf("value style mismatch: got %+v want %+v", got, want)
-	}
-	if got, want := palette.separator, terminalStyleFromLipgloss(styles.Separator); got != want {
-		t.Fatalf("separator style mismatch: got %+v want %+v", got, want)
-	}
-	if got, want := palette.key, terminalStyleFromLipgloss(styles.Key); got != want {
-		t.Fatalf("key style mismatch: got %+v want %+v", got, want)
-	}
-	if got, want := palette.info, terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]); got != want {
-		t.Fatalf("info style mismatch: got %+v want %+v", got, want)
-	}
-	if got, want := palette.warn, terminalStyleFromLipgloss(styles.Levels[log.WarnLevel]); got != want {
-		t.Fatalf("warn style mismatch: got %+v want %+v", got, want)
-	}
-	if got, want := palette.error, terminalStyleFromLipgloss(styles.Levels[log.ErrorLevel]); got != want {
-		t.Fatalf("error style mismatch: got %+v want %+v", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("style mismatch: got %+v want %+v", tt.got, tt.want)
+			}
+		})
 	}
 }
 
