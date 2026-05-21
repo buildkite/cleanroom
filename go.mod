@@ -13,6 +13,7 @@ require (
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/florianl/go-nflog/v2 v2.3.0
 	github.com/google/go-containerregistry v0.21.6
+	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048
 	github.com/mdlayher/netlink v1.11.2
 	github.com/mdlayher/vsock v1.2.1
 	github.com/miekg/dns v1.1.72
@@ -53,7 +54,6 @@ require (
 	charm.land/lipgloss/v2 v2.0.3
 	charm.land/log/v2 v2.0.0
 	github.com/apparentlymart/go-cidr v1.1.1 // indirect
-	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
