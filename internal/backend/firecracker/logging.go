@@ -3,8 +3,8 @@ package firecracker
 import (
 	"strings"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/observability"
-	charmlog "github.com/charmbracelet/log"
 )
 
 func baseFirecrackerLogger(logger *charmlog.Logger) *charmlog.Logger {

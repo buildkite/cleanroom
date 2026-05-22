@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
-	"github.com/charmbracelet/log"
 	"github.com/quic-go/quic-go"
 )
 

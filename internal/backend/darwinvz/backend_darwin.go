@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/guestexec"
 	"github.com/buildkite/cleanroom/internal/bootassets"
@@ -37,7 +38,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
-	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"

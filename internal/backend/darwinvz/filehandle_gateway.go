@@ -18,11 +18,11 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
-	"github.com/charmbracelet/log"
 	gvtap "github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"github.com/containers/gvisor-tap-vsock/pkg/tcpproxy"
 	gvtransport "github.com/containers/gvisor-tap-vsock/pkg/transport"

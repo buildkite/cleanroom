@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"testing"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
-	"github.com/charmbracelet/log"
 )
 
 type testVolumeDriver struct {

@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"charm.land/log/v2"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
-	"github.com/charmbracelet/log"
 	"github.com/miekg/dns"
 )
 

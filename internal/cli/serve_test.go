@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
@@ -24,7 +25,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
-	"github.com/charmbracelet/log"
 )
 
 func daemonInstallContext(tmpDir string, stdout *os.File) *runtimeContext {

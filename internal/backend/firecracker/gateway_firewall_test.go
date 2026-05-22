@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
-	charmlog "github.com/charmbracelet/log"
 )
 
 func TestSetupGatewayFirewall(t *testing.T) {

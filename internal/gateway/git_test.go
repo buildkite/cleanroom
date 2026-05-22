@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
-	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	tracetest "go.opentelemetry.io/otel/sdk/trace/tracetest"

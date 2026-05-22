@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
-	charmlog "github.com/charmbracelet/log"
 	"github.com/miekg/dns"
 )
 

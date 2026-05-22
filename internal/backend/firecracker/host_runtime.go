@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
-	charmlog "github.com/charmbracelet/log"
 )
 
 type hostRuntime interface {

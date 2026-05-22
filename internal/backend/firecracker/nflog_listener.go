@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	charmlog "charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
-	charmlog "github.com/charmbracelet/log"
 	nflog "github.com/florianl/go-nflog/v2"
 	"github.com/mdlayher/netlink"
 )

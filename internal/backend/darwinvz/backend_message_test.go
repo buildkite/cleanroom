@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
 )
 
 func TestDarwinVZResultMessageEmptyWithoutGuestError(t *testing.T) {

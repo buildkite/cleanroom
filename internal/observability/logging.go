@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
+	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
-	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
