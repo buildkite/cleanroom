@@ -37,7 +37,7 @@ require (
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
-	gvisor.dev/gvisor v0.0.0-20260522002848-8bae41048303
+	gvisor.dev/gvisor v0.0.0-20260519190036-266ba6c868f3
 	modernc.org/sqlite v1.50.1
 )
 
