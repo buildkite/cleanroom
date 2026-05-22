@@ -200,7 +200,12 @@ func (s *gitMirrorStore) cloneMirror(ctx context.Context, remoteURL, mirrorDir s
 		return fmt.Errorf("create mirror directory: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, "git", "clone", "--mirror", remoteURL, mirrorDir)
-	cmd.Env = s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
+	env, err := s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
+	if err != nil {
+		_ = os.RemoveAll(mirrorDir)
+		return err
+	}
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		_ = os.RemoveAll(mirrorDir)
@@ -218,7 +223,11 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "-C", mirrorDir, "fetch", "--prune", "origin")
-	cmd.Env = s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
+	env, err := s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
+	if err != nil {
+		return err
+	}
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git fetch --prune origin: %s: %w", strings.TrimSpace(string(output)), err)
@@ -227,23 +236,26 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 	return nil
 }
 
-func (s *gitMirrorStore) gitEnvWithAuth(ctx context.Context, remoteURL string, baseEnv []string) []string {
+func (s *gitMirrorStore) gitEnvWithAuth(ctx context.Context, remoteURL string, baseEnv []string) ([]string, error) {
 	env := append([]string(nil), baseEnv...)
 	key := ""
 	value := ""
 	if s != nil && s.credentials != nil {
 		header, err := s.credentials.Resolve(ctx, remoteURL)
-		if err == nil && strings.TrimSpace(header) != "" {
+		if err != nil {
+			return nil, fmt.Errorf("resolve mirror credentials: %w", err)
+		}
+		if strings.TrimSpace(header) != "" {
 			key = "http." + remoteURL + "/.extraHeader"
 			value = "Authorization: " + strings.TrimSpace(header)
 		}
 	}
 
 	if key == "" || value == "" {
-		return env
+		return env, nil
 	}
 
-	return appendGitConfigEnv(env, key, value)
+	return appendGitConfigEnv(env, key, value), nil
 }
 
 func appendGitConfigEnv(env []string, key, value string) []string {

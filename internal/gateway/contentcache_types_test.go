@@ -20,6 +20,38 @@ type comparableHandler struct{}
 
 func (comparableHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
 
+func TestCredentialInjectorReturnsCredentialErrors(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	rt := &credentialInjector{
+		base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+			}, nil
+		}),
+		credentials: failingCredentialProvider{},
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://github.com/buildkite/cleanroom.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	_, err = rt.RoundTrip(req)
+	if err == nil {
+		t.Fatal("expected credential error")
+	}
+	if !strings.Contains(err.Error(), "resolve upstream credentials") {
+		t.Fatalf("expected upstream credential context, got %v", err)
+	}
+	if called {
+		t.Fatal("base round tripper should not be called")
+	}
+}
+
 func TestPolicyValidatingRoundTripperUsesPinnedPolicyWithoutScope(t *testing.T) {
 	t.Parallel()
 

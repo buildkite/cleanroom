@@ -218,12 +218,19 @@ Host-side credentials are provided via environment variables:
 
 | Variable | Purpose |
 |----------|---------|
+| `CLEANROOM_GITHUB_APP_ID` | GitHub App ID for host-side GitHub Git authentication |
+| `CLEANROOM_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
+| `CLEANROOM_GITHUB_APP_PRIVATE_KEY` | PEM-encoded GitHub App private key |
+| `CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE` | Path to PEM-encoded GitHub App private key; mutually exclusive with `CLEANROOM_GITHUB_APP_PRIVATE_KEY` |
 | `CLEANROOM_GITHUB_TOKEN` | GitHub authentication |
 | `CLEANROOM_GITLAB_TOKEN` | GitLab authentication |
 
 Credentials are injected into upstream requests by the gateway. They are never
-exposed to the guest environment. The same host-side credential provider chain
-is used by the embedded `content-cache` upstream clients.
+exposed to the guest environment. GitHub App credentials take precedence for
+`github.com` Git remotes when configured; token mint failures fail the upstream
+request instead of falling back to unauthenticated Git or host credential
+helpers. The same host-side credential provider chain is used by the embedded
+`content-cache` upstream clients.
 
 ## Configuration
 

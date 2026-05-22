@@ -109,7 +109,12 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	interactiveLogger := logger.With("subsystem", "interactive-quic")
 
 	gwRegistry := gateway.NewRegistry()
+	githubAppCredentials, err := gateway.NewGitHubAppCredentialProviderFromEnv()
+	if err != nil {
+		return fmt.Errorf("configure GitHub App credentials: %w", err)
+	}
 	gwCredentials := gateway.NewChainCredentialProvider(
+		githubAppCredentials,
 		gateway.NewEnvCredentialProvider(),
 		gateway.NewGitCredentialFillProvider(ctx.CWD, nil),
 	)
