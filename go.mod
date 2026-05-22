@@ -13,7 +13,7 @@ require (
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/florianl/go-nflog/v2 v2.3.0
 	github.com/google/go-containerregistry v0.21.6
-	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048
+	github.com/inetaf/tcpproxy v0.0.0-20260515195445-c159a6051109
 	github.com/mdlayher/netlink v1.11.2
 	github.com/mdlayher/vsock v1.2.1
 	github.com/miekg/dns v1.1.72
