@@ -24,9 +24,9 @@ import (
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 	gvtap "github.com/containers/gvisor-tap-vsock/pkg/tap"
-	"github.com/containers/gvisor-tap-vsock/pkg/tcpproxy"
 	gvtransport "github.com/containers/gvisor-tap-vsock/pkg/transport"
 	gvtypes "github.com/containers/gvisor-tap-vsock/pkg/types"
+	"github.com/inetaf/tcpproxy"
 	mdns "github.com/miekg/dns"
 	logrus "github.com/sirupsen/logrus"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -335,7 +335,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 	if err != nil {
 		return nil, fmt.Errorf("create tap endpoint: %w", err)
 	}
-	networkSwitch := gvtap.NewSwitch(false, fileHandleGatewayMTU)
+	networkSwitch := gvtap.NewSwitch(false)
 	tapEndpoint.Connect(networkSwitch)
 	networkSwitch.Connect(tapEndpoint)
 
