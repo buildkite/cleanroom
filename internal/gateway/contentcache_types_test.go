@@ -56,6 +56,39 @@ func TestCredentialInjectorReturnsCredentialErrors(t *testing.T) {
 	}
 }
 
+func TestCredentialInjectorSkipsCredentialResolutionForHTTPUpstream(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	rt := &credentialInjector{
+		base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+			}, nil
+		}),
+		credentials: failingCredentialProvider{},
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://registry.internal:5000/v2/library/alpine/manifests/latest", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if !called {
+		t.Fatal("expected base round tripper to be called")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
 func TestContentCacheGitBasicAuthProviderResolvesBasicCredential(t *testing.T) {
 	t.Parallel()
 

@@ -174,6 +174,22 @@ func TestGitMirrorStoreCredentialErrorFailsClosed(t *testing.T) {
 	}
 }
 
+func TestGitMirrorStoreSkipsCredentialsForFileRemote(t *testing.T) {
+	t.Parallel()
+
+	store := NewGitMirrorStore(t.TempDir(), time.Minute, failingCredentialProvider{})
+	env, err := store.gitEnvWithAuth(context.Background(), "file:///tmp/origin.git", []string{"PATH=/bin"})
+	if err != nil {
+		t.Fatalf("git env with auth: %v", err)
+	}
+	if got, want := len(env), 1; got != want {
+		t.Fatalf("env length = %d, want %d: %v", got, want, env)
+	}
+	if got, want := env[0], "PATH=/bin"; got != want {
+		t.Fatalf("env[0] = %q, want %q", got, want)
+	}
+}
+
 func findEnvValue(env []string, name string) string {
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")

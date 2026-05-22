@@ -240,7 +240,7 @@ func (s *gitMirrorStore) gitEnvWithAuth(ctx context.Context, remoteURL string, b
 	env := append([]string(nil), baseEnv...)
 	key := ""
 	value := ""
-	if s != nil && s.credentials != nil {
+	if s != nil && s.credentials != nil && shouldResolveCredentialsForRawURL(remoteURL) {
 		header, err := s.credentials.Resolve(ctx, remoteURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve mirror credentials: %w", err)
