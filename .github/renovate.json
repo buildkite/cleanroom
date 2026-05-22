@@ -16,6 +16,16 @@
   ],
   "packageRules": [
     {
+      "description": "gVisor's default branch is not consumable as a Go module; update this dependency manually from the upstream go branch",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchPackageNames": [
+        "gvisor.dev/gvisor"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Automerge non-major dependency updates after required checks pass",
       "matchUpdateTypes": [
         "minor",
