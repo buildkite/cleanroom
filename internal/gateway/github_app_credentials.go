@@ -107,9 +107,9 @@ func (p *GitHubAppCredentialProvider) Resolve(ctx context.Context, remoteURL str
 		return "", nil
 	}
 
-	repoPath, err := githubAppRepoPath(parsed)
-	if err != nil {
-		return "", err
+	repoPath, ok := githubAppRepoPath(parsed)
+	if !ok {
+		return "", nil
 	}
 	if !p.matchesRepo(repoPath) {
 		return "", nil
@@ -142,14 +142,14 @@ func (p *GitHubAppCredentialProvider) matchesRepo(repoPath string) bool {
 	return false
 }
 
-func githubAppRepoPath(parsed *url.URL) (string, error) {
+func githubAppRepoPath(parsed *url.URL) (string, bool) {
 	path := strings.Trim(strings.TrimSpace(parsed.Path), "/")
 	path = strings.TrimSuffix(path, ".git")
 	owner, repo, ok := strings.Cut(path, "/")
 	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
-		return "", fmt.Errorf("github.com remote URL %q must identify owner/repo", parsed.Redacted())
+		return "", false
 	}
-	return owner + "/" + repo, nil
+	return owner + "/" + repo, true
 }
 
 func parseGitHubAppRepoPrefixes(raw string) ([]string, error) {

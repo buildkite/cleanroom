@@ -186,7 +186,7 @@ func TestGitHubAppCredentialProviderFallsBackForOutOfScopeRemote(t *testing.T) {
 	}
 }
 
-func TestGitHubAppCredentialProviderRejectsInvalidGitHubRemote(t *testing.T) {
+func TestGitHubAppCredentialProviderSkipsNonRepoGitHubURL(t *testing.T) {
 	_, privateKeyPEM := testGitHubAppPrivateKeyPEM(t)
 	auth, err := ccgit.NewGitHubAppAuth(ccgit.GitHubAppAuthConfig{
 		AppID:          "12345",
@@ -202,12 +202,12 @@ func TestGitHubAppCredentialProviderRejectsInvalidGitHubRemote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new provider: %v", err)
 	}
-	_, err = provider.Resolve(context.Background(), "https://github.com/buildkite/")
-	if err == nil {
-		t.Fatal("expected invalid GitHub remote error")
+	header, err := provider.Resolve(context.Background(), "https://github.com/buildkite/")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
 	}
-	if !strings.Contains(err.Error(), "owner/repo") {
-		t.Fatalf("expected owner/repo error, got %v", err)
+	if header != "" {
+		t.Fatalf("expected empty header for non-repo GitHub URL, got %q", header)
 	}
 }
 
