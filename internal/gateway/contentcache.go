@@ -292,10 +292,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		return ccgit.NewHandler(
 			gitIndex,
 			cafs,
-			ccgit.WithUpstream(ccgit.NewUpstream(
-				ccgit.WithHTTPClient(gitHTTPClient),
-				ccgit.WithUpstreamLogger(logger),
-			)),
+			ccgit.WithUpstream(newGitContentCacheUpstream(gitHTTPClient, logger, cfg.Credentials)),
 			ccgit.WithAllowedHosts([]string{host}),
 			ccgit.WithDownloader(dl),
 			ccgit.WithLogger(logger),
@@ -389,6 +386,17 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		}
 	}
 	return cache, nil
+}
+
+func newGitContentCacheUpstream(client *http.Client, logger *slog.Logger, credentials CredentialProvider) *ccgit.Upstream {
+	upstreamOptions := []ccgit.UpstreamOption{
+		ccgit.WithHTTPClient(client),
+		ccgit.WithUpstreamLogger(logger),
+	}
+	if authProvider := newContentCacheGitBasicAuthProvider(credentials); authProvider != nil {
+		upstreamOptions = append(upstreamOptions, ccgit.WithBasicAuthProvider(authProvider))
+	}
+	return ccgit.NewUpstream(upstreamOptions...)
 }
 
 type ociRoute struct {

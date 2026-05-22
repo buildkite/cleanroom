@@ -16,21 +16,30 @@ const (
 	githubAppInstallationIDEnv = "CLEANROOM_GITHUB_APP_INSTALLATION_ID"
 	githubAppPrivateKeyEnv     = "CLEANROOM_GITHUB_APP_PRIVATE_KEY"
 	githubAppPrivateKeyFileEnv = "CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE"
+	githubAppRepoPrefixesEnv   = "CLEANROOM_GITHUB_APP_REPO_PREFIXES"
 )
 
 // GitHubAppCredentialProvider resolves GitHub HTTPS Git credentials from a
 // host-side GitHub App installation token source.
 type GitHubAppCredentialProvider struct {
-	auth *ccgit.GitHubAppAuth
+	auth         *ccgit.GitHubAppAuth
+	repoPrefixes []string
 }
 
 // NewGitHubAppCredentialProvider creates a credential provider around a
-// configured GitHub App auth source.
-func NewGitHubAppCredentialProvider(auth *ccgit.GitHubAppAuth) *GitHubAppCredentialProvider {
+// configured GitHub App auth source and explicit GitHub repository prefixes.
+func NewGitHubAppCredentialProvider(auth *ccgit.GitHubAppAuth, repoPrefixes []string) (*GitHubAppCredentialProvider, error) {
 	if auth == nil {
-		return nil
+		return nil, nil
 	}
-	return &GitHubAppCredentialProvider{auth: auth}
+	normalized, err := normalizeGitHubAppRepoPrefixes(repoPrefixes)
+	if err != nil {
+		return nil, err
+	}
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("%s must contain at least one owner/ or owner/repo prefix", githubAppRepoPrefixesEnv)
+	}
+	return &GitHubAppCredentialProvider{auth: auth, repoPrefixes: normalized}, nil
 }
 
 // NewGitHubAppCredentialProviderFromEnv creates a GitHub App credential
@@ -41,8 +50,9 @@ func NewGitHubAppCredentialProviderFromEnv() (CredentialProvider, error) {
 	installationID := strings.TrimSpace(os.Getenv(githubAppInstallationIDEnv))
 	privateKey := strings.TrimSpace(os.Getenv(githubAppPrivateKeyEnv))
 	privateKeyFile := strings.TrimSpace(os.Getenv(githubAppPrivateKeyFileEnv))
+	repoPrefixesRaw := strings.TrimSpace(os.Getenv(githubAppRepoPrefixesEnv))
 
-	if appID == "" && installationID == "" && privateKey == "" && privateKeyFile == "" {
+	if appID == "" && installationID == "" && privateKey == "" && privateKeyFile == "" && repoPrefixesRaw == "" {
 		return nil, nil
 	}
 	if appID == "" {
@@ -50,6 +60,13 @@ func NewGitHubAppCredentialProviderFromEnv() (CredentialProvider, error) {
 	}
 	if installationID == "" {
 		return nil, fmt.Errorf("%s is required when GitHub App credentials are configured", githubAppInstallationIDEnv)
+	}
+	repoPrefixes, err := parseGitHubAppRepoPrefixes(repoPrefixesRaw)
+	if err != nil {
+		return nil, err
+	}
+	if len(repoPrefixes) == 0 {
+		return nil, fmt.Errorf("%s is required when GitHub App credentials are configured", githubAppRepoPrefixesEnv)
 	}
 	if privateKey != "" && privateKeyFile != "" {
 		return nil, fmt.Errorf("%s and %s are mutually exclusive", githubAppPrivateKeyEnv, githubAppPrivateKeyFileEnv)
@@ -74,7 +91,7 @@ func NewGitHubAppCredentialProviderFromEnv() (CredentialProvider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewGitHubAppCredentialProvider(auth), nil
+	return NewGitHubAppCredentialProvider(auth, repoPrefixes)
 }
 
 func (p *GitHubAppCredentialProvider) Resolve(ctx context.Context, remoteURL string) (string, error) {
@@ -94,6 +111,9 @@ func (p *GitHubAppCredentialProvider) Resolve(ctx context.Context, remoteURL str
 	if err != nil {
 		return "", err
 	}
+	if !p.matchesRepo(repoPath) {
+		return "", nil
+	}
 	username, password, err := p.auth.BasicAuth(ctx, ccgit.RepoRef{Host: "github.com", RepoPath: repoPath})
 	if err != nil {
 		return "", fmt.Errorf("resolve GitHub App credentials: %w", err)
@@ -106,6 +126,22 @@ func (p *GitHubAppCredentialProvider) Resolve(ctx context.Context, remoteURL str
 	return "Basic " + encoded, nil
 }
 
+func (p *GitHubAppCredentialProvider) matchesRepo(repoPath string) bool {
+	repoPath = strings.ToLower(strings.TrimSpace(repoPath))
+	for _, prefix := range p.repoPrefixes {
+		if strings.HasSuffix(prefix, "/") {
+			if strings.HasPrefix(repoPath, prefix) {
+				return true
+			}
+			continue
+		}
+		if repoPath == prefix {
+			return true
+		}
+	}
+	return false
+}
+
 func githubAppRepoPath(parsed *url.URL) (string, error) {
 	path := strings.Trim(strings.TrimSpace(parsed.Path), "/")
 	path = strings.TrimSuffix(path, ".git")
@@ -114,4 +150,67 @@ func githubAppRepoPath(parsed *url.URL) (string, error) {
 		return "", fmt.Errorf("github.com remote URL %q must identify owner/repo", parsed.Redacted())
 	}
 	return owner + "/" + repo, nil
+}
+
+func parseGitHubAppRepoPrefixes(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	return normalizeGitHubAppRepoPrefixes(strings.Split(raw, ","))
+}
+
+func normalizeGitHubAppRepoPrefixes(values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		normalized, err := normalizeGitHubAppRepoPrefix(value)
+		if err != nil {
+			return nil, err
+		}
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out, nil
+}
+
+func normalizeGitHubAppRepoPrefix(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return "", fmt.Errorf("parse %s value %q: %w", githubAppRepoPrefixesEnv, value, err)
+		}
+		if !strings.EqualFold(parsed.Scheme, "https") || !strings.EqualFold(parsed.Hostname(), "github.com") {
+			return "", fmt.Errorf("%s value %q must use https://github.com", githubAppRepoPrefixesEnv, value)
+		}
+		value = parsed.Path
+	} else {
+		value = strings.TrimPrefix(value, "github.com/")
+	}
+
+	ownerPrefix := strings.HasSuffix(value, "/")
+	value = strings.Trim(value, "/")
+	value = strings.TrimSuffix(value, ".git")
+	if value == "" {
+		return "", fmt.Errorf("%s value must identify owner/ or owner/repo", githubAppRepoPrefixesEnv)
+	}
+	parts := strings.Split(value, "/")
+	switch {
+	case ownerPrefix && len(parts) == 1 && parts[0] != "":
+		return strings.ToLower(parts[0]) + "/", nil
+	case !ownerPrefix && len(parts) == 2 && parts[0] != "" && parts[1] != "":
+		return strings.ToLower(parts[0] + "/" + parts[1]), nil
+	default:
+		return "", fmt.Errorf("%s value %q must identify owner/ or owner/repo", githubAppRepoPrefixesEnv, value)
+	}
 }

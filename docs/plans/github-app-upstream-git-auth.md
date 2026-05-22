@@ -184,11 +184,15 @@ The first Cleanroom implementation uses explicit host environment variables:
 CLEANROOM_GITHUB_APP_ID=12345
 CLEANROOM_GITHUB_APP_INSTALLATION_ID=67890
 CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem
+CLEANROOM_GITHUB_APP_REPO_PREFIXES=buildkite/,example-org/private-repo
 ```
 
 `CLEANROOM_GITHUB_APP_PRIVATE_KEY` can be used instead of the file variable when
-the host environment can safely carry a PEM value. These variables are runtime
-gateway configuration and must not be copied into the guest or `cleanroom.yaml`.
+the host environment can safely carry a PEM value. `CLEANROOM_GITHUB_APP_REPO_PREFIXES`
+is required so a configured GitHub App does not claim every `github.com` remote;
+repositories outside those prefixes continue through the remaining host
+credential providers. These variables are runtime gateway configuration and must
+not be copied into the guest or `cleanroom.yaml`.
 
 ## Auth And Safety Invariants
 
@@ -333,11 +337,14 @@ Potential Cleanroom work:
 - add a `gateway.GitHubAppCredentialProvider` that uses the shared token source
 - configure it from runtime config or environment, not `cleanroom.yaml`
 - place it before env-token and host-git-credential fallback only when explicitly
-  configured
+  configured, and only for explicit repo prefixes
 - distinguish "no credential configured" from "a configured credential provider
   failed"; provider failure must fail the upstream Git request instead of falling
   through to unauthenticated fetch
 - keep embedded `content-cache` receiving the existing `CredentialProvider`
+- wire the credential provider into embedded `content-cache` Git auth preflight,
+  not only the HTTP transport, so cached upload-pack hits still fail closed when
+  GitHub App token minting fails
 - add tests proving guest command env does not contain Authorization headers,
   private keys, installation tokens, or GitHub App config
 
@@ -408,6 +415,9 @@ installation with Contents read permission only.
   copying token minting code into Cleanroom.
 - Cleanroom GitHub App configuration is host runtime environment, not
   repository policy.
+- Cleanroom requires explicit GitHub App repo prefixes; an app configuration
+  must not claim all `github.com` remotes and block fallback credentials for
+  unrelated repositories.
 - Standalone repo-level OIDC authorization is deferred until a shared
   standalone `content-cache` deployment needs it.
 

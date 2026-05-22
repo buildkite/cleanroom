@@ -62,7 +62,10 @@ func TestGitHubAppCredentialProviderResolvesGitHubRemote(t *testing.T) {
 		t.Fatalf("new auth: %v", err)
 	}
 
-	provider := NewGitHubAppCredentialProvider(auth)
+	provider, err := NewGitHubAppCredentialProvider(auth, []string{"buildkite/"})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
 	header, err := provider.Resolve(context.Background(), "https://github.com/buildkite/cleanroom.git")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -101,7 +104,11 @@ func TestGitHubAppCredentialProviderSkipsNonGitHubRemote(t *testing.T) {
 		t.Fatalf("new auth: %v", err)
 	}
 
-	header, err := NewGitHubAppCredentialProvider(auth).Resolve(context.Background(), "https://gitlab.com/buildkite/cleanroom.git")
+	provider, err := NewGitHubAppCredentialProvider(auth, []string{"buildkite/"})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	header, err := provider.Resolve(context.Background(), "https://gitlab.com/buildkite/cleanroom.git")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -110,6 +117,72 @@ func TestGitHubAppCredentialProviderSkipsNonGitHubRemote(t *testing.T) {
 	}
 	if tokenRequests != 0 {
 		t.Fatalf("token requests = %d, want 0", tokenRequests)
+	}
+}
+
+func TestGitHubAppCredentialProviderSkipsOutOfScopeGitHubRemote(t *testing.T) {
+	_, privateKeyPEM := testGitHubAppPrivateKeyPEM(t)
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+
+	var tokenRequests int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tokenRequests++
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(api.Close)
+
+	auth, err := ccgit.NewGitHubAppAuth(ccgit.GitHubAppAuthConfig{
+		AppID:          "12345",
+		InstallationID: "67890",
+		PrivateKey:     privateKeyPEM,
+		TokenScope:     ccgit.GitHubAppTokenScopeRequestedRepo,
+	}, ccgit.WithGitHubAppAPIURL(api.URL), ccgit.WithGitHubAppClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("new auth: %v", err)
+	}
+
+	provider, err := NewGitHubAppCredentialProvider(auth, []string{"buildkite/cleanroom"})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	header, err := provider.Resolve(context.Background(), "https://github.com/other/private-repo.git")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if header != "" {
+		t.Fatalf("expected empty header for out-of-scope remote, got %q", header)
+	}
+	if tokenRequests != 0 {
+		t.Fatalf("token requests = %d, want 0", tokenRequests)
+	}
+}
+
+func TestGitHubAppCredentialProviderFallsBackForOutOfScopeRemote(t *testing.T) {
+	_, privateKeyPEM := testGitHubAppPrivateKeyPEM(t)
+	auth, err := ccgit.NewGitHubAppAuth(ccgit.GitHubAppAuthConfig{
+		AppID:          "12345",
+		InstallationID: "67890",
+		PrivateKey:     privateKeyPEM,
+		TokenScope:     ccgit.GitHubAppTokenScopeRequestedRepo,
+	})
+	if err != nil {
+		t.Fatalf("new auth: %v", err)
+	}
+	githubProvider, err := NewGitHubAppCredentialProvider(auth, []string{"buildkite/cleanroom"})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	provider := NewChainCredentialProvider(
+		githubProvider,
+		&staticCredentialProvider{headers: map[string]string{"https://github.com/other/private-repo.git": "Bearer fallback-token"}},
+	)
+
+	header, err := provider.Resolve(context.Background(), "https://github.com/other/private-repo.git")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if header != "Bearer fallback-token" {
+		t.Fatalf("expected fallback header, got %q", header)
 	}
 }
 
@@ -125,7 +198,11 @@ func TestGitHubAppCredentialProviderRejectsInvalidGitHubRemote(t *testing.T) {
 		t.Fatalf("new auth: %v", err)
 	}
 
-	_, err = NewGitHubAppCredentialProvider(auth).Resolve(context.Background(), "https://github.com/buildkite/")
+	provider, err := NewGitHubAppCredentialProvider(auth, []string{"buildkite/"})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	_, err = provider.Resolve(context.Background(), "https://github.com/buildkite/")
 	if err == nil {
 		t.Fatal("expected invalid GitHub remote error")
 	}
@@ -153,8 +230,12 @@ func TestGitHubAppCredentialProviderFailsClosedBeforeFallback(t *testing.T) {
 		t.Fatalf("new auth: %v", err)
 	}
 
+	githubProvider, err := NewGitHubAppCredentialProvider(auth, []string{"buildkite/"})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
 	provider := NewChainCredentialProvider(
-		NewGitHubAppCredentialProvider(auth),
+		githubProvider,
 		&staticCredentialProvider{headers: map[string]string{"https://github.com/buildkite/cleanroom.git": "Bearer fallback-token"}},
 	)
 	header, err := provider.Resolve(context.Background(), "https://github.com/buildkite/cleanroom.git")
@@ -175,6 +256,7 @@ func TestNewGitHubAppCredentialProviderFromEnv(t *testing.T) {
 		t.Setenv(githubAppInstallationIDEnv, "")
 		t.Setenv(githubAppPrivateKeyEnv, "")
 		t.Setenv(githubAppPrivateKeyFileEnv, "")
+		t.Setenv(githubAppRepoPrefixesEnv, "")
 
 		provider, err := NewGitHubAppCredentialProviderFromEnv()
 		if err != nil {
@@ -190,6 +272,7 @@ func TestNewGitHubAppCredentialProviderFromEnv(t *testing.T) {
 		t.Setenv(githubAppInstallationIDEnv, "")
 		t.Setenv(githubAppPrivateKeyEnv, "")
 		t.Setenv(githubAppPrivateKeyFileEnv, "")
+		t.Setenv(githubAppRepoPrefixesEnv, "buildkite/")
 
 		_, err := NewGitHubAppCredentialProviderFromEnv()
 		if err == nil {
@@ -197,6 +280,24 @@ func TestNewGitHubAppCredentialProviderFromEnv(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), githubAppInstallationIDEnv) {
 			t.Fatalf("expected missing installation env in error, got %v", err)
+		}
+	})
+
+	t.Run("repo prefixes required", func(t *testing.T) {
+		_, privateKeyPEM := testGitHubAppPrivateKeyPEM(t)
+
+		t.Setenv(githubAppIDEnv, "12345")
+		t.Setenv(githubAppInstallationIDEnv, "67890")
+		t.Setenv(githubAppPrivateKeyEnv, privateKeyPEM)
+		t.Setenv(githubAppPrivateKeyFileEnv, "")
+		t.Setenv(githubAppRepoPrefixesEnv, "")
+
+		_, err := NewGitHubAppCredentialProviderFromEnv()
+		if err == nil {
+			t.Fatal("expected missing repo prefixes error")
+		}
+		if !strings.Contains(err.Error(), githubAppRepoPrefixesEnv) {
+			t.Fatalf("expected missing prefixes env in error, got %v", err)
 		}
 	})
 
@@ -211,6 +312,7 @@ func TestNewGitHubAppCredentialProviderFromEnv(t *testing.T) {
 		t.Setenv(githubAppInstallationIDEnv, "67890")
 		t.Setenv(githubAppPrivateKeyEnv, "")
 		t.Setenv(githubAppPrivateKeyFileEnv, privateKeyPath)
+		t.Setenv(githubAppRepoPrefixesEnv, "buildkite/")
 
 		provider, err := NewGitHubAppCredentialProviderFromEnv()
 		if err != nil {
@@ -220,6 +322,29 @@ func TestNewGitHubAppCredentialProviderFromEnv(t *testing.T) {
 			t.Fatal("expected configured provider")
 		}
 	})
+}
+
+func TestNormalizeGitHubAppRepoPrefixes(t *testing.T) {
+	t.Parallel()
+
+	got, err := normalizeGitHubAppRepoPrefixes([]string{
+		"Buildkite/",
+		"github.com/buildkite/cleanroom.git",
+		"https://github.com/Other/Repo",
+		"buildkite/",
+	})
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	want := []string{"buildkite/", "buildkite/cleanroom", "other/repo"}
+	if len(got) != len(want) {
+		t.Fatalf("prefix count = %d, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("prefix[%d] = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
 }
 
 type githubAppTokenRequestBody struct {

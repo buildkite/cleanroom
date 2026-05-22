@@ -1,13 +1,17 @@
 package gateway
 
 import (
+	"context"
+	"encoding/base64"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	ccgit "github.com/buildkite/content-cache/protocol/git"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -49,6 +53,75 @@ func TestCredentialInjectorReturnsCredentialErrors(t *testing.T) {
 	}
 	if called {
 		t.Fatal("base round tripper should not be called")
+	}
+}
+
+func TestContentCacheGitBasicAuthProviderResolvesBasicCredential(t *testing.T) {
+	t.Parallel()
+
+	header := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:installation-token"))
+	provider := newContentCacheGitBasicAuthProvider(&staticCredentialProvider{headers: map[string]string{
+		"https://github.com/buildkite/cleanroom.git": header,
+	}})
+
+	username, password, err := provider.BasicAuth(context.Background(), ccgit.RepoRef{
+		Host:     "github.com",
+		RepoPath: "buildkite/cleanroom",
+	})
+	if err != nil {
+		t.Fatalf("basic auth: %v", err)
+	}
+	if username != "x-access-token" || password != "installation-token" {
+		t.Fatalf("basic auth = (%q, %q), want x-access-token and installation-token", username, password)
+	}
+}
+
+func TestContentCacheGitBasicAuthProviderIgnoresNonBasicCredential(t *testing.T) {
+	t.Parallel()
+
+	provider := newContentCacheGitBasicAuthProvider(&staticCredentialProvider{headers: map[string]string{
+		"https://github.com/buildkite/cleanroom.git": "Bearer host-token",
+	}})
+
+	username, password, err := provider.BasicAuth(context.Background(), ccgit.RepoRef{
+		Host:     "github.com",
+		RepoPath: "buildkite/cleanroom",
+	})
+	if err != nil {
+		t.Fatalf("basic auth: %v", err)
+	}
+	if username != "" || password != "" {
+		t.Fatalf("expected non-Basic credential to be ignored, got (%q, %q)", username, password)
+	}
+}
+
+func TestGitContentCacheUpstreamFailsBeforeHTTPWhenCredentialsFail(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	client := &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			called = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+			}, nil
+		}),
+	}
+	upstream := newGitContentCacheUpstream(client, slog.Default(), failingCredentialProvider{})
+
+	_, _, err := upstream.FetchInfoRefs(context.Background(), ccgit.RepoRef{
+		Host:     "github.com",
+		RepoPath: "buildkite/cleanroom",
+	}, "")
+	if err == nil {
+		t.Fatal("expected credential error")
+	}
+	if !strings.Contains(err.Error(), "resolve upstream credentials") {
+		t.Fatalf("expected upstream credential context, got %v", err)
+	}
+	if called {
+		t.Fatal("upstream HTTP client should not be called")
 	}
 }
 
