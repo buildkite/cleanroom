@@ -38,12 +38,16 @@ import (
 )
 
 type ServeCommand struct {
-	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
-	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
-	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
-	PprofListen   string `help:"Enable local Go pprof HTTP server at this loopback address, for example 127.0.0.1:6060"`
-	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
-	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	Listen                  string   `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
+	GatewayListen           string   `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
+	LogLevel                string   `help:"Server log level (debug|info|warn|error)"`
+	PprofListen             string   `help:"Enable local Go pprof HTTP server at this loopback address, for example 127.0.0.1:6060"`
+	TLSCert                 string   `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
+	TLSKey                  string   `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	GitHubAppID             string   `name:"github-app-id" help:"GitHub App ID for host-side Git authentication" env:"CLEANROOM_GITHUB_APP_ID"`
+	GitHubAppInstallationID string   `name:"github-app-installation-id" help:"GitHub App installation ID for host-side Git authentication" env:"CLEANROOM_GITHUB_APP_INSTALLATION_ID"`
+	GitHubAppPrivateKeyFile string   `name:"github-app-private-key-file" help:"Path to the GitHub App private key PEM for host-side Git authentication" env:"CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE"`
+	GitHubAppRepoPrefixes   []string `name:"github-app-repo-prefixes" sep:"," help:"Comma-separated GitHub owner/ or owner/repo scopes where GitHub App credentials may be used" env:"CLEANROOM_GITHUB_APP_REPO_PREFIXES"`
 }
 
 var serveSignalNotifyContext = signal.NotifyContext
@@ -110,7 +114,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	interactiveLogger := logger.With("subsystem", "interactive-quic")
 
 	gwRegistry := gateway.NewRegistry()
-	githubAppCredentials, err := gatewayGitHubAppCredentials(ctx.Config.Gateway.Credentials.GitHubApp, ctx.ConfigPath)
+	githubAppCredentials, err := gatewayGitHubAppCredentials(s.githubAppCredentialsConfig(ctx.Config.Gateway.Credentials.GitHubApp), ctx.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("configure GitHub App credentials: %w", err)
 	}
@@ -248,9 +252,54 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 	}
 }
 
+func (s *ServeCommand) githubAppCredentialsConfig(base runtimeconfig.GatewayGitHubAppCredentialsConfig) runtimeconfig.GatewayGitHubAppCredentialsConfig {
+	return overlayGatewayGitHubAppCredentials(
+		base,
+		s.GitHubAppID,
+		s.GitHubAppInstallationID,
+		s.GitHubAppPrivateKeyFile,
+		s.GitHubAppRepoPrefixes,
+	)
+}
+
+func overlayGatewayGitHubAppCredentials(base runtimeconfig.GatewayGitHubAppCredentialsConfig, appID, installationID, privateKeyFile string, repoPrefixes []string) runtimeconfig.GatewayGitHubAppCredentialsConfig {
+	out := base
+	if value := strings.TrimSpace(appID); value != "" {
+		out.AppID = runtimeconfig.ScalarString(value)
+	}
+	if value := strings.TrimSpace(installationID); value != "" {
+		out.InstallationID = runtimeconfig.ScalarString(value)
+	}
+	if value := strings.TrimSpace(privateKeyFile); value != "" {
+		out.PrivateKeyFile = value
+	}
+	if values := trimNonEmptyStrings(repoPrefixes); len(values) > 0 {
+		out.RepoPrefixes = values
+	}
+	return out
+}
+
+func trimNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func gatewayGitHubAppCredentials(cfg runtimeconfig.GatewayGitHubAppCredentialsConfig, configPath string) (gateway.CredentialProvider, error) {
 	if !runtimeconfig.GatewayGitHubAppCredentialsConfigured(cfg) {
-		return gateway.NewGitHubAppCredentialProviderFromEnv()
+		return nil, nil
 	}
 
 	privateKeyFile, err := resolveRuntimeConfigCredentialPath(configPath, cfg.PrivateKeyFile)

@@ -20,19 +20,23 @@ import (
 )
 
 type DaemonCommand struct {
-	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop, restart)"`
-	Force         bool   `help:"Start a stopped daemon during restart"`
-	Restart       bool   `help:"Restart or start the daemon after install so the current definition is live"`
-	InitConfig    bool   `help:"Create a default runtime config before install if the config file is missing"`
-	DryRun        bool   `help:"Preview daemon install changes without mutating the service manager"`
-	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop/restart actions)"`
-	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop/restart actions)"`
-	JSON          bool   `help:"Print daemon status as JSON (status action only)"`
-	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
-	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
-	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
-	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
-	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	Action                  string   `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop, restart)"`
+	Force                   bool     `help:"Start a stopped daemon during restart"`
+	Restart                 bool     `help:"Restart or start the daemon after install so the current definition is live"`
+	InitConfig              bool     `help:"Create a default runtime config before install if the config file is missing"`
+	DryRun                  bool     `help:"Preview daemon install changes without mutating the service manager"`
+	User                    bool     `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop/restart actions)"`
+	System                  bool     `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop/restart actions)"`
+	JSON                    bool     `help:"Print daemon status as JSON (status action only)"`
+	Listen                  string   `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
+	GatewayListen           string   `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
+	LogLevel                string   `help:"Server log level (debug|info|warn|error)"`
+	TLSCert                 string   `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
+	TLSKey                  string   `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	GitHubAppID             string   `name:"github-app-id" help:"GitHub App ID for host-side Git authentication" env:"CLEANROOM_GITHUB_APP_ID"`
+	GitHubAppInstallationID string   `name:"github-app-installation-id" help:"GitHub App installation ID for host-side Git authentication" env:"CLEANROOM_GITHUB_APP_INSTALLATION_ID"`
+	GitHubAppPrivateKeyFile string   `name:"github-app-private-key-file" help:"Path to the GitHub App private key PEM for host-side Git authentication" env:"CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE"`
+	GitHubAppRepoPrefixes   []string `name:"github-app-repo-prefixes" sep:"," help:"Comma-separated GitHub owner/ or owner/repo scopes where GitHub App credentials may be used" env:"CLEANROOM_GITHUB_APP_REPO_PREFIXES"`
 }
 
 type daemonStatusPayload struct {
@@ -192,10 +196,37 @@ func (s *DaemonCommand) daemonRunArgs(cwd string, scope daemonScope) ([]string, 
 		}
 		args = append(args, "--tls-key", resolved)
 	}
+	if value := strings.TrimSpace(s.GitHubAppID); value != "" {
+		args = append(args, "--github-app-id", value)
+	}
+	if value := strings.TrimSpace(s.GitHubAppInstallationID); value != "" {
+		args = append(args, "--github-app-installation-id", value)
+	}
+	if value := strings.TrimSpace(s.GitHubAppPrivateKeyFile); value != "" {
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --github-app-private-key-file path: %w", err)
+		}
+		args = append(args, "--github-app-private-key-file", resolved)
+	}
+	for _, value := range trimNonEmptyStrings(s.GitHubAppRepoPrefixes) {
+		args = append(args, "--github-app-repo-prefixes", value)
+	}
 	return args, nil
 }
 
 func resolveDaemonInstallPath(cwd, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "~/") {
+		home, err := serveInstallUserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			if err != nil {
+				return "", err
+			}
+			return "", errors.New("home directory is not available")
+		}
+		return filepath.Clean(filepath.Join(home, strings.TrimPrefix(value, "~/"))), nil
+	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value), nil
 	}

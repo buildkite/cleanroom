@@ -230,15 +230,21 @@ gateway:
 `private_key_file` is read by the host-side `cleanroom serve` process. It should
 point at a local PEM file readable only by the daemon user.
 
-Foreground `cleanroom serve` also supports these environment variables:
+`cleanroom serve` and `cleanroom daemon install` also support command-line
+overrides for the same GitHub App settings. These flags use Kong environment
+bindings, so the matching environment variables can be used instead of flags:
+
+| Flag | Environment variable | Purpose |
+|------|----------------------|---------|
+| `--github-app-id` | `CLEANROOM_GITHUB_APP_ID` | GitHub App ID for host-side GitHub Git authentication |
+| `--github-app-installation-id` | `CLEANROOM_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
+| `--github-app-private-key-file` | `CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE` | Path to PEM-encoded GitHub App private key |
+| `--github-app-repo-prefixes` | `CLEANROOM_GITHUB_APP_REPO_PREFIXES` | Comma-separated `owner/` or `owner/repo` scopes where GitHub App credentials may be used |
+
+Static token credentials are also supported through environment variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `CLEANROOM_GITHUB_APP_ID` | GitHub App ID for host-side GitHub Git authentication |
-| `CLEANROOM_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
-| `CLEANROOM_GITHUB_APP_PRIVATE_KEY` | PEM-encoded GitHub App private key |
-| `CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE` | Path to PEM-encoded GitHub App private key; mutually exclusive with `CLEANROOM_GITHUB_APP_PRIVATE_KEY` |
-| `CLEANROOM_GITHUB_APP_REPO_PREFIXES` | Comma-separated `owner/` or `owner/repo` scopes where GitHub App credentials may be used |
 | `CLEANROOM_GITHUB_TOKEN` | GitHub authentication |
 | `CLEANROOM_GITLAB_TOKEN` | GitLab authentication |
 
@@ -249,9 +255,9 @@ upstream request instead of falling back to unauthenticated Git or host
 credential helpers. GitHub repositories outside
 the configured `repo_prefixes` continue through the rest of the credential
 chain. If runtime config does not define `gateway.credentials.github_app`,
-Cleanroom falls back to the `CLEANROOM_GITHUB_APP_*` environment variables. The
-same host-side credential provider chain is used by the embedded `content-cache`
-upstream clients.
+Cleanroom uses any GitHub App values provided by `serve` flags or their bound
+environment variables. The same host-side credential provider chain is used by
+the embedded `content-cache` upstream clients.
 
 ## Configuration
 
