@@ -147,6 +147,18 @@ func systemdDaemonStatus() (daemonStatusResult, error) {
 	}, nil
 }
 
+func systemdDaemonLogs(stdout, stderr io.Writer, options daemonLogsOptions) error {
+	args := []string{
+		"-u", systemdServiceName,
+		"--no-pager",
+		"-n", strconv.Itoa(daemonLogLines(options)),
+	}
+	if options.Follow {
+		args = append(args, "--follow")
+	}
+	return serveInstallRunLogCommand(stdout, stderr, "journalctl", args...)
+}
+
 func systemdServiceActive() (bool, error) {
 	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
 		return true, nil

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,13 +21,15 @@ import (
 )
 
 type DaemonCommand struct {
-	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop, restart)"`
+	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, logs, start, stop, restart)"`
 	Force         bool   `help:"Start a stopped daemon during restart"`
 	Restart       bool   `help:"Restart or start the daemon after install so the current definition is live"`
 	InitConfig    bool   `help:"Create a default runtime config before install if the config file is missing"`
 	DryRun        bool   `help:"Preview daemon install changes without mutating the service manager"`
-	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop/restart actions)"`
-	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop/restart actions)"`
+	Follow        bool   `name:"follow" short:"f" help:"Follow daemon logs (logs action only)"`
+	Lines         string `name:"lines" short:"n" help:"Number of recent daemon log lines to show (logs action only; default 100)"`
+	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/logs/start/stop/restart actions)"`
+	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/logs/start/stop/restart actions)"`
 	JSON          bool   `help:"Print daemon status as JSON (status action only)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
@@ -45,6 +48,7 @@ type daemonStatusPayload struct {
 	Domain    string `json:"domain,omitempty"`
 	State     string `json:"state,omitempty"`
 	Listen    string `json:"listen,omitempty"`
+	LogPath   string `json:"log_path,omitempty"`
 }
 
 type daemonStatusResult struct {
@@ -57,11 +61,18 @@ type daemonInstallOptions struct {
 	DryRun  bool
 }
 
+type daemonLogsOptions struct {
+	Follow bool
+	Lines  int
+}
+
 type daemonScope string
 
 const (
 	daemonScopeSystem daemonScope = "system"
 	daemonScopeUser   daemonScope = "user"
+
+	defaultDaemonLogLines = 100
 )
 
 var (
@@ -82,6 +93,7 @@ var (
 	serveInstallSleep            = time.Sleep
 	serveInstallWaitAttempts     = 50
 	serveInstallWaitPollInterval = 100 * time.Millisecond
+	serveInstallRunLogCommand    = runServeInstallLogCommand
 )
 
 func (s *DaemonCommand) Run(ctx *runtimeContext) error {
@@ -97,6 +109,12 @@ func (s *DaemonCommand) Run(ctx *runtimeContext) error {
 	}
 	if s.DryRun && action != "install" {
 		return errors.New("--dry-run is only supported with daemon install")
+	}
+	if s.Follow && action != "logs" {
+		return errors.New("--follow is only supported with daemon logs")
+	}
+	if strings.TrimSpace(s.Lines) != "" && action != "logs" {
+		return errors.New("--lines is only supported with daemon logs")
 	}
 	if s.Force && action == "install" {
 		return errors.New("--force is no longer supported with daemon install")
@@ -115,6 +133,8 @@ func (s *DaemonCommand) Run(ctx *runtimeContext) error {
 		return s.stopDaemon(ctx)
 	case "restart":
 		return s.restartDaemon(ctx)
+	case "logs":
+		return s.daemonLogs(ctx)
 	default:
 		return fmt.Errorf("unsupported daemon action %q", s.Action)
 	}
@@ -409,6 +429,53 @@ func (s *DaemonCommand) daemonStatus(ctx *runtimeContext) error {
 	return err
 }
 
+func (s *DaemonCommand) daemonLogs(ctx *runtimeContext) error {
+	scope, err := s.effectiveDaemonScope()
+	if err != nil {
+		return err
+	}
+	lines, err := parseDaemonLogLines(s.Lines)
+	if err != nil {
+		return err
+	}
+
+	options := daemonLogsOptions{
+		Follow: s.Follow,
+		Lines:  lines,
+	}
+
+	switch serveInstallGOOS {
+	case "linux":
+		return systemdDaemonLogs(ctx.Stdout, ctx.stderr(), options)
+	case "darwin":
+		if scope == daemonScopeUser {
+			return launchdUserDaemonLogs(ctx.Stdout, ctx.stderr(), options)
+		}
+		return launchdDaemonLogs(ctx.Stdout, ctx.stderr(), options)
+	default:
+		return fmt.Errorf("daemon logs is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+}
+
+func daemonLogLines(options daemonLogsOptions) int {
+	return options.Lines
+}
+
+func parseDaemonLogLines(raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return defaultDaemonLogLines, nil
+	}
+	lines, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --lines %q: %w", raw, err)
+	}
+	if lines < 0 {
+		return 0, errors.New("--lines must be zero or greater")
+	}
+	return lines, nil
+}
+
 func isExitError(err error) bool {
 	var exitErr *exec.ExitError
 	return errors.As(err, &exitErr)
@@ -431,6 +498,17 @@ func runServeInstallCommandOutput(name string, args ...string) (string, error) {
 		return "", fmt.Errorf("%s: %w (%s)", strings.Join(parts, " "), err, msg)
 	}
 	return string(out), nil
+}
+
+func runServeInstallLogCommand(stdout, stderr io.Writer, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		parts := append([]string{name}, args...)
+		return fmt.Errorf("%s: %w", strings.Join(parts, " "), err)
+	}
+	return nil
 }
 
 func (s *DaemonCommand) ensureRuntimeConfig(ctx *runtimeContext) error {
