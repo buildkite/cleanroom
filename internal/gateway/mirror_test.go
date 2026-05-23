@@ -134,12 +134,15 @@ func TestGitMirrorStoreUsesRemoteURLScopedAuthHeader(t *testing.T) {
 			"https://github.com/buildkite/cleanroom.git": "Basic test",
 		},
 	})
-	env := store.gitEnvWithAuth(context.Background(), "https://github.com/buildkite/cleanroom.git", []string{
+	env, err := store.gitEnvWithAuth(context.Background(), "https://github.com/buildkite/cleanroom.git", []string{
 		"PATH=/bin",
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf",
 		"GIT_CONFIG_VALUE_0=gh:",
 	})
+	if err != nil {
+		t.Fatalf("git env with auth: %v", err)
+	}
 
 	if got, want := findEnvValue(env, "GIT_CONFIG_COUNT"), "2"; got != want {
 		t.Fatalf("GIT_CONFIG_COUNT = %q, want %q", got, want)
@@ -155,6 +158,35 @@ func TestGitMirrorStoreUsesRemoteURLScopedAuthHeader(t *testing.T) {
 	}
 	if got, want := findEnvValue(env, "GIT_CONFIG_VALUE_1"), "Authorization: Basic test"; got != want {
 		t.Fatalf("GIT_CONFIG_VALUE_1 = %q, want %q", got, want)
+	}
+}
+
+func TestGitMirrorStoreCredentialErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	store := NewGitMirrorStore(t.TempDir(), time.Minute, failingCredentialProvider{})
+	_, err := store.gitEnvWithAuth(context.Background(), "https://github.com/buildkite/cleanroom.git", []string{"PATH=/bin"})
+	if err == nil {
+		t.Fatal("expected credential error")
+	}
+	if !strings.Contains(err.Error(), "resolve mirror credentials") {
+		t.Fatalf("expected mirror credential context, got %v", err)
+	}
+}
+
+func TestGitMirrorStoreSkipsCredentialsForFileRemote(t *testing.T) {
+	t.Parallel()
+
+	store := NewGitMirrorStore(t.TempDir(), time.Minute, failingCredentialProvider{})
+	env, err := store.gitEnvWithAuth(context.Background(), "file:///tmp/origin.git", []string{"PATH=/bin"})
+	if err != nil {
+		t.Fatalf("git env with auth: %v", err)
+	}
+	if got, want := len(env), 1; got != want {
+		t.Fatalf("env length = %d, want %d: %v", got, want, env)
+	}
+	if got, want := env[0], "PATH=/bin"; got != want {
+		t.Fatalf("env[0] = %q, want %q", got, want)
 	}
 }
 
@@ -174,6 +206,12 @@ type staticAuthorizationProvider struct {
 
 func (p staticAuthorizationProvider) Resolve(_ context.Context, remoteURL string) (string, error) {
 	return p.headers[remoteURL], nil
+}
+
+type failingCredentialProvider struct{}
+
+func (failingCredentialProvider) Resolve(context.Context, string) (string, error) {
+	return "", fmt.Errorf("credentials unavailable")
 }
 
 func TestGitMirrorStorePathIsStableByRemoteURL(t *testing.T) {

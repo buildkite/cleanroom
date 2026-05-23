@@ -557,10 +557,13 @@ func newUpstreamContentCacheHTTPClient(credentials CredentialProvider) *http.Cli
 }
 
 func (c *credentialInjector) RoundTrip(r *http.Request) (*http.Response, error) {
-	if c.credentials != nil && r.Header.Get("Authorization") == "" {
+	if c.credentials != nil && r.Header.Get("Authorization") == "" && shouldResolveCredentialsForURL(r.URL) {
 		remoteURL := canonicalRemoteFromRequest(r)
 		header, err := c.credentials.Resolve(r.Context(), remoteURL)
-		if err == nil && header != "" {
+		if err != nil {
+			return nil, fmt.Errorf("resolve upstream credentials: %w", err)
+		}
+		if header != "" {
 			r = r.Clone(r.Context())
 			r.Header.Set("Authorization", header)
 		}

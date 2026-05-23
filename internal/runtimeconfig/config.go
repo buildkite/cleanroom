@@ -39,8 +39,9 @@ type CachePeerConfig struct {
 }
 
 type GatewayConfig struct {
-	Git GatewayGitConfig `yaml:"git,omitempty"`
-	OCI GatewayOCIConfig `yaml:"oci,omitempty"`
+	Git         GatewayGitConfig         `yaml:"git,omitempty"`
+	OCI         GatewayOCIConfig         `yaml:"oci,omitempty"`
+	Credentials GatewayCredentialsConfig `yaml:"credentials,omitempty"`
 }
 
 type GatewayGitConfig struct {
@@ -49,6 +50,29 @@ type GatewayGitConfig struct {
 
 type GatewayOCIConfig struct {
 	Registries map[string]string `yaml:"registries,omitempty"`
+}
+
+type GatewayCredentialsConfig struct {
+	GitHubApp GatewayGitHubAppCredentialsConfig `yaml:"github_app,omitempty"`
+}
+
+type GatewayGitHubAppCredentialsConfig struct {
+	AppID          ScalarString `yaml:"app_id,omitempty"`
+	InstallationID ScalarString `yaml:"installation_id,omitempty"`
+	PrivateKeyFile string       `yaml:"private_key_file,omitempty"`
+	RepoPrefixes   []string     `yaml:"repo_prefixes,omitempty"`
+}
+
+// ScalarString preserves scalar config values as trimmed strings while allowing
+// natural YAML numeric forms for IDs.
+type ScalarString string
+
+func (s *ScalarString) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("expected scalar value, got %v", node.Kind)
+	}
+	*s = ScalarString(strings.TrimSpace(node.Value))
+	return nil
 }
 
 type ObservabilityConfig struct {
@@ -407,6 +431,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.Cache.Peers = normalizeCachePeers(cfg.Cache.Peers)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Gateway.OCI.Registries = trimStringMap(cfg.Gateway.OCI.Registries)
+	cfg.Gateway.Credentials.GitHubApp = normalizeGatewayGitHubAppCredentials(cfg.Gateway.Credentials.GitHubApp)
 	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
 	cfg.Observability.Logs.Format = strings.ToLower(strings.TrimSpace(cfg.Observability.Logs.Format))
 	if cfg.Observability.Logs.Format == "" {
@@ -443,6 +468,9 @@ func validateConfig(cfg Config) error {
 		}
 	}
 	if err := validateCacheConfig(cfg.Cache); err != nil {
+		return err
+	}
+	if err := validateGatewayConfig(cfg.Gateway); err != nil {
 		return err
 	}
 	if err := validateDarwinVZRuntimeConfig(cfg.Backends.DarwinVZ); err != nil {
@@ -520,6 +548,47 @@ func validateCacheConfig(cfg CacheConfig) error {
 		if strings.TrimSpace(peer.TokenEnv) == "" {
 			return fmt.Errorf("cache.peers[%d].token_env is required", i)
 		}
+	}
+	return nil
+}
+
+func normalizeGatewayGitHubAppCredentials(cfg GatewayGitHubAppCredentialsConfig) GatewayGitHubAppCredentialsConfig {
+	cfg.AppID = ScalarString(strings.TrimSpace(string(cfg.AppID)))
+	cfg.InstallationID = ScalarString(strings.TrimSpace(string(cfg.InstallationID)))
+	cfg.PrivateKeyFile = strings.TrimSpace(cfg.PrivateKeyFile)
+	cfg.RepoPrefixes = trimStringSlice(cfg.RepoPrefixes)
+	return cfg
+}
+
+func GatewayGitHubAppCredentialsConfigured(cfg GatewayGitHubAppCredentialsConfig) bool {
+	return strings.TrimSpace(string(cfg.AppID)) != "" ||
+		strings.TrimSpace(string(cfg.InstallationID)) != "" ||
+		strings.TrimSpace(cfg.PrivateKeyFile) != "" ||
+		len(cfg.RepoPrefixes) > 0
+}
+
+func validateGatewayConfig(cfg GatewayConfig) error {
+	if err := validateGatewayGitHubAppCredentials(cfg.Credentials.GitHubApp); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGatewayGitHubAppCredentials(cfg GatewayGitHubAppCredentialsConfig) error {
+	if !GatewayGitHubAppCredentialsConfigured(cfg) {
+		return nil
+	}
+	if strings.TrimSpace(string(cfg.AppID)) == "" {
+		return errors.New("gateway.credentials.github_app.app_id is required when GitHub App credentials are configured")
+	}
+	if strings.TrimSpace(string(cfg.InstallationID)) == "" {
+		return errors.New("gateway.credentials.github_app.installation_id is required when GitHub App credentials are configured")
+	}
+	if strings.TrimSpace(cfg.PrivateKeyFile) == "" {
+		return errors.New("gateway.credentials.github_app.private_key_file is required when GitHub App credentials are configured")
+	}
+	if len(cfg.RepoPrefixes) == 0 {
+		return errors.New("gateway.credentials.github_app.repo_prefixes must contain at least one owner/ or owner/repo prefix")
 	}
 	return nil
 }

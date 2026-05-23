@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -970,6 +971,93 @@ func TestLoadTrimsGatewayOCIRegistries(t *testing.T) {
 	}
 	if got, want := cfg.Gateway.OCI.Registries["registry.internal:5000"], "registry.internal:5000"; got != want {
 		t.Fatalf("unexpected internal registry mapping: got %q want %q", got, want)
+	}
+}
+
+func TestLoadParsesGatewayGitHubAppCredentials(t *testing.T) {
+	cfg, err := loadConfigFromContent(t, `gateway:
+  credentials:
+    github_app:
+      app_id: 3817917
+      installation_id: 134770928
+      private_key_file: " ~/.config/cleanroom/github-app.pem "
+      repo_prefixes:
+        - " buildkite/ "
+        - ""
+        - " buildkite/cleanroom "
+`)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	githubApp := cfg.Gateway.Credentials.GitHubApp
+	if got, want := string(githubApp.AppID), "3817917"; got != want {
+		t.Fatalf("unexpected app ID: got %q want %q", got, want)
+	}
+	if got, want := string(githubApp.InstallationID), "134770928"; got != want {
+		t.Fatalf("unexpected installation ID: got %q want %q", got, want)
+	}
+	if got, want := githubApp.PrivateKeyFile, "~/.config/cleanroom/github-app.pem"; got != want {
+		t.Fatalf("unexpected private key file: got %q want %q", got, want)
+	}
+	if got, want := githubApp.RepoPrefixes, []string{"buildkite/", "buildkite/cleanroom"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected repo prefixes: got %v want %v", got, want)
+	}
+}
+
+func TestLoadRejectsPartialGatewayGitHubAppCredentials(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name: "missing app id",
+			body: `      installation_id: 134770928
+      private_key_file: /tmp/key.pem
+      repo_prefixes: [buildkite/]
+`,
+			wantErr: "gateway.credentials.github_app.app_id is required",
+		},
+		{
+			name: "missing installation id",
+			body: `      app_id: 3817917
+      private_key_file: /tmp/key.pem
+      repo_prefixes: [buildkite/]
+`,
+			wantErr: "gateway.credentials.github_app.installation_id is required",
+		},
+		{
+			name: "missing private key file",
+			body: `      app_id: 3817917
+      installation_id: 134770928
+      repo_prefixes: [buildkite/]
+`,
+			wantErr: "gateway.credentials.github_app.private_key_file is required",
+		},
+		{
+			name: "missing repo prefixes",
+			body: `      app_id: 3817917
+      installation_id: 134770928
+      private_key_file: /tmp/key.pem
+`,
+			wantErr: "gateway.credentials.github_app.repo_prefixes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadConfigFromContent(t, `gateway:
+  credentials:
+    github_app:
+`+tt.body)
+			if err == nil {
+				t.Fatal("expected Load to reject partial GitHub App credentials")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error to contain %q, got %v", tt.wantErr, err)
+			}
+		})
 	}
 }
 

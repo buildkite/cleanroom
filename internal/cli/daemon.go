@@ -196,6 +196,17 @@ func (s *DaemonCommand) daemonRunArgs(cwd string, scope daemonScope) ([]string, 
 }
 
 func resolveDaemonInstallPath(cwd, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "~/") {
+		home, err := serveInstallUserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			if err != nil {
+				return "", err
+			}
+			return "", errors.New("home directory is not available")
+		}
+		return filepath.Clean(filepath.Join(home, strings.TrimPrefix(value, "~/"))), nil
+	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value), nil
 	}

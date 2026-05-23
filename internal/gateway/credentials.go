@@ -217,3 +217,15 @@ func normalizeCredentialURL(raw string) (*url.URL, error) {
 	parsed.User = nil
 	return parsed, nil
 }
+
+func shouldResolveCredentialsForRawURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return shouldResolveCredentialsForURL(parsed)
+}
+
+func shouldResolveCredentialsForURL(parsed *url.URL) bool {
+	return parsed != nil && strings.EqualFold(parsed.Scheme, "https")
+}

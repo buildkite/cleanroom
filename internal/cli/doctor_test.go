@@ -213,6 +213,98 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	}
 }
 
+func TestConfiguredGatewayCredentialHostsIncludesRuntimeGitHubApp(t *testing.T) {
+	t.Setenv("CLEANROOM_GITHUB_TOKEN", "")
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "")
+
+	hosts := configuredGatewayCredentialHosts(runtimeconfig.Config{
+		Gateway: runtimeconfig.GatewayConfig{
+			Credentials: runtimeconfig.GatewayCredentialsConfig{
+				GitHubApp: runtimeconfig.GatewayGitHubAppCredentialsConfig{
+					AppID:          "12345",
+					InstallationID: "67890",
+					PrivateKeyFile: "/tmp/github-app.pem",
+					RepoPrefixes:   []string{"buildkite/"},
+				},
+			},
+		},
+	})
+
+	if len(hosts) != 1 || hosts[0] != "github.com" {
+		t.Fatalf("expected github.com credential host, got %v", hosts)
+	}
+}
+
+func TestDoctorCommandWarnsWhenRuntimeGitHubAppPrivateKeyIsMissing(t *testing.T) {
+	t.Setenv("CLEANROOM_GITHUB_TOKEN", "")
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "")
+
+	tmpDir := t.TempDir()
+	stdoutPath := filepath.Join(tmpDir, "doctor.json")
+	stdout, err := os.Create(stdoutPath)
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+
+	cmd := DoctorCommand{
+		Backend: "doctor-test",
+		JSON:    true,
+	}
+	err = cmd.Run(&runtimeContext{
+		CWD:    tmpDir,
+		Stdout: stdout,
+		Loader: doctorFailingLoader{},
+		Config: runtimeconfig.Config{
+			Gateway: runtimeconfig.GatewayConfig{
+				Credentials: runtimeconfig.GatewayCredentialsConfig{
+					GitHubApp: runtimeconfig.GatewayGitHubAppCredentialsConfig{
+						AppID:          "12345",
+						InstallationID: "67890",
+						PrivateKeyFile: "missing.pem",
+						RepoPrefixes:   []string{"buildkite/"},
+					},
+				},
+			},
+		},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"doctor-test": doctorTestAdapter{},
+		},
+	})
+	if closeErr := stdout.Close(); closeErr != nil {
+		t.Fatalf("close stdout file: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read doctor output: %v", err)
+	}
+
+	var payload struct {
+		Checks []backend.DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal doctor JSON: %v", err)
+	}
+	for _, check := range payload.Checks {
+		if check.Name != "gateway_credentials" {
+			continue
+		}
+		if check.Status != "warn" {
+			t.Fatalf("expected gateway credential check to warn, got %q", check.Status)
+		}
+		if !strings.Contains(check.Message, "GitHub App config invalid") ||
+			!strings.Contains(check.Message, "missing.pem") {
+			t.Fatalf("unexpected gateway credential message: %q", check.Message)
+		}
+		return
+	}
+	t.Fatal("expected gateway_credentials check")
+}
+
 func TestApplyRuntimeCapabilityOverridesConfiguresFastCloneBySnapshotDriver(t *testing.T) {
 	baseCaps := map[string]bool{
 		backend.CapabilitySandboxSnapshot:           true,
