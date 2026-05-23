@@ -363,6 +363,33 @@ func TestBuildRefreshCommandUpdatesRemoteHeadTrackingBranchWithoutCheckoutBranch
 	}
 }
 
+func TestBuildRefreshCommandPreservesRemoteTrackingBranchAheadOfRequestedCommit(t *testing.T) {
+	remoteDir, checkoutDir, firstCommit, secondCommit := createStaleRemoteTrackingCheckout(t)
+
+	command := BuildRefreshCommand(&Checkout{
+		RemoteURL:      remoteDir,
+		CommitSHA:      firstCommit,
+		DestinationDir: checkoutDir,
+		Branch:         "main",
+	})
+	cmd := exec.Command(command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("refresh command failed: %v\n%s", err, string(out))
+	}
+
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "HEAD")); got != firstCommit {
+		t.Fatalf("unexpected checkout commit: got %q want %q", got, firstCommit)
+	}
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "origin/main")); got != secondCommit {
+		t.Fatalf("expected remote-tracking branch to stay ahead: got %q want %q", got, secondCommit)
+	}
+	behind := strings.TrimSpace(runGit(t, checkoutDir, "rev-list", "--count", "HEAD..origin/main"))
+	if behind != "1" {
+		t.Fatalf("expected checkout branch to remain behind origin/main, behind=%s", behind)
+	}
+}
+
 func createRemoteWithStaleMainAndAvailableCommit(t *testing.T) (remoteDir, firstCommit, secondCommit string) {
 	t.Helper()
 

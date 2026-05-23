@@ -337,7 +337,7 @@ func remoteTrackingFetchScript(checkout *Checkout) []string {
 			`fi`,
 			`git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
 			`tracking_ref="refs/remotes/origin/$branch"`,
-			`if ! git -C "$dest" merge-base --is-ancestor "$commit" "$tracking_ref" >/dev/null 2>&1; then`,
+			`if git -C "$dest" show-ref --verify --quiet "$tracking_ref" && git -C "$dest" merge-base --is-ancestor "$tracking_ref" "$commit"; then`,
 			`  git -C "$dest" update-ref "$tracking_ref" "$commit"`,
 			`fi`,
 		}
@@ -352,7 +352,7 @@ func remoteTrackingFetchScript(checkout *Checkout) []string {
 		`      git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
 		`    fi`,
 		`    git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
-		`    if ! git -C "$dest" merge-base --is-ancestor "$commit" "$tracking_ref" >/dev/null 2>&1; then`,
+		`    if git -C "$dest" show-ref --verify --quiet "$tracking_ref" && git -C "$dest" merge-base --is-ancestor "$tracking_ref" "$commit"; then`,
 		`      git -C "$dest" update-ref "$tracking_ref" "$commit"`,
 		`    fi`,
 		`    git -C "$dest" remote set-head origin "$default_branch" >/dev/null 2>&1 || true`,
