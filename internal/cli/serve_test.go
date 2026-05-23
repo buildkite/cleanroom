@@ -2,7 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net"
@@ -273,6 +277,51 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 	if !cfg.AllowScopeTokenFromAnySource {
 		t.Fatal("expected allow-any-source fallback to be preserved in server config")
 	}
+}
+
+func TestGatewayGitHubAppCredentialsUsesRuntimeConfigOverEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	privateKeyPath := filepath.Join(filepath.Dir(configPath), "github-app.pem")
+	if err := os.WriteFile(privateKeyPath, []byte(testPrivateKeyPEM(t)), 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+
+	t.Setenv("CLEANROOM_GITHUB_APP_ID", "env-app-id-without-required-fields")
+	t.Setenv("CLEANROOM_GITHUB_APP_INSTALLATION_ID", "")
+	t.Setenv("CLEANROOM_GITHUB_APP_PRIVATE_KEY", "")
+	t.Setenv("CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE", "")
+	t.Setenv("CLEANROOM_GITHUB_APP_REPO_PREFIXES", "")
+
+	provider, err := gatewayGitHubAppCredentials(runtimeconfig.GatewayGitHubAppCredentialsConfig{
+		AppID:          "12345",
+		InstallationID: "67890",
+		PrivateKeyFile: "github-app.pem",
+		RepoPrefixes:   []string{"buildkite/"},
+	}, configPath)
+	if err != nil {
+		t.Fatalf("gateway credentials from config: %v", err)
+	}
+	if provider == nil {
+		t.Fatal("expected configured provider")
+	}
+}
+
+func testPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	block := &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}
+	return string(pem.EncodeToMemory(block))
 }
 func TestNewControlServiceWiresRepositoryStore(t *testing.T) {
 	prevSnapshotStoreFactory := newSnapshotMetadataStore

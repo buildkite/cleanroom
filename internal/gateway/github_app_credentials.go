@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,6 +19,15 @@ const (
 	githubAppPrivateKeyFileEnv = "CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE"
 	githubAppRepoPrefixesEnv   = "CLEANROOM_GITHUB_APP_REPO_PREFIXES"
 )
+
+// GitHubAppCredentialConfig configures host-side GitHub App credentials without
+// embedding private key material.
+type GitHubAppCredentialConfig struct {
+	AppID          string
+	InstallationID string
+	PrivateKeyFile string
+	RepoPrefixes   []string
+}
 
 // GitHubAppCredentialProvider resolves GitHub HTTPS Git credentials from a
 // host-side GitHub App installation token source.
@@ -86,6 +96,46 @@ func NewGitHubAppCredentialProviderFromEnv() (CredentialProvider, error) {
 		AppID:          appID,
 		InstallationID: installationID,
 		PrivateKey:     privateKey,
+		TokenScope:     ccgit.GitHubAppTokenScopeRequestedRepo,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return NewGitHubAppCredentialProvider(auth, repoPrefixes)
+}
+
+// NewGitHubAppCredentialProviderFromConfig creates a GitHub App credential
+// provider from runtime configuration. If no fields are set, it returns nil.
+func NewGitHubAppCredentialProviderFromConfig(cfg GitHubAppCredentialConfig) (CredentialProvider, error) {
+	appID := strings.TrimSpace(cfg.AppID)
+	installationID := strings.TrimSpace(cfg.InstallationID)
+	privateKeyFile := strings.TrimSpace(cfg.PrivateKeyFile)
+	repoPrefixes := trimStringSlice(cfg.RepoPrefixes)
+
+	if appID == "" && installationID == "" && privateKeyFile == "" && len(repoPrefixes) == 0 {
+		return nil, nil
+	}
+	if appID == "" {
+		return nil, errors.New("app_id is required when GitHub App credentials are configured")
+	}
+	if installationID == "" {
+		return nil, errors.New("installation_id is required when GitHub App credentials are configured")
+	}
+	if privateKeyFile == "" {
+		return nil, errors.New("private_key_file is required when GitHub App credentials are configured")
+	}
+	if len(repoPrefixes) == 0 {
+		return nil, errors.New("repo_prefixes must contain at least one owner/ or owner/repo prefix")
+	}
+
+	data, err := os.ReadFile(privateKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read private_key_file: %w", err)
+	}
+	auth, err := ccgit.NewGitHubAppAuth(ccgit.GitHubAppAuthConfig{
+		AppID:          appID,
+		InstallationID: installationID,
+		PrivateKey:     strings.TrimSpace(string(data)),
 		TokenScope:     ccgit.GitHubAppTokenScopeRequestedRepo,
 	})
 	if err != nil {
@@ -178,6 +228,24 @@ func normalizeGitHubAppRepoPrefixes(values []string) ([]string, error) {
 		out = append(out, normalized)
 	}
 	return out, nil
+}
+
+func trimStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeGitHubAppRepoPrefix(value string) (string, error) {

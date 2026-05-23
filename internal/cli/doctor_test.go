@@ -213,6 +213,28 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	}
 }
 
+func TestConfiguredGatewayCredentialHostsIncludesRuntimeGitHubApp(t *testing.T) {
+	t.Setenv("CLEANROOM_GITHUB_TOKEN", "")
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "")
+
+	hosts := configuredGatewayCredentialHosts(runtimeconfig.Config{
+		Gateway: runtimeconfig.GatewayConfig{
+			Credentials: runtimeconfig.GatewayCredentialsConfig{
+				GitHubApp: runtimeconfig.GatewayGitHubAppCredentialsConfig{
+					AppID:          "12345",
+					InstallationID: "67890",
+					PrivateKeyFile: "/tmp/github-app.pem",
+					RepoPrefixes:   []string{"buildkite/"},
+				},
+			},
+		},
+	})
+
+	if len(hosts) != 1 || hosts[0] != "github.com" {
+		t.Fatalf("expected github.com credential host, got %v", hosts)
+	}
+}
+
 func TestApplyRuntimeCapabilityOverridesConfiguresFastCloneBySnapshotDriver(t *testing.T) {
 	baseCaps := map[string]bool{
 		backend.CapabilitySandboxSnapshot:           true,

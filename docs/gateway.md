@@ -214,7 +214,23 @@ Not wired yet:
 
 ## Credentials
 
-Host-side credentials are provided via environment variables:
+Host-side GitHub App credentials can be configured in the host runtime config:
+
+```yaml
+gateway:
+  credentials:
+    github_app:
+      app_id: "3817917"
+      installation_id: "134770928"
+      private_key_file: /Users/lachlan/.config/cleanroom/github-app.pem
+      repo_prefixes:
+        - buildkite/
+```
+
+`private_key_file` is read by the host-side `cleanroom serve` process. It should
+point at a local PEM file readable only by the daemon user.
+
+Foreground `cleanroom serve` also supports these environment variables:
 
 | Variable | Purpose |
 |----------|---------|
@@ -231,9 +247,11 @@ exposed to the guest environment. GitHub App credentials take precedence for
 matching `github.com` Git remotes when configured; token mint failures fail the
 upstream request instead of falling back to unauthenticated Git or host
 credential helpers. GitHub repositories outside
-`CLEANROOM_GITHUB_APP_REPO_PREFIXES` continue through the rest of the credential
-chain. The same host-side credential provider chain is used by the embedded
-`content-cache` upstream clients.
+the configured `repo_prefixes` continue through the rest of the credential
+chain. If runtime config does not define `gateway.credentials.github_app`,
+Cleanroom falls back to the `CLEANROOM_GITHUB_APP_*` environment variables. The
+same host-side credential provider chain is used by the embedded `content-cache`
+upstream clients.
 
 ## Configuration
 

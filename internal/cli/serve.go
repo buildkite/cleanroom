@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -109,7 +110,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	interactiveLogger := logger.With("subsystem", "interactive-quic")
 
 	gwRegistry := gateway.NewRegistry()
-	githubAppCredentials, err := gateway.NewGitHubAppCredentialProviderFromEnv()
+	githubAppCredentials, err := gatewayGitHubAppCredentials(ctx.Config.Gateway.Credentials.GitHubApp, ctx.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("configure GitHub App credentials: %w", err)
 	}
@@ -245,6 +246,47 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
 		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
 	}
+}
+
+func gatewayGitHubAppCredentials(cfg runtimeconfig.GatewayGitHubAppCredentialsConfig, configPath string) (gateway.CredentialProvider, error) {
+	if !runtimeconfig.GatewayGitHubAppCredentialsConfigured(cfg) {
+		return gateway.NewGitHubAppCredentialProviderFromEnv()
+	}
+
+	privateKeyFile, err := resolveRuntimeConfigCredentialPath(configPath, cfg.PrivateKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("resolve private_key_file: %w", err)
+	}
+	return gateway.NewGitHubAppCredentialProviderFromConfig(gateway.GitHubAppCredentialConfig{
+		AppID:          string(cfg.AppID),
+		InstallationID: string(cfg.InstallationID),
+		PrivateKeyFile: privateKeyFile,
+		RepoPrefixes:   cfg.RepoPrefixes,
+	})
+}
+
+func resolveRuntimeConfigCredentialPath(configPath, value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(trimmed, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			if err != nil {
+				return "", err
+			}
+			return "", errors.New("home directory is not available")
+		}
+		return filepath.Clean(filepath.Join(home, strings.TrimPrefix(trimmed, "~/"))), nil
+	}
+	if filepath.IsAbs(trimmed) {
+		return filepath.Clean(trimmed), nil
+	}
+	if configPath = strings.TrimSpace(configPath); configPath != "" {
+		return filepath.Clean(filepath.Join(filepath.Dir(configPath), trimmed)), nil
+	}
+	return filepath.Abs(trimmed)
 }
 
 func observabilityStartupFields(cfg runtimeconfig.ObservabilityConfig) []startupField {

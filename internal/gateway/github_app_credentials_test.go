@@ -324,6 +324,52 @@ func TestNewGitHubAppCredentialProviderFromEnv(t *testing.T) {
 	})
 }
 
+func TestNewGitHubAppCredentialProviderFromConfig(t *testing.T) {
+	t.Run("unconfigured", func(t *testing.T) {
+		provider, err := NewGitHubAppCredentialProviderFromConfig(GitHubAppCredentialConfig{})
+		if err != nil {
+			t.Fatalf("from config: %v", err)
+		}
+		if provider != nil {
+			t.Fatalf("expected nil provider, got %#v", provider)
+		}
+	})
+
+	t.Run("private key file", func(t *testing.T) {
+		_, privateKeyPEM := testGitHubAppPrivateKeyPEM(t)
+		privateKeyPath := filepath.Join(t.TempDir(), "github-app.pem")
+		if err := os.WriteFile(privateKeyPath, []byte(privateKeyPEM), 0o600); err != nil {
+			t.Fatalf("write private key: %v", err)
+		}
+
+		provider, err := NewGitHubAppCredentialProviderFromConfig(GitHubAppCredentialConfig{
+			AppID:          "12345",
+			InstallationID: "67890",
+			PrivateKeyFile: privateKeyPath,
+			RepoPrefixes:   []string{" buildkite/ ", ""},
+		})
+		if err != nil {
+			t.Fatalf("from config: %v", err)
+		}
+		if provider == nil {
+			t.Fatal("expected configured provider")
+		}
+	})
+
+	t.Run("partial config fails startup", func(t *testing.T) {
+		_, err := NewGitHubAppCredentialProviderFromConfig(GitHubAppCredentialConfig{
+			AppID:        "12345",
+			RepoPrefixes: []string{"buildkite/"},
+		})
+		if err == nil {
+			t.Fatal("expected partial config error")
+		}
+		if !strings.Contains(err.Error(), "installation_id") {
+			t.Fatalf("expected missing installation ID in error, got %v", err)
+		}
+	})
+}
+
 func TestNormalizeGitHubAppRepoPrefixes(t *testing.T) {
 	t.Parallel()
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -48,8 +49,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	}
 	adapterCapabilities := backend.CapabilitiesForAdapter(adapter)
 	capabilities := applyRuntimeCapabilityOverrides(adapterCapabilities, backendName, ctx.Config)
-	gwCredentials := gateway.NewEnvCredentialProvider()
-	gwHosts := gwCredentials.ConfiguredHosts()
+	gwHosts := configuredGatewayCredentialHosts(ctx.Config)
 	gwRoutes := gateway.Routes()
 	credSummary := "none configured"
 	if len(gwHosts) > 0 {
@@ -157,6 +157,23 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 
 	_, err = fmt.Fprint(ctx.Stdout, renderDoctorReport(backendName, checks, shouldUseANSI(ctx.Stdout)))
 	return err
+}
+
+func configuredGatewayCredentialHosts(cfg runtimeconfig.Config) []string {
+	hosts := make(map[string]struct{})
+	for _, host := range gateway.NewEnvCredentialProvider().ConfiguredHosts() {
+		hosts[host] = struct{}{}
+	}
+	if runtimeconfig.GatewayGitHubAppCredentialsConfigured(cfg.Gateway.Credentials.GitHubApp) {
+		hosts["github.com"] = struct{}{}
+	}
+
+	out := make([]string, 0, len(hosts))
+	for host := range hosts {
+		out = append(out, host)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func resolveBackendName(requested, configuredDefault string) string {
