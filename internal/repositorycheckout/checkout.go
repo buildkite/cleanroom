@@ -291,6 +291,8 @@ func bootstrapScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 	script = append(script, cloneCommand)
 	if strings.TrimSpace(bundleRef) != "" {
 		script = append(script, bundleFetchScript(bundleRef)...)
+	} else {
+		script = append(script, remoteTrackingFetchScript(checkout)...)
 	}
 	return append(script, checkoutVerificationScript(checkout)...)
 }
@@ -321,19 +323,23 @@ func refreshScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 		)
 		script = append(script, bundleFetchScript(bundleRef)...)
 	} else {
-		script = append(script, refreshFetchScript(checkout)...)
+		script = append(script, remoteTrackingFetchScript(checkout)...)
 	}
 	return append(script, checkoutVerificationScript(checkout)...)
 }
 
-func refreshFetchScript(checkout *Checkout) []string {
+func remoteTrackingFetchScript(checkout *Checkout) []string {
 	if strings.TrimSpace(checkout.Branch) != "" {
 		return []string{
-			`# Prefer the branch ref so origin/$branch stays useful after refreshing cached checkouts.`,
+			`# Prefer the branch ref so origin/$branch stays useful after exact-SHA checkout setup.`,
 			`if ! git -C "$dest" fetch --filter=blob:none --progress origin "+refs/heads/$branch:refs/remotes/origin/$branch"; then`,
 			`  git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
 			`fi`,
 			`git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+			`tracking_ref="refs/remotes/origin/$branch"`,
+			`if ! git -C "$dest" merge-base --is-ancestor "$commit" "$tracking_ref" >/dev/null 2>&1; then`,
+			`  git -C "$dest" update-ref "$tracking_ref" "$commit"`,
+			`fi`,
 		}
 	}
 	return []string{
@@ -341,8 +347,13 @@ func refreshFetchScript(checkout *Checkout) []string {
 		`case "$default_ref" in`,
 		`  refs/heads/*)`,
 		`    default_branch="${default_ref#refs/heads/}"`,
+		`    tracking_ref="refs/remotes/origin/$default_branch"`,
 		`    if ! git -C "$dest" fetch --filter=blob:none --progress origin "+$default_ref:refs/remotes/origin/$default_branch"; then`,
 		`      git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+		`    fi`,
+		`    git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+		`    if ! git -C "$dest" merge-base --is-ancestor "$commit" "$tracking_ref" >/dev/null 2>&1; then`,
+		`      git -C "$dest" update-ref "$tracking_ref" "$commit"`,
 		`    fi`,
 		`    git -C "$dest" remote set-head origin "$default_branch" >/dev/null 2>&1 || true`,
 		`    ;;`,
@@ -350,7 +361,6 @@ func refreshFetchScript(checkout *Checkout) []string {
 		`    git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
 		`    ;;`,
 		`esac`,
-		`git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
 	}
 }
 
