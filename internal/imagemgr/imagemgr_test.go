@@ -341,14 +341,14 @@ func TestEnsureRetriesTimedOutImageResolve(t *testing.T) {
 		MetadataDBPath:        dbPath,
 		ResolveAttempts:       2,
 		ResolveAttemptTimeout: 5 * time.Millisecond,
-		PullImage: func(ctx context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
-			pulls++
-			<-ctx.Done()
-			return nil, OCIConfig{}, ctx.Err()
-		},
 	})
 	if err != nil {
 		t.Fatalf("create manager: %v", err)
+	}
+	manager.pullImage = func(resolveCtx, _ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		pulls++
+		<-resolveCtx.Done()
+		return nil, OCIConfig{}, resolveCtx.Err()
 	}
 
 	_, err = manager.Ensure(context.Background(), testImageRef)
@@ -377,6 +377,17 @@ func TestEnsureKeepsActiveRootFSStreamPastResolveAttemptDeadline(t *testing.T) {
 		CacheDir:              cacheDir,
 		MetadataDBPath:        dbPath,
 		ResolveAttemptTimeout: 5 * time.Millisecond,
+		PullImage: func(ctx context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+			pulls++
+			return &delayedContextReadCloser{
+					reader: bytes.NewReader(testRootFSTar(t)),
+					ctx:    ctx,
+					delay:  25 * time.Millisecond,
+				}, OCIConfig{
+					OS:           "linux",
+					Architecture: NormalizePlatformArch(runtime.GOARCH),
+				}, nil
+		},
 		MaterializeRootFS: func(_ context.Context, stream io.Reader, outputPath string) (int64, error) {
 			if _, err := io.Copy(io.Discard, stream); err != nil {
 				return 0, err
@@ -389,20 +400,6 @@ func TestEnsureKeepsActiveRootFSStreamPastResolveAttemptDeadline(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create manager: %v", err)
-	}
-	manager.pullImage = func(resolveCtx, streamCtx context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
-		pulls++
-		if err := resolveCtx.Err(); err != nil {
-			return nil, OCIConfig{}, err
-		}
-		return &delayedContextReadCloser{
-				reader: bytes.NewReader(testRootFSTar(t)),
-				ctx:    streamCtx,
-				delay:  25 * time.Millisecond,
-			}, OCIConfig{
-				OS:           "linux",
-				Architecture: NormalizePlatformArch(runtime.GOARCH),
-			}, nil
 	}
 
 	result, err := manager.Ensure(context.Background(), testImageRef)

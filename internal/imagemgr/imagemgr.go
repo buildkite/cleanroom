@@ -149,8 +149,8 @@ func New(opts Options) (*Manager, error) {
 		manager.rootFSStreamIdleTimeout = opts.RootFSStreamIdleTimeout
 	}
 	if opts.PullImage != nil {
-		manager.pullImage = func(resolveCtx, _ context.Context, ref string) (io.ReadCloser, OCIConfig, error) {
-			return opts.PullImage(resolveCtx, ref)
+		manager.pullImage = func(_, streamCtx context.Context, ref string) (io.ReadCloser, OCIConfig, error) {
+			return opts.PullImage(streamCtx, ref)
 		}
 	} else {
 		manager.pullImage = pullImageFromRegistry
