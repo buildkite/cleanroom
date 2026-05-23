@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -66,6 +67,144 @@ func TestEnsureCachesAndReusesImage(t *testing.T) {
 	}
 	if got, want := items[0].OCIConfig.Workdir, "/workspace"; got != want {
 		t.Fatalf("unexpected OCI workdir: got %q want %q", got, want)
+	}
+}
+
+func TestEnsureReusesDigestCacheFileWhenMetadataIsMissing(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("create cache dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	rootFSPath := filepath.Join(cacheDir, strings.TrimPrefix(digest, "sha256:")+".ext4")
+	if err := os.WriteFile(rootFSPath, []byte("fake-ext4"), 0o644); err != nil {
+		t.Fatalf("write cached rootfs: %v", err)
+	}
+
+	pulls := 0
+	metadataResolves := 0
+	manager, err := New(Options{
+		CacheDir:       cacheDir,
+		MetadataDBPath: dbPath,
+		PullImage: func(context.Context, string) (io.ReadCloser, OCIConfig, error) {
+			pulls++
+			return nil, OCIConfig{}, errors.New("registry rootfs should not be pulled")
+		},
+		ResolveOCIConfig: func(_ context.Context, ref string) (OCIConfig, error) {
+			metadataResolves++
+			if ref != testImageRef {
+				return OCIConfig{}, fmt.Errorf("unexpected metadata ref: got %q want %q", ref, testImageRef)
+			}
+			return OCIConfig{
+				Workdir:      "/workspace",
+				OS:           "linux",
+				Architecture: NormalizePlatformArch(runtime.GOARCH),
+			}, nil
+		},
+		MaterializeRootFS: func(context.Context, io.Reader, string) (int64, error) {
+			return 0, errors.New("cached rootfs should not be materialized")
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	result, err := manager.Ensure(context.Background(), testImageRef)
+	if err != nil {
+		t.Fatalf("Ensure returned error: %v", err)
+	}
+	if !result.CacheHit {
+		t.Fatal("expected digest cache file to be reused as a cache hit")
+	}
+	if pulls != 0 {
+		t.Fatalf("expected no registry rootfs pulls, got %d", pulls)
+	}
+	if metadataResolves != 1 {
+		t.Fatalf("expected one registry metadata resolve, got %d", metadataResolves)
+	}
+	if got := result.Record.RootFSPath; got != rootFSPath {
+		t.Fatalf("unexpected rootfs path: got %q want %q", got, rootFSPath)
+	}
+	if got, want := result.Record.OCIConfig.Workdir, "/workspace"; got != want {
+		t.Fatalf("unexpected recovered OCI workdir: got %q want %q", got, want)
+	}
+
+	items, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected recovered metadata row, got %d entries", len(items))
+	}
+	if got := items[0].Digest; got != digest {
+		t.Fatalf("unexpected recovered digest: got %q want %q", got, digest)
+	}
+	if got, want := items[0].OCIConfig.Architecture, NormalizePlatformArch(runtime.GOARCH); got != want {
+		t.Fatalf("unexpected recovered architecture: got %q want %q", got, want)
+	}
+}
+
+func TestEnsureRejectsDigestCacheFileWhenResolvedPlatformIsIncompatible(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("create cache dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	rootFSPath := filepath.Join(cacheDir, strings.TrimPrefix(digest, "sha256:")+".ext4")
+	if err := os.WriteFile(rootFSPath, []byte("fake-ext4"), 0o644); err != nil {
+		t.Fatalf("write cached rootfs: %v", err)
+	}
+
+	incompatibleArch := "amd64"
+	if runtime.GOARCH == "amd64" {
+		incompatibleArch = "arm64"
+	}
+
+	manager, err := New(Options{
+		CacheDir:       cacheDir,
+		MetadataDBPath: dbPath,
+		PullImage: func(context.Context, string) (io.ReadCloser, OCIConfig, error) {
+			return nil, OCIConfig{}, errors.New("registry rootfs should not be pulled")
+		},
+		ResolveOCIConfig: func(context.Context, string) (OCIConfig, error) {
+			return OCIConfig{
+				OS:           "linux",
+				Architecture: incompatibleArch,
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	_, err = manager.Ensure(context.Background(), testImageRef)
+	if err == nil {
+		t.Fatal("expected Ensure to reject incompatible recovered cache file")
+	}
+	if got, want := strings.ToLower(err.Error()), "incompatible"; !strings.Contains(got, want) {
+		t.Fatalf("expected incompatibility error, got %v", err)
+	}
+
+	items, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected incompatible cache file not to recover metadata, got %d entries", len(items))
 	}
 }
 
@@ -187,6 +326,94 @@ func TestEnsureRetriesStalledRootFSStream(t *testing.T) {
 	}
 }
 
+func TestEnsureRetriesTimedOutImageResolve(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	pulls := 0
+	manager, err := New(Options{
+		CacheDir:              cacheDir,
+		MetadataDBPath:        dbPath,
+		ResolveAttempts:       2,
+		ResolveAttemptTimeout: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	manager.pullImage = func(resolveCtx, _ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		pulls++
+		<-resolveCtx.Done()
+		return nil, OCIConfig{}, resolveCtx.Err()
+	}
+
+	_, err = manager.Ensure(context.Background(), testImageRef)
+	if err == nil {
+		t.Fatal("expected Ensure to fail after timed out resolve attempts")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline error, got %v", err)
+	}
+	if pulls != 2 {
+		t.Fatalf("expected timed out resolve to be retried once, got %d pulls", pulls)
+	}
+}
+
+func TestEnsureKeepsActiveRootFSStreamPastResolveAttemptDeadline(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	pulls := 0
+	manager, err := New(Options{
+		CacheDir:              cacheDir,
+		MetadataDBPath:        dbPath,
+		ResolveAttemptTimeout: 5 * time.Millisecond,
+		PullImage: func(ctx context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+			pulls++
+			return &delayedContextReadCloser{
+					reader: bytes.NewReader(testRootFSTar(t)),
+					ctx:    ctx,
+					delay:  25 * time.Millisecond,
+				}, OCIConfig{
+					OS:           "linux",
+					Architecture: NormalizePlatformArch(runtime.GOARCH),
+				}, nil
+		},
+		MaterializeRootFS: func(_ context.Context, stream io.Reader, outputPath string) (int64, error) {
+			if _, err := io.Copy(io.Discard, stream); err != nil {
+				return 0, err
+			}
+			if err := os.WriteFile(outputPath, []byte("fake-ext4"), 0o644); err != nil {
+				return 0, err
+			}
+			return int64(len("fake-ext4")), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	result, err := manager.Ensure(context.Background(), testImageRef)
+	if err != nil {
+		t.Fatalf("Ensure returned error for active stream after resolve deadline: %v", err)
+	}
+	if result.CacheHit {
+		t.Fatal("expected active stream to materialize a fresh image")
+	}
+	if pulls != 1 {
+		t.Fatalf("expected one pull for active stream, got %d", pulls)
+	}
+}
+
 func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -224,6 +451,28 @@ func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
 type blockingReadCloser struct {
 	closed chan struct{}
 	once   sync.Once
+}
+
+type delayedContextReadCloser struct {
+	reader  *bytes.Reader
+	ctx     context.Context
+	delay   time.Duration
+	checked bool
+}
+
+func (r *delayedContextReadCloser) Read(p []byte) (int, error) {
+	if !r.checked {
+		time.Sleep(r.delay)
+		r.checked = true
+		if err := r.ctx.Err(); err != nil {
+			return 0, fmt.Errorf("stream context should remain active after resolve deadline: %w", err)
+		}
+	}
+	return r.reader.Read(p)
+}
+
+func (r *delayedContextReadCloser) Close() error {
+	return nil
 }
 
 func newBlockingReadCloser() *blockingReadCloser {
@@ -481,7 +730,7 @@ func newTestManager(t *testing.T, pullFn func(context.Context, string) (io.ReadC
 	}
 
 	if manager.pullImage == nil {
-		manager.pullImage = func(_ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		manager.pullImage = func(_, _ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
 			return io.NopCloser(bytes.NewReader(testRootFSTar(t))), OCIConfig{}, nil
 		}
 	}

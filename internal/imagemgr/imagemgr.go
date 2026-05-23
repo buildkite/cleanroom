@@ -28,6 +28,7 @@ const defaultMkfsBinary = "mkfs.ext4"
 const (
 	defaultResolveAttempts       = 2
 	defaultRootFSStreamIdleLimit = 2 * time.Minute
+	defaultResolveAttemptTimeout = 10 * time.Minute
 )
 
 var errRootFSStreamIdleTimeout = errors.New("image rootfs stream stalled")
@@ -66,19 +67,25 @@ type Options struct {
 	Now            func() time.Time
 
 	PullImage               func(context.Context, string) (io.ReadCloser, OCIConfig, error)
+	ResolveOCIConfig        func(context.Context, string) (OCIConfig, error)
 	MaterializeRootFS       func(context.Context, io.Reader, string) (int64, error)
 	ResolveAttempts         int
+	ResolveAttemptTimeout   time.Duration
 	RootFSStreamIdleTimeout time.Duration
 }
+
+type pullImageFunc func(resolveCtx, streamCtx context.Context, ref string) (io.ReadCloser, OCIConfig, error)
 
 type Manager struct {
 	cacheDir                string
 	metadataDBPath          string
 	mkfsBinary              string
 	now                     func() time.Time
-	pullImage               func(context.Context, string) (io.ReadCloser, OCIConfig, error)
+	pullImage               pullImageFunc
+	resolveOCIConfig        func(context.Context, string) (OCIConfig, error)
 	materialize             func(context.Context, io.Reader, string) (int64, error)
 	resolveAttempts         int
+	resolveAttemptTimeout   time.Duration
 	rootFSStreamIdleTimeout time.Duration
 
 	mu sync.Mutex
@@ -129,18 +136,40 @@ func New(opts Options) (*Manager, error) {
 		mkfsBinary:              mkfsBinary,
 		now:                     now,
 		resolveAttempts:         defaultResolveAttempts,
+		resolveAttemptTimeout:   defaultResolveAttemptTimeout,
 		rootFSStreamIdleTimeout: defaultRootFSStreamIdleLimit,
 	}
 	if opts.ResolveAttempts > 0 {
 		manager.resolveAttempts = opts.ResolveAttempts
 	}
+	if opts.ResolveAttemptTimeout > 0 {
+		manager.resolveAttemptTimeout = opts.ResolveAttemptTimeout
+	}
 	if opts.RootFSStreamIdleTimeout > 0 {
 		manager.rootFSStreamIdleTimeout = opts.RootFSStreamIdleTimeout
 	}
 	if opts.PullImage != nil {
-		manager.pullImage = opts.PullImage
+		manager.pullImage = func(_, streamCtx context.Context, ref string) (io.ReadCloser, OCIConfig, error) {
+			return opts.PullImage(streamCtx, ref)
+		}
 	} else {
 		manager.pullImage = pullImageFromRegistry
+	}
+	if opts.ResolveOCIConfig != nil {
+		manager.resolveOCIConfig = opts.ResolveOCIConfig
+	} else if opts.PullImage != nil {
+		manager.resolveOCIConfig = func(ctx context.Context, ref string) (OCIConfig, error) {
+			stream, config, err := opts.PullImage(ctx, ref)
+			if stream != nil {
+				_ = stream.Close()
+			}
+			if err != nil {
+				return OCIConfig{}, err
+			}
+			return config, nil
+		}
+	} else {
+		manager.resolveOCIConfig = resolveOCIConfigFromRegistry
 	}
 	if opts.MaterializeRootFS != nil {
 		manager.materialize = opts.MaterializeRootFS
@@ -191,18 +220,35 @@ func (m *Manager) Ensure(ctx context.Context, ref string) (EnsureResult, error) 
 		}
 	}
 
+	if record, found, err := m.recoverDigestCacheFile(ctx, parsedRef, now); err != nil {
+		return EnsureResult{}, err
+	} else if found {
+		return EnsureResult{Record: record, CacheHit: true}, nil
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= m.resolveAttempts; attempt++ {
-		tarStream, config, err := m.pullImage(ctx, parsedRef.Original)
+		attemptCtx, cancelAttempt := m.resolveAttemptContext(ctx)
+		tarStream, config, err := m.pullImage(attemptCtx, ctx, parsedRef.Original)
 		if err != nil {
-			return EnsureResult{}, err
+			cancelAttempt()
+			lastErr = err
+			if !m.shouldRetryResolve(ctx, err) {
+				return EnsureResult{}, err
+			}
+			if attempt >= m.resolveAttempts {
+				return EnsureResult{}, fmt.Errorf("resolve image %q after %d attempts: %w", parsedRef.Original, m.resolveAttempts, err)
+			}
+			continue
 		}
 		if tarStream == nil {
+			cancelAttempt()
 			return EnsureResult{}, fmt.Errorf("pull image %q returned nil rootfs stream", parsedRef.Original)
 		}
 		rootFSStream := m.withRootFSStreamIdleTimeout(tarStream)
 		if err := ValidateImagePlatformForHost(config.OS, config.Architecture, runtime.GOARCH); err != nil {
 			_ = rootFSStream.Close()
+			cancelAttempt()
 			return EnsureResult{}, fmt.Errorf("image %q platform is incompatible: %w", parsedRef.Original, err)
 		}
 
@@ -216,6 +262,7 @@ func (m *Manager) Ensure(ctx context.Context, ref string) (EnsureResult, error) 
 			LastUsedAt: now,
 		})
 		_ = rootFSStream.Close()
+		cancelAttempt()
 		if err == nil {
 			return EnsureResult{Record: record, CacheHit: false}, nil
 		}
@@ -234,6 +281,50 @@ func (m *Manager) Ensure(ctx context.Context, ref string) (EnsureResult, error) 
 	return EnsureResult{Record: record, CacheHit: false}, nil
 }
 
+func (m *Manager) resolveAttemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if m.resolveAttemptTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, m.resolveAttemptTimeout)
+}
+
+func (m *Manager) recoverDigestCacheFile(ctx context.Context, parsedRef ociref.DigestReference, now time.Time) (Record, bool, error) {
+	rootFSPath := m.cachedRootFSPath(parsedRef.Digest())
+	info, err := os.Stat(rootFSPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Record{}, false, nil
+		}
+		return Record{}, false, fmt.Errorf("stat cached rootfs %q: %w", rootFSPath, err)
+	}
+	if info.IsDir() {
+		return Record{}, false, fmt.Errorf("cached rootfs %q is a directory", rootFSPath)
+	}
+
+	config, err := m.resolveOCIConfigWithRetries(ctx, parsedRef.Original)
+	if err != nil {
+		return Record{}, false, fmt.Errorf("resolve image metadata for cached rootfs %s: %w", parsedRef.Digest(), err)
+	}
+	if err := validateResolvedOCIConfigPlatform(parsedRef.Original, config); err != nil {
+		return Record{}, false, err
+	}
+
+	record := Record{
+		Digest:     parsedRef.Digest(),
+		Ref:        parsedRef.Original,
+		RootFSPath: rootFSPath,
+		SizeBytes:  info.Size(),
+		CreatedAt:  now,
+		LastUsedAt: now,
+		Source:     "cache-file",
+		OCIConfig:  config,
+	}
+	if err := m.upsertRecord(ctx, record); err != nil {
+		return Record{}, false, fmt.Errorf("recover cached image metadata for %s: %w", parsedRef.Digest(), err)
+	}
+	return record, true, nil
+}
+
 func (m *Manager) withRootFSStreamIdleTimeout(stream io.ReadCloser) io.ReadCloser {
 	if stream == nil || m.rootFSStreamIdleTimeout <= 0 {
 		return stream
@@ -248,7 +339,7 @@ func (m *Manager) shouldRetryResolve(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil {
 		return false
 	}
-	return errors.Is(err, errRootFSStreamIdleTimeout)
+	return errors.Is(err, errRootFSStreamIdleTimeout) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (m *Manager) validateCachedRecordPlatform(ctx context.Context, parsedRef ociref.DigestReference, record *Record) error {
@@ -256,7 +347,7 @@ func (m *Manager) validateCachedRecordPlatform(ctx context.Context, parsedRef oc
 		return nil
 	}
 	if needsPlatformMetadata(record.OCIConfig) && strings.EqualFold(strings.TrimSpace(record.Source), "registry") {
-		resolvedConfig, err := m.resolveOCIConfigFromRegistry(ctx, parsedRef.Original)
+		resolvedConfig, err := m.resolveOCIConfigWithRetries(ctx, parsedRef.Original)
 		if err == nil {
 			record.OCIConfig = mergeOCIConfig(record.OCIConfig, resolvedConfig)
 		}
@@ -267,22 +358,45 @@ func (m *Manager) validateCachedRecordPlatform(ctx context.Context, parsedRef oc
 	return nil
 }
 
-func (m *Manager) resolveOCIConfigFromRegistry(ctx context.Context, ref string) (OCIConfig, error) {
-	if m == nil || m.pullImage == nil {
-		return OCIConfig{}, fmt.Errorf("image puller is not configured")
+func (m *Manager) resolveOCIConfigWithRetries(ctx context.Context, ref string) (OCIConfig, error) {
+	if m == nil || m.resolveOCIConfig == nil {
+		return OCIConfig{}, fmt.Errorf("image metadata resolver is not configured")
 	}
-	stream, config, err := m.pullImage(ctx, ref)
-	if stream != nil {
-		_ = stream.Close()
+
+	var lastErr error
+	for attempt := 1; attempt <= m.resolveAttempts; attempt++ {
+		attemptCtx, cancelAttempt := m.resolveAttemptContext(ctx)
+		config, err := m.resolveOCIConfig(attemptCtx, ref)
+		cancelAttempt()
+		if err == nil {
+			return config, nil
+		}
+		lastErr = err
+		if !m.shouldRetryResolve(ctx, err) {
+			return OCIConfig{}, err
+		}
+		if attempt >= m.resolveAttempts {
+			return OCIConfig{}, fmt.Errorf("resolve image metadata %q after %d attempts: %w", ref, m.resolveAttempts, err)
+		}
 	}
-	if err != nil {
-		return OCIConfig{}, err
+	if lastErr != nil {
+		return OCIConfig{}, fmt.Errorf("resolve image metadata %q after %d attempts: %w", ref, m.resolveAttempts, lastErr)
 	}
-	return config, nil
+	return OCIConfig{}, nil
 }
 
 func needsPlatformMetadata(cfg OCIConfig) bool {
 	return strings.TrimSpace(cfg.OS) == "" || strings.TrimSpace(cfg.Architecture) == ""
+}
+
+func validateResolvedOCIConfigPlatform(ref string, cfg OCIConfig) error {
+	if strings.TrimSpace(cfg.OS) == "" || strings.TrimSpace(cfg.Architecture) == "" {
+		return fmt.Errorf("image %q metadata does not include a platform", ref)
+	}
+	if err := ValidateImagePlatformForHost(cfg.OS, cfg.Architecture, runtime.GOARCH); err != nil {
+		return fmt.Errorf("image %q platform is incompatible: %w", ref, err)
+	}
+	return nil
 }
 
 func mergeOCIConfig(base, overlay OCIConfig) OCIConfig {
@@ -447,7 +561,7 @@ func (m *Manager) persistFromTarStream(ctx context.Context, req persistFromTarRe
 		req.CreatedAt = existing.CreatedAt
 	}
 
-	outputPath := filepath.Join(m.cacheDir, strings.TrimPrefix(req.Digest, "sha256:")+".ext4")
+	outputPath := m.cachedRootFSPath(req.Digest)
 	tmpFile, err := os.CreateTemp(m.cacheDir, strings.TrimPrefix(req.Digest, "sha256:")+".tmp-*.ext4")
 	if err != nil {
 		return Record{}, fmt.Errorf("create temporary image artifact for %q: %w", req.Digest, err)
@@ -483,6 +597,10 @@ func (m *Manager) persistFromTarStream(ctx context.Context, req persistFromTarRe
 	}
 
 	return record, nil
+}
+
+func (m *Manager) cachedRootFSPath(digest string) string {
+	return filepath.Join(m.cacheDir, strings.TrimPrefix(digest, "sha256:")+".ext4")
 }
 
 func (m *Manager) initDB(ctx context.Context) error {
