@@ -178,21 +178,27 @@ returns an Authorization header for `https://github.com/<owner>/<repo>.git`.
 That provider can sit before the existing env and `git credential fill` fallback
 in the gateway credential chain.
 
-The first Cleanroom implementation uses explicit host environment variables:
+The first Cleanroom implementation uses explicit host runtime config:
 
-```console
-CLEANROOM_GITHUB_APP_ID=12345
-CLEANROOM_GITHUB_APP_INSTALLATION_ID=67890
-CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem
-CLEANROOM_GITHUB_APP_REPO_PREFIXES=buildkite/,example-org/private-repo
+```yaml
+gateway:
+  credentials:
+    github_app:
+      app_id: "12345"
+      installation_id: "67890"
+      private_key_file: /run/secrets/github-app.pem
+      repo_prefixes:
+        - buildkite/
+        - example-org/private-repo
 ```
 
-`CLEANROOM_GITHUB_APP_PRIVATE_KEY` can be used instead of the file variable when
-the host environment can safely carry a PEM value. `CLEANROOM_GITHUB_APP_REPO_PREFIXES`
-is required so a configured GitHub App does not claim every `github.com` remote;
-repositories outside those prefixes continue through the remaining host
-credential providers. These variables are runtime gateway configuration and must
-not be copied into the guest or `cleanroom.yaml`.
+Foreground `cleanroom serve` can use equivalent flags or their environment
+bindings for temporary runs, but installed daemons should read this from runtime
+config instead of persisted service arguments. `repo_prefixes` is required so a
+configured GitHub App does not claim every `github.com` remote; repositories
+outside those prefixes continue through the remaining host credential providers.
+These values are runtime gateway configuration and must not be copied into the
+guest or `cleanroom.yaml`.
 
 ## Auth And Safety Invariants
 
@@ -413,7 +419,7 @@ installation with Contents read permission only.
   deployment target.
 - Cleanroom wraps `content-cache/protocol/git.NewGitHubAppAuth` rather than
   copying token minting code into Cleanroom.
-- Cleanroom GitHub App configuration is host runtime environment, not
+- Cleanroom GitHub App configuration is host runtime config, not
   repository policy.
 - Cleanroom requires explicit GitHub App repo prefixes; an app configuration
   must not claim all `github.com` remotes and block fallback credentials for

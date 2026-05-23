@@ -1102,57 +1102,13 @@ func TestDaemonInstallRestartFlagsParse(t *testing.T) {
 	}
 }
 
-func TestDaemonInstallParsesGitHubAppCredentialFlags(t *testing.T) {
+func TestDaemonInstallRejectsGitHubAppCredentialFlags(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{
-		"daemon", "install",
-		"--github-app-id", "3817917",
-		"--github-app-installation-id", "134770928",
-		"--github-app-private-key-file", "/Users/lachlan/.config/cleanroom/github-app.pem",
-		"--github-app-repo-prefixes", "buildkite/",
-		"--github-app-repo-prefixes", "buildkite/cleanroom",
-	}); err != nil {
-		t.Fatalf("parse daemon install returned error: %v", err)
-	}
-	if got, want := c.Daemon.GitHubAppID, "3817917"; got != want {
-		t.Fatalf("unexpected GitHub App ID: got %q want %q", got, want)
-	}
-	if got, want := c.Daemon.GitHubAppInstallationID, "134770928"; got != want {
-		t.Fatalf("unexpected GitHub App installation ID: got %q want %q", got, want)
-	}
-	if got, want := c.Daemon.GitHubAppPrivateKeyFile, "/Users/lachlan/.config/cleanroom/github-app.pem"; got != want {
-		t.Fatalf("unexpected GitHub App private key file: got %q want %q", got, want)
-	}
-	if got, want := c.Daemon.GitHubAppRepoPrefixes, []string{"buildkite/", "buildkite/cleanroom"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected GitHub App repo prefixes: got %v want %v", got, want)
-	}
-}
-
-func TestDaemonInstallParsesGitHubAppCredentialEnv(t *testing.T) {
-	t.Setenv("CLEANROOM_GITHUB_APP_ID", "3817917")
-	t.Setenv("CLEANROOM_GITHUB_APP_INSTALLATION_ID", "134770928")
-	t.Setenv("CLEANROOM_GITHUB_APP_PRIVATE_KEY_FILE", "/Users/lachlan/.config/cleanroom/github-app.pem")
-	t.Setenv("CLEANROOM_GITHUB_APP_REPO_PREFIXES", "buildkite/,buildkite/cleanroom")
-
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"daemon", "install"}); err != nil {
-		t.Fatalf("parse daemon install returned error: %v", err)
-	}
-	if got, want := c.Daemon.GitHubAppID, "3817917"; got != want {
-		t.Fatalf("unexpected GitHub App ID: got %q want %q", got, want)
-	}
-	if got, want := c.Daemon.GitHubAppInstallationID, "134770928"; got != want {
-		t.Fatalf("unexpected GitHub App installation ID: got %q want %q", got, want)
-	}
-	if got, want := c.Daemon.GitHubAppPrivateKeyFile, "/Users/lachlan/.config/cleanroom/github-app.pem"; got != want {
-		t.Fatalf("unexpected GitHub App private key file: got %q want %q", got, want)
-	}
-	if got, want := c.Daemon.GitHubAppRepoPrefixes, []string{"buildkite/", "buildkite/cleanroom"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected GitHub App repo prefixes: got %v want %v", got, want)
+	_, err := parser.Parse([]string{"daemon", "install", "--github-app-id", "3817917"})
+	if err == nil {
+		t.Fatal("expected daemon install to reject GitHub App credential flags")
 	}
 }
 

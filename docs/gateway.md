@@ -230,9 +230,12 @@ gateway:
 `private_key_file` is read by the host-side `cleanroom serve` process. It should
 point at a local PEM file readable only by the daemon user.
 
-`cleanroom serve` and `cleanroom daemon install` also support command-line
-overrides for the same GitHub App settings. These flags use Kong environment
-bindings, so the matching environment variables can be used instead of flags:
+Installed daemons read this from runtime config. `cleanroom daemon install` does
+not persist GitHub App credentials as service arguments.
+
+Foreground `cleanroom serve` also supports command-line overrides for the same
+GitHub App settings. These flags use Kong environment bindings, so the matching
+environment variables can be used instead of flags:
 
 | Flag | Environment variable | Purpose |
 |------|----------------------|---------|
@@ -254,10 +257,11 @@ matching `github.com` Git remotes when configured; token mint failures fail the
 upstream request instead of falling back to unauthenticated Git or host
 credential helpers. GitHub repositories outside
 the configured `repo_prefixes` continue through the rest of the credential
-chain. If runtime config does not define `gateway.credentials.github_app`,
-Cleanroom uses any GitHub App values provided by `serve` flags or their bound
-environment variables. The same host-side credential provider chain is used by
-the embedded `content-cache` upstream clients.
+chain. If runtime config does not define `gateway.credentials.github_app`, a
+foreground `cleanroom serve` process uses any GitHub App values provided by
+`serve` flags or their bound environment variables. The same host-side
+credential provider chain is used by the embedded `content-cache` upstream
+clients.
 
 ## Configuration
 

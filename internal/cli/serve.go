@@ -114,7 +114,11 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	interactiveLogger := logger.With("subsystem", "interactive-quic")
 
 	gwRegistry := gateway.NewRegistry()
-	githubAppCredentials, err := gatewayGitHubAppCredentials(s.githubAppCredentialsConfig(ctx.Config.Gateway.Credentials.GitHubApp), ctx.ConfigPath)
+	githubAppConfig, err := s.githubAppCredentialsConfig(ctx.Config.Gateway.Credentials.GitHubApp, ctx.CWD)
+	if err != nil {
+		return err
+	}
+	githubAppCredentials, err := gatewayGitHubAppCredentials(githubAppConfig, ctx.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("configure GitHub App credentials: %w", err)
 	}
@@ -252,14 +256,22 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 	}
 }
 
-func (s *ServeCommand) githubAppCredentialsConfig(base runtimeconfig.GatewayGitHubAppCredentialsConfig) runtimeconfig.GatewayGitHubAppCredentialsConfig {
+func (s *ServeCommand) githubAppCredentialsConfig(base runtimeconfig.GatewayGitHubAppCredentialsConfig, cwd string) (runtimeconfig.GatewayGitHubAppCredentialsConfig, error) {
+	privateKeyFile := s.GitHubAppPrivateKeyFile
+	if strings.TrimSpace(privateKeyFile) != "" {
+		resolved, err := resolveInvocationCredentialPath(cwd, privateKeyFile)
+		if err != nil {
+			return runtimeconfig.GatewayGitHubAppCredentialsConfig{}, fmt.Errorf("resolve --github-app-private-key-file path: %w", err)
+		}
+		privateKeyFile = resolved
+	}
 	return overlayGatewayGitHubAppCredentials(
 		base,
 		s.GitHubAppID,
 		s.GitHubAppInstallationID,
-		s.GitHubAppPrivateKeyFile,
+		privateKeyFile,
 		s.GitHubAppRepoPrefixes,
-	)
+	), nil
 }
 
 func overlayGatewayGitHubAppCredentials(base runtimeconfig.GatewayGitHubAppCredentialsConfig, appID, installationID, privateKeyFile string, repoPrefixes []string) runtimeconfig.GatewayGitHubAppCredentialsConfig {
@@ -336,6 +348,38 @@ func resolveRuntimeConfigCredentialPath(configPath, value string) (string, error
 		return filepath.Clean(filepath.Join(filepath.Dir(configPath), trimmed)), nil
 	}
 	return filepath.Abs(trimmed)
+}
+
+func resolveInvocationCredentialPath(cwd, value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(trimmed, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			if err != nil {
+				return "", err
+			}
+			return "", errors.New("home directory is not available")
+		}
+		return filepath.Clean(filepath.Join(home, strings.TrimPrefix(trimmed, "~/"))), nil
+	}
+	if filepath.IsAbs(trimmed) {
+		return filepath.Clean(trimmed), nil
+	}
+	base := strings.TrimSpace(cwd)
+	if base == "" {
+		base = "."
+	}
+	if !filepath.IsAbs(base) {
+		absBase, err := filepath.Abs(base)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute working directory: %w", err)
+		}
+		base = absBase
+	}
+	return filepath.Clean(filepath.Join(base, trimmed)), nil
 }
 
 func observabilityStartupFields(cfg runtimeconfig.ObservabilityConfig) []startupField {

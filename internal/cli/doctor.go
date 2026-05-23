@@ -37,14 +37,6 @@ type doctorSupportSummary struct {
 	ZFSDatasetRoot    string `json:"zfs_dataset_root,omitempty"`
 }
 
-type installedGatewayCredentialHostsResult struct {
-	Hosts     []string
-	Installed bool
-	Err       error
-}
-
-var installedGatewayCredentialHosts = detectInstalledGatewayCredentialHosts
-
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	cwd, err := resolveCWD(ctx.CWD, d.Chdir)
 	if err != nil {
@@ -57,12 +49,10 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	}
 	adapterCapabilities := backend.CapabilitiesForAdapter(adapter)
 	capabilities := applyRuntimeCapabilityOverrides(adapterCapabilities, backendName, ctx.Config)
-	runtimeCredentialHosts := configuredGatewayCredentialHosts(ctx.Config)
-	daemonCredentialResult := installedGatewayCredentialHosts()
-	daemonCredentialHosts := daemonCredentialResult.Hosts
-	gwHosts := sortedCredentialHosts(runtimeCredentialHosts, daemonCredentialHosts)
+	gwHosts := configuredGatewayCredentialHosts(ctx.Config)
 	gwRoutes := gateway.Routes()
 	routeSummary := strings.Join(gwRoutes, ", ")
+	credentialStatus, credentialMessage := gatewayCredentialDoctorStatus(ctx.Config, ctx.ConfigPath, gwHosts)
 	snapshotCfg, snapshotCheck, hasSnapshotCfg := snapshotDoctorConfigForBackend(backendName, ctx.Config)
 	var supportSummary *doctorSupportSummary
 
@@ -91,8 +81,8 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		},
 		backend.DoctorCheck{
 			Name:    "gateway_credentials",
-			Status:  daemonGatewayCredentialStatus(daemonCredentialResult),
-			Message: gatewayCredentialDoctorMessage(runtimeCredentialHosts, daemonCredentialResult),
+			Status:  credentialStatus,
+			Message: credentialMessage,
 		},
 	)
 	for _, key := range backend.SortedCapabilityKeys(capabilities) {
@@ -145,13 +135,10 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 			"capabilities": backend.CloneCapabilities(capabilities),
 			"checks":       checks,
 			"gateway": map[string]any{
-				"default_listen":             gateway.DefaultListenAddr,
-				"default_port":               gateway.DefaultPort,
-				"routes":                     gwRoutes,
-				"credential_hosts":           gwHosts,
-				"runtime_credential_hosts":   runtimeCredentialHosts,
-				"daemon_credential_hosts":    daemonCredentialHosts,
-				"daemon_credentials_present": daemonCredentialResult.Installed,
+				"default_listen":   gateway.DefaultListenAddr,
+				"default_port":     gateway.DefaultPort,
+				"routes":           gwRoutes,
+				"credential_hosts": gwHosts,
 			},
 		}
 		if hasSnapshotCfg {
@@ -186,25 +173,6 @@ func configuredGatewayCredentialHosts(cfg runtimeconfig.Config) []string {
 	return out
 }
 
-func gatewayCredentialDoctorMessage(runtimeHosts []string, daemonResult installedGatewayCredentialHostsResult) string {
-	runtimeSummary := credentialHostsDisplay(runtimeHosts)
-	daemonSummary := "not installed"
-	if daemonResult.Installed {
-		daemonSummary = credentialHostsDisplay(daemonResult.Hosts)
-	}
-	if daemonResult.Err != nil {
-		daemonSummary = "unavailable: " + daemonResult.Err.Error()
-	}
-	return fmt.Sprintf("runtime/env credential hosts: %s; installed daemon credential hosts: %s", runtimeSummary, daemonSummary)
-}
-
-func daemonGatewayCredentialStatus(result installedGatewayCredentialHostsResult) string {
-	if result.Err != nil {
-		return "warn"
-	}
-	return "pass"
-}
-
 func credentialHostsDisplay(hosts []string) string {
 	if len(hosts) == 0 {
 		return "none configured"
@@ -212,23 +180,15 @@ func credentialHostsDisplay(hosts []string) string {
 	return strings.Join(hosts, ", ")
 }
 
-func sortedCredentialHosts(groups ...[]string) []string {
-	hosts := make(map[string]struct{})
-	for _, group := range groups {
-		for _, host := range group {
-			host = strings.TrimSpace(host)
-			if host == "" {
-				continue
-			}
-			hosts[host] = struct{}{}
-		}
+func gatewayCredentialDoctorStatus(cfg runtimeconfig.Config, configPath string, hosts []string) (string, string) {
+	message := fmt.Sprintf("configured credential hosts: %s", credentialHostsDisplay(hosts))
+	if !runtimeconfig.GatewayGitHubAppCredentialsConfigured(cfg.Gateway.Credentials.GitHubApp) {
+		return "pass", message
 	}
-	out := make([]string, 0, len(hosts))
-	for host := range hosts {
-		out = append(out, host)
+	if _, err := gatewayGitHubAppCredentials(cfg.Gateway.Credentials.GitHubApp, configPath); err != nil {
+		return "warn", message + "; GitHub App config invalid: " + err.Error()
 	}
-	sort.Strings(out)
-	return out
+	return "pass", message
 }
 
 func resolveBackendName(requested, configuredDefault string) string {

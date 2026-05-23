@@ -285,7 +285,7 @@ func TestServeGitHubAppCredentialFlagsOverrideRuntimeConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	privateKeyPath := filepath.Join(filepath.Dir(configPath), "github-app.pem")
+	privateKeyPath := filepath.Join(tmpDir, "github-app.pem")
 	if err := os.WriteFile(privateKeyPath, []byte(testPrivateKeyPEM(t)), 0o600); err != nil {
 		t.Fatalf("write private key: %v", err)
 	}
@@ -296,16 +296,47 @@ func TestServeGitHubAppCredentialFlagsOverrideRuntimeConfig(t *testing.T) {
 		GitHubAppPrivateKeyFile: "github-app.pem",
 		GitHubAppRepoPrefixes:   []string{"buildkite/"},
 	}
-	cfg := cmd.githubAppCredentialsConfig(runtimeconfig.GatewayGitHubAppCredentialsConfig{
+	cfg, err := cmd.githubAppCredentialsConfig(runtimeconfig.GatewayGitHubAppCredentialsConfig{
 		AppID:          "99999",
 		InstallationID: "88888",
 		PrivateKeyFile: "missing.pem",
 		RepoPrefixes:   []string{"other/"},
-	})
+	}, tmpDir)
+	if err != nil {
+		t.Fatalf("github app credentials config: %v", err)
+	}
+	if got, want := cfg.PrivateKeyFile, privateKeyPath; got != want {
+		t.Fatalf("private key file should resolve relative to invocation cwd: got %q want %q", got, want)
+	}
 
 	provider, err := gatewayGitHubAppCredentials(cfg, configPath)
 	if err != nil {
 		t.Fatalf("gateway credentials from serve flags: %v", err)
+	}
+	if provider == nil {
+		t.Fatal("expected configured provider")
+	}
+}
+
+func TestGatewayGitHubAppCredentialsResolvesRuntimeConfigRelativePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	privateKeyPath := filepath.Join(filepath.Dir(configPath), "github-app.pem")
+	if err := os.WriteFile(privateKeyPath, []byte(testPrivateKeyPEM(t)), 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+
+	provider, err := gatewayGitHubAppCredentials(runtimeconfig.GatewayGitHubAppCredentialsConfig{
+		AppID:          "12345",
+		InstallationID: "67890",
+		PrivateKeyFile: "github-app.pem",
+		RepoPrefixes:   []string{"buildkite/"},
+	}, configPath)
+	if err != nil {
+		t.Fatalf("gateway credentials from runtime config: %v", err)
 	}
 	if provider == nil {
 		t.Fatal("expected configured provider")
@@ -1158,58 +1189,6 @@ func TestDaemonInstallCanonicalizesRelativeTLSPaths(t *testing.T) {
 	}
 	if !strings.Contains(content, "--tls-key "+filepath.Join(tmpDir, "certs/server.key")) {
 		t.Fatalf("expected absolute --tls-key path in unit, got:\n%s", content)
-	}
-}
-
-func TestDaemonInstallPersistsGitHubAppCredentialArgs(t *testing.T) {
-	tmpDir := t.TempDir()
-	unitPath := filepath.Join(tmpDir, "cleanroom.service")
-
-	prevEUID := serveInstallEUID
-	prevGOOS := serveInstallGOOS
-	prevSystemdPath := serveInstallSystemdUnitPath
-	prevExecutable := serveInstallExecutablePath
-	prevRunCommand := serveInstallRunCommand
-	serveInstallEUID = func() int { return 0 }
-	serveInstallGOOS = "linux"
-	serveInstallSystemdUnitPath = unitPath
-	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
-	serveInstallRunCommand = func(name string, args ...string) error { return nil }
-	t.Cleanup(func() {
-		serveInstallEUID = prevEUID
-		serveInstallGOOS = prevGOOS
-		serveInstallSystemdUnitPath = prevSystemdPath
-		serveInstallExecutablePath = prevExecutable
-		serveInstallRunCommand = prevRunCommand
-	})
-
-	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{
-		Action:                  "install",
-		GitHubAppID:             "3817917",
-		GitHubAppInstallationID: "134770928",
-		GitHubAppPrivateKeyFile: "keys/github-app.pem",
-		GitHubAppRepoPrefixes:   []string{"buildkite/", "buildkite/cleanroom"},
-	}
-	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
-		t.Fatalf("DaemonCommand.Run returned error: %v", err)
-	}
-
-	raw, err := os.ReadFile(unitPath)
-	if err != nil {
-		t.Fatalf("read generated unit: %v", err)
-	}
-	content := string(raw)
-	for _, want := range []string{
-		"--github-app-id 3817917",
-		"--github-app-installation-id 134770928",
-		"--github-app-private-key-file " + filepath.Join(tmpDir, "keys/github-app.pem"),
-		"--github-app-repo-prefixes buildkite/",
-		"--github-app-repo-prefixes buildkite/cleanroom",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("expected generated unit to contain %q, got:\n%s", want, content)
-		}
 	}
 }
 
