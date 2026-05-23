@@ -173,13 +173,13 @@ func TestResolveKernelPathReturnsErrorWhenUnsupported(t *testing.T) {
 	}
 }
 
-func TestResolveKernelPathUsesLatestReleaseManifestForDevDarwinVZ(t *testing.T) {
+func TestResolveKernelPathUsesPinnedKernelReleaseManifestForDevDarwinVZ(t *testing.T) {
 	t.Parallel()
 
 	const payload = "release-kernel"
 	var releaseHits atomic.Int32
 	var kernelHits atomic.Int32
-	srv := newDarwinVZKernelReleaseServer(t, "/repos/buildkite/cleanroom/releases/latest", payload, &releaseHits, &kernelHits)
+	srv := newDarwinVZKernelReleaseServer(t, "/repos/buildkite/cleanroom-kernels/releases/tags/v0.1.0", payload, &releaseHits, &kernelHits)
 
 	tmpDir := t.TempDir()
 	mgr := New(Options{
@@ -220,13 +220,13 @@ func TestResolveKernelPathUsesLatestReleaseManifestForDevDarwinVZ(t *testing.T) 
 	}
 }
 
-func TestResolveKernelPathUsesMatchingReleaseManifestForTaggedDarwinVZ(t *testing.T) {
+func TestResolveKernelPathUsesPinnedKernelReleaseManifestForTaggedDarwinVZ(t *testing.T) {
 	t.Parallel()
 
 	const payload = "release-kernel"
 	var releaseHits atomic.Int32
 	var kernelHits atomic.Int32
-	srv := newDarwinVZKernelReleaseServer(t, "/repos/buildkite/cleanroom/releases/tags/v1.2.3", payload, &releaseHits, &kernelHits)
+	srv := newDarwinVZKernelReleaseServer(t, "/repos/buildkite/cleanroom-kernels/releases/tags/v0.1.0", payload, &releaseHits, &kernelHits)
 
 	tmpDir := t.TempDir()
 	mgr := New(Options{
@@ -246,7 +246,7 @@ func TestResolveKernelPathUsesMatchingReleaseManifestForTaggedDarwinVZ(t *testin
 		t.Fatal("expected release kernel to be managed")
 	}
 	if got := releaseHits.Load(); got != 1 {
-		t.Fatalf("expected one tagged release metadata request, got %d", got)
+		t.Fatalf("expected one pinned release metadata request, got %d", got)
 	}
 	if got := kernelHits.Load(); got != 1 {
 		t.Fatalf("expected one tagged release kernel download, got %d", got)
@@ -261,7 +261,7 @@ func TestResolveKernelPathFallsBackToStaticDarwinVZWhenReleaseManifestMissing(t 
 	var kernelHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/buildkite/cleanroom/releases/latest":
+		case "/repos/buildkite/cleanroom-kernels/releases/tags/v0.1.0":
 			releaseHits.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","assets":[]}`))

@@ -129,8 +129,9 @@ backends:
 Use `kernel_image` for local kernel experiments. It always wins when the path is
 configured and accessible.
 
-Tagged releases also publish the rootfs-profile kernel as direct GitHub Release
-assets. The manifest is named with this pattern:
+Managed rootfs-profile kernels are published as direct GitHub Release assets in
+the `buildkite/cleanroom-kernels` project. The manifest is named with this
+pattern:
 
 ```text
 cleanroom-darwin-vz-minimal-rootfs-arm64-linux-<linux-version>.manifest.json
@@ -140,10 +141,10 @@ The manifest names the matching `Image`, `.config`, and `.sha256` assets and
 contains the expected image digest.
 
 When `kernel_image` is not configured, `darwin-vz` resolves the managed kernel
-from GitHub Releases:
+from `buildkite/cleanroom-kernels` GitHub Releases:
 
-- released Cleanroom builds use the matching Cleanroom release tag
-- dev, dirty, and non-release builds use the latest published Cleanroom release
+- released, dev, dirty, and non-release builds use the pinned kernel release
+  tag `v0.1.0`
 - if the release manifest is not available yet, Cleanroom falls back to the
   older managed kernel asset
 

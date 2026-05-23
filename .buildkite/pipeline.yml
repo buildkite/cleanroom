@@ -4,7 +4,7 @@ steps:
       - github.com/lox/mise-buildkite-plugin#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: shellcheck
-    command: shellcheck -x scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/build-darwin-vz-minimal-kernel-release.sh scripts/ci-darwin-vz-kernel-release.sh scripts/ci-buildkite-release.sh
+    command: shellcheck -x scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh
     cache:
       paths:
         - "~/.local/share/mise"
@@ -70,15 +70,6 @@ steps:
       CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER: com.buildkite.cleanroom.darwin-vz
     agents:
       queue: cleanroom-mac-signer
-
-  - label: ":penguin: darwin-vz kernel release assets"
-    key: darwin-vz-kernel-release-assets
-    if: build.tag != null
-    command: scripts/ci-darwin-vz-kernel-release.sh
-    concurrency: 1
-    concurrency_group: cleanroom-darwin-vz-kernel-release
-    agents:
-      queue: cleanroom
 
   - label: ":fire: E2E (Firecracker)"
     plugins:
