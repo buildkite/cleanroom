@@ -30,7 +30,32 @@ func pullImageFromRegistry(resolveCtx, streamCtx context.Context, ref string) (i
 		return nil, OCIConfig{}, fmt.Errorf("read OCI config for %q: %w", ref, err)
 	}
 
-	return newRegistryRootFSStream(streamCtx, digestRef, platform), OCIConfig{
+	return newRegistryRootFSStream(streamCtx, digestRef, platform), ociConfigFromConfigFile(cfg), nil
+}
+
+func resolveOCIConfigFromRegistry(ctx context.Context, ref string) (OCIConfig, error) {
+	digestRef, err := name.NewDigest(ref)
+	if err != nil {
+		return OCIConfig{}, fmt.Errorf("parse digest reference %q: %w", ref, err)
+	}
+
+	img, err := remote.Image(digestRef, remote.WithContext(ctx), remote.WithPlatform(hostLinuxPlatform()))
+	if err != nil {
+		return OCIConfig{}, fmt.Errorf("pull OCI image metadata %q: %w", ref, err)
+	}
+
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return OCIConfig{}, fmt.Errorf("read OCI config for %q: %w", ref, err)
+	}
+	return ociConfigFromConfigFile(cfg), nil
+}
+
+func ociConfigFromConfigFile(cfg *v1.ConfigFile) OCIConfig {
+	if cfg == nil {
+		return OCIConfig{}
+	}
+	return OCIConfig{
 		Entrypoint:   append([]string(nil), cfg.Config.Entrypoint...),
 		Cmd:          append([]string(nil), cfg.Config.Cmd...),
 		Env:          append([]string(nil), cfg.Config.Env...),
@@ -39,7 +64,7 @@ func pullImageFromRegistry(resolveCtx, streamCtx context.Context, ref string) (i
 		OS:           cfg.OS,
 		Architecture: cfg.Architecture,
 		Variant:      cfg.Variant,
-	}, nil
+	}
 }
 
 type registryRootFSStream struct {
