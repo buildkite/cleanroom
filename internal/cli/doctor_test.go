@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -114,6 +115,13 @@ func (doctorStaticLoader) LoadRepository(string) (policy.RepositoryConfig, strin
 
 func (doctorStaticLoader) LoadExpose(string) (policy.ExposeConfig, string, error) {
 	return policy.ExposeConfig{}, "", nil
+}
+
+func TestMain(m *testing.M) {
+	installedGatewayCredentialHosts = func() installedGatewayCredentialHostsResult {
+		return installedGatewayCredentialHostsResult{}
+	}
+	os.Exit(m.Run())
 }
 
 func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
@@ -232,6 +240,156 @@ func TestConfiguredGatewayCredentialHostsIncludesRuntimeGitHubApp(t *testing.T) 
 
 	if len(hosts) != 1 || hosts[0] != "github.com" {
 		t.Fatalf("expected github.com credential host, got %v", hosts)
+	}
+}
+
+func TestDoctorCommandJSONSeparatesInstalledDaemonCredentialHosts(t *testing.T) {
+	t.Setenv("CLEANROOM_GITHUB_TOKEN", "")
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "")
+	prevInstalledGatewayCredentialHosts := installedGatewayCredentialHosts
+	installedGatewayCredentialHosts = func() installedGatewayCredentialHostsResult {
+		return installedGatewayCredentialHostsResult{
+			Hosts:     []string{"github.com"},
+			Installed: true,
+		}
+	}
+	t.Cleanup(func() {
+		installedGatewayCredentialHosts = prevInstalledGatewayCredentialHosts
+	})
+
+	tmpDir := t.TempDir()
+	stdoutPath := filepath.Join(tmpDir, "doctor.json")
+	stdout, err := os.Create(stdoutPath)
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+
+	cmd := DoctorCommand{
+		Backend: "doctor-test",
+		JSON:    true,
+	}
+	err = cmd.Run(&runtimeContext{
+		CWD:        tmpDir,
+		Stdout:     stdout,
+		Loader:     doctorFailingLoader{},
+		Config:     runtimeconfig.Config{},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"doctor-test": doctorTestAdapter{},
+		},
+	})
+	if closeErr := stdout.Close(); closeErr != nil {
+		t.Fatalf("close stdout file: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read doctor output: %v", err)
+	}
+
+	var payload struct {
+		Checks  []backend.DoctorCheck `json:"checks"`
+		Gateway struct {
+			CredentialHosts          []string `json:"credential_hosts"`
+			RuntimeCredentialHosts   []string `json:"runtime_credential_hosts"`
+			DaemonCredentialHosts    []string `json:"daemon_credential_hosts"`
+			DaemonCredentialsPresent bool     `json:"daemon_credentials_present"`
+		} `json:"gateway"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal doctor JSON: %v", err)
+	}
+	if got, want := payload.Gateway.CredentialHosts, []string{"github.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected effective credential hosts: got %v want %v", got, want)
+	}
+	if got := payload.Gateway.RuntimeCredentialHosts; len(got) != 0 {
+		t.Fatalf("expected no runtime credential hosts, got %v", got)
+	}
+	if got, want := payload.Gateway.DaemonCredentialHosts, []string{"github.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected daemon credential hosts: got %v want %v", got, want)
+	}
+	if !payload.Gateway.DaemonCredentialsPresent {
+		t.Fatal("expected daemon credentials present")
+	}
+
+	foundCredentialCheck := false
+	for _, check := range payload.Checks {
+		if check.Name != "gateway_credentials" {
+			continue
+		}
+		foundCredentialCheck = true
+		if check.Status != "pass" {
+			t.Fatalf("expected gateway credential check to pass, got %q", check.Status)
+		}
+		if !strings.Contains(check.Message, "runtime/env credential hosts: none configured") ||
+			!strings.Contains(check.Message, "installed daemon credential hosts: github.com") {
+			t.Fatalf("unexpected gateway credential message: %q", check.Message)
+		}
+	}
+	if !foundCredentialCheck {
+		t.Fatal("expected gateway_credentials check")
+	}
+}
+
+func TestDetectInstalledGatewayCredentialHostsFromLaunchdPlist(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{
+		"serve",
+		"--github-app-id", "3817917",
+		"--github-app-installation-id", "134770928",
+		"--github-app-private-key-file", "/Users/lachlan/.config/cleanroom/github-app.pem",
+		"--github-app-repo-prefixes", "buildkite/",
+	})
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write launchd plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevUserHomeDir := serveInstallUserHomeDir
+	serveInstallGOOS = "darwin"
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallUserHomeDir = prevUserHomeDir
+	})
+
+	result := detectInstalledGatewayCredentialHosts()
+	if result.Err != nil {
+		t.Fatalf("detect installed credential hosts: %v", result.Err)
+	}
+	if !result.Installed {
+		t.Fatal("expected installed=true")
+	}
+	if got, want := result.Hosts, []string{"github.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected credential hosts: got %v want %v", got, want)
+	}
+}
+
+func TestSystemdProgramArgumentsParseGitHubAppFlags(t *testing.T) {
+	unit := renderSystemdService("/usr/local/bin/cleanroom", []string{
+		"serve",
+		"--github-app-id", "3817917",
+		"--github-app-installation-id", "134770928",
+		"--github-app-private-key-file", "/root/cleanroom keys/github-app.pem",
+		"--github-app-repo-prefixes", "buildkite/,buildkite/cleanroom",
+	})
+	args, err := systemdProgramArguments([]byte(unit))
+	if err != nil {
+		t.Fatalf("parse systemd program arguments: %v", err)
+	}
+	hosts, err := gatewayCredentialHostsFromServeArgs(args)
+	if err != nil {
+		t.Fatalf("credential hosts from systemd args: %v", err)
+	}
+	if got, want := hosts, []string{"github.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected credential hosts: got %v want %v", got, want)
 	}
 }
 
