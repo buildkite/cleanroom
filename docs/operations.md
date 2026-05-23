@@ -18,6 +18,8 @@ binaries.
 ```bash
 cleanroom daemon status
 cleanroom daemon status --json
+cleanroom daemon logs
+cleanroom daemon logs -f
 cleanroom daemon start
 cleanroom daemon stop
 cleanroom daemon restart
@@ -32,6 +34,11 @@ cleanroom daemon install --init-config --restart
 
 On macOS the daemon runs under launchd user scope. On Linux it runs under
 systemd system scope.
+
+On macOS, launchd writes daemon stdout and stderr to
+`~/Library/Logs/Cleanroom/daemon.log`. Re-run
+`cleanroom daemon install --restart` after upgrading from an older service
+definition so launchd starts capturing that file.
 
 ## Runtime Config
 

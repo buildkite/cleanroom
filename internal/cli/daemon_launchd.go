@@ -9,11 +9,17 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/endpoint"
 )
+
+type launchdLogPaths struct {
+	Stdout string
+	Stderr string
+}
 
 func uninstallLaunchdDaemon(stdout io.Writer) error {
 	return uninstallLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system")
@@ -263,6 +269,12 @@ func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult
 			listen = value
 		}
 	}
+	logPath := ""
+	if installed {
+		if value, err := launchdConfiguredStandardErrorPath(servicePath); err == nil {
+			logPath = value
+		}
+	}
 
 	fields := []startupField{
 		{Key: "install", Value: daemonInstalledLabel(installed)},
@@ -275,6 +287,9 @@ func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult
 	}
 	if listen != "" {
 		fields = append(fields, startupField{Key: "listen", Value: listen})
+	}
+	if logPath != "" {
+		fields = append(fields, startupField{Key: "log", Value: logPath})
 	}
 
 	return daemonStatusResult{
@@ -294,8 +309,46 @@ func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult
 			Domain:    domain,
 			State:     state,
 			Listen:    listen,
+			LogPath:   logPath,
 		},
 	}, nil
+}
+
+func launchdDaemonLogs(stdout, stderr io.Writer, options daemonLogsOptions) error {
+	return launchdDaemonLogsFromServicePath(stdout, stderr, serveInstallLaunchdPath, options)
+}
+
+func launchdUserDaemonLogs(stdout, stderr io.Writer, options daemonLogsOptions) error {
+	path, err := launchdUserServicePath()
+	if err != nil {
+		return err
+	}
+	return launchdDaemonLogsFromServicePath(stdout, stderr, path, options)
+}
+
+func launchdDaemonLogsFromServicePath(stdout, stderr io.Writer, servicePath string, options daemonLogsOptions) error {
+	logPath, err := launchdConfiguredStandardErrorPath(servicePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("daemon is not installed at %s (run 'cleanroom daemon install --restart' first)", servicePath)
+	}
+	if err != nil {
+		return fmt.Errorf("read launchd log path from %s: %w", servicePath, err)
+	}
+	if strings.TrimSpace(logPath) == "" {
+		return fmt.Errorf("daemon log file is not configured in %s (run 'cleanroom daemon install --restart' to enable launchd log capture)", servicePath)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) || !options.Follow {
+			return fmt.Errorf("daemon log file %s is not available yet: %w", logPath, err)
+		}
+	}
+
+	args := []string{"-n", strconv.Itoa(daemonLogLines(options))}
+	if options.Follow {
+		args = append(args, "-F")
+	}
+	args = append(args, logPath)
+	return serveInstallRunLogCommand(stdout, stderr, "tail", args...)
 }
 
 func launchdServiceState(output string) string {
@@ -342,6 +395,65 @@ func launchdConfiguredListenEndpoint(plistPath string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func launchdConfiguredStandardErrorPath(plistPath string) (string, error) {
+	raw, err := os.ReadFile(plistPath)
+	if err != nil {
+		return "", err
+	}
+	value, _, err := launchdPlistStringValue(raw, "StandardErrorPath")
+	return value, err
+}
+
+func launchdPlistStringValue(plistContent []byte, keyName string) (string, bool, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(plistContent))
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return "", false, nil
+			}
+			return "", false, err
+		}
+
+		start, ok := tok.(xml.StartElement)
+		if !ok || start.Name.Local != "key" {
+			continue
+		}
+
+		var key string
+		if err := decoder.DecodeElement(&key, &start); err != nil {
+			return "", false, err
+		}
+		if strings.TrimSpace(key) != keyName {
+			continue
+		}
+
+		for {
+			tok, err = decoder.Token()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return "", true, fmt.Errorf("%s value missing", keyName)
+				}
+				return "", true, err
+			}
+
+			start, ok = tok.(xml.StartElement)
+			if !ok {
+				continue
+			}
+			if start.Name.Local != "string" {
+				return "", true, fmt.Errorf("%s must be a string, got <%s>", keyName, start.Name.Local)
+			}
+
+			var value string
+			if err := decoder.DecodeElement(&value, &start); err != nil {
+				return "", true, err
+			}
+			return strings.TrimSpace(value), true, nil
+		}
+	}
 }
 
 func waitForLaunchdBootout(target, servicePath string) error {
@@ -469,7 +581,10 @@ func plistStringArray(decoder *xml.Decoder) ([]string, error) {
 }
 
 func installLaunchdDaemon(stdout io.Writer, executablePath string, args []string, options daemonInstallOptions) error {
-	return installLaunchdDaemonInDomain(stdout, executablePath, args, options, serveInstallLaunchdPath, "system")
+	return installLaunchdDaemonInDomain(stdout, executablePath, args, options, serveInstallLaunchdPath, "system", launchdLogPaths{
+		Stdout: "/Library/Logs/Cleanroom/daemon.log",
+		Stderr: "/Library/Logs/Cleanroom/daemon.log",
+	})
 }
 
 func installLaunchdUserDaemon(stdout io.Writer, executablePath string, args []string, options daemonInstallOptions) error {
@@ -477,7 +592,11 @@ func installLaunchdUserDaemon(stdout io.Writer, executablePath string, args []st
 	if err != nil {
 		return err
 	}
-	return installLaunchdDaemonInDomain(stdout, executablePath, args, options, path, launchdUserDomain())
+	logs, err := launchdUserLogPaths()
+	if err != nil {
+		return err
+	}
+	return installLaunchdDaemonInDomain(stdout, executablePath, args, options, path, launchdUserDomain(), logs)
 }
 
 func launchdUserServicePath() (string, error) {
@@ -496,9 +615,22 @@ func launchdServiceTarget(domain string) string {
 	return strings.TrimSpace(domain) + "/" + launchdServiceName
 }
 
-func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args []string, options daemonInstallOptions, servicePath, domain string) error {
+func launchdUserLogPaths() (launchdLogPaths, error) {
+	home, err := serveInstallUserHomeDir()
+	if err != nil {
+		return launchdLogPaths{}, fmt.Errorf("resolve user home directory: %w", err)
+	}
+	dir := filepath.Join(home, "Library", "Logs", "Cleanroom")
+	path := filepath.Join(dir, "daemon.log")
+	return launchdLogPaths{
+		Stdout: path,
+		Stderr: path,
+	}, nil
+}
+
+func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args []string, options daemonInstallOptions, servicePath, domain string, logs launchdLogPaths) error {
 	target := launchdServiceTarget(domain)
-	content := renderLaunchdService(executablePath, args)
+	content := renderLaunchdServiceWithLogs(executablePath, args, logs)
 	loaded, state, err := launchdServiceStatus(target)
 	if err != nil {
 		return err
@@ -527,6 +659,9 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 		return err
 	}
 
+	if err := ensureLaunchdLogDirs(logs); err != nil {
+		return err
+	}
 	if err := replaceDaemonFile(servicePath, content, 0o644); err != nil {
 		return err
 	}
@@ -650,6 +785,10 @@ func launchdInstallActionError(action, target, servicePath string, loaded, updat
 }
 
 func renderLaunchdService(executablePath string, args []string) string {
+	return renderLaunchdServiceWithLogs(executablePath, args, launchdLogPaths{})
+}
+
+func renderLaunchdServiceWithLogs(executablePath string, args []string, logs launchdLogPaths) string {
 	cmd := append([]string{executablePath}, args...)
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
@@ -668,6 +807,18 @@ func renderLaunchdService(executablePath string, args []string) string {
 		b.WriteString("</string>\n")
 	}
 	b.WriteString("\t</array>\n")
+	if strings.TrimSpace(logs.Stdout) != "" {
+		b.WriteString("\t<key>StandardOutPath</key>\n")
+		b.WriteString("\t<string>")
+		b.WriteString(escapePlistValue(strings.TrimSpace(logs.Stdout)))
+		b.WriteString("</string>\n")
+	}
+	if strings.TrimSpace(logs.Stderr) != "" {
+		b.WriteString("\t<key>StandardErrorPath</key>\n")
+		b.WriteString("\t<string>")
+		b.WriteString(escapePlistValue(strings.TrimSpace(logs.Stderr)))
+		b.WriteString("</string>\n")
+	}
 	b.WriteString("\t<key>RunAtLoad</key>\n")
 	b.WriteString("\t<true/>\n")
 	b.WriteString("\t<key>KeepAlive</key>\n")
@@ -675,6 +826,19 @@ func renderLaunchdService(executablePath string, args []string) string {
 	b.WriteString("</dict>\n")
 	b.WriteString("</plist>\n")
 	return b.String()
+}
+
+func ensureLaunchdLogDirs(logs launchdLogPaths) error {
+	for _, path := range []string{logs.Stdout, logs.Stderr} {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if err := serveInstallMkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("create daemon log directory %s: %w", filepath.Dir(path), err)
+		}
+	}
+	return nil
 }
 
 func escapePlistValue(value string) string {

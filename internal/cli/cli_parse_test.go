@@ -1157,6 +1157,39 @@ func TestDaemonStatusJSONParses(t *testing.T) {
 	}
 }
 
+func TestDaemonLogsFlagsParse(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"daemon", "logs", "--follow", "--lines", "25"}); err != nil {
+		t.Fatalf("parse daemon logs flags returned error: %v", err)
+	}
+	if got := c.Daemon.Action; got != "logs" {
+		t.Fatalf("expected daemon action logs, got %q", got)
+	}
+	if !c.Daemon.Follow {
+		t.Fatal("expected --follow to set Daemon.Follow")
+	}
+	if got, want := c.Daemon.Lines, "25"; got != want {
+		t.Fatalf("expected --lines %q, got %q", want, got)
+	}
+}
+
+func TestDaemonLogsShortFlagsParse(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"daemon", "logs", "-f", "-n", "10"}); err != nil {
+		t.Fatalf("parse daemon logs short flags returned error: %v", err)
+	}
+	if !c.Daemon.Follow {
+		t.Fatal("expected -f to set Daemon.Follow")
+	}
+	if got, want := c.Daemon.Lines, "10"; got != want {
+		t.Fatalf("expected -n %q, got %q", want, got)
+	}
+}
+
 func TestDaemonStartSystemParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

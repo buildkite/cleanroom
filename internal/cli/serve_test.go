@@ -782,6 +782,16 @@ func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing
 	if err != nil {
 		t.Fatalf("read user launchd plist: %v", err)
 	}
+	logPath := filepath.Join(tmpDir, "Library", "Logs", "Cleanroom", "daemon.log")
+	if !strings.Contains(string(raw), "<key>StandardErrorPath</key>") || !strings.Contains(string(raw), logPath) {
+		t.Fatalf("expected user launchd plist to capture stderr at %s:\n%s", logPath, raw)
+	}
+	if !strings.Contains(string(raw), "<key>StandardOutPath</key>") || !strings.Contains(string(raw), logPath) {
+		t.Fatalf("expected user launchd plist to capture stdout at %s:\n%s", logPath, raw)
+	}
+	if _, err := os.Stat(filepath.Dir(logPath)); err != nil {
+		t.Fatalf("expected daemon log directory to be created: %v", err)
+	}
 	if strings.Contains(string(raw), "--listen unix:///var/run/cleanroom/cleanroom.sock") {
 		t.Fatalf("did not expect user launchd plist to use system socket:\n%s", raw)
 	}
@@ -2315,6 +2325,39 @@ func TestDaemonStatusSystemdJSONIncludesEnabled(t *testing.T) {
 	}
 }
 
+func TestDaemonLogsSystemdRunsJournalctl(t *testing.T) {
+	prevGOOS := serveInstallGOOS
+	prevRunLogCommand := serveInstallRunLogCommand
+	serveInstallGOOS = "linux"
+	var calls [][]string
+	serveInstallRunLogCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallRunLogCommand = prevRunLogCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "logs", Follow: true, Lines: "42", System: true}
+	if err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout, Stderr: stderr}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{{
+		"journalctl",
+		"-u", systemdServiceName,
+		"--no-pager",
+		"-n", "42",
+		"--follow",
+	}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected log command: got %v want %v", calls, wantCalls)
+	}
+}
+
 func TestDaemonStatusLaunchdNotInstalled(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -2550,6 +2593,104 @@ func TestDaemonStatusLaunchdJSONIncludesListenEndpoint(t *testing.T) {
 	}
 	if payload.Listen != "unix:///tmp/custom-cleanroom.sock" {
 		t.Fatalf("expected listen endpoint, got %q", payload.Listen)
+	}
+}
+
+func TestDaemonLogsLaunchdTailsConfiguredErrorLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	logPath := filepath.Join(tmpDir, "Library", "Logs", "Cleanroom", "daemon.log")
+	content := renderLaunchdServiceWithLogs(
+		"/usr/local/bin/cleanroom",
+		[]string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"},
+		launchdLogPaths{
+			Stdout: logPath,
+			Stderr: logPath,
+		},
+	)
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write launchd plist: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte("ready\n"), 0o644); err != nil {
+		t.Fatalf("write daemon log: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunLogCommand := serveInstallRunLogCommand
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	var calls [][]string
+	serveInstallRunLogCommand = func(stdout, stderr io.Writer, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunLogCommand = prevRunLogCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "logs", Follow: true, Lines: "25"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout, Stderr: stderr}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{{"tail", "-n", "25", "-F", logPath}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected log command: got %v want %v", calls, wantCalls)
+	}
+}
+
+func TestDaemonLogsLaunchdRequiresConfiguredLogPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write launchd plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "logs"}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout, Stderr: stderr})
+	if err == nil {
+		t.Fatal("expected missing log path error")
+	}
+	if !strings.Contains(err.Error(), "cleanroom daemon install --restart") {
+		t.Fatalf("expected reinstall guidance, got: %v", err)
 	}
 }
 
