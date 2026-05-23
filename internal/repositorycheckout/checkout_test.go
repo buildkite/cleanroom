@@ -23,9 +23,20 @@ func TestBuildBootstrapCommandUsesCurrentBranchWhenProvided(t *testing.T) {
 	if !strings.Contains(joined, "git -C \"$dest\" checkout -B \"$branch\" \"$commit\"") {
 		t.Fatalf("expected bootstrap command to preserve branch name, got %q", joined)
 	}
+	if !strings.Contains(joined, `git -C "$dest" fetch --filter=blob:none --progress origin "+refs/heads/$branch:refs/remotes/origin/$branch"`) {
+		t.Fatalf("expected bootstrap command to refresh the requested branch ref, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" update-ref "$tracking_ref" "$commit"`) {
+		t.Fatalf("expected bootstrap command to repair stale branch tracking refs, got %q", joined)
+	}
 	if strings.Contains(joined, "checkout --detach") {
 		t.Fatalf("expected bootstrap command to avoid detached checkout when branch is provided, got %q", joined)
 	}
+	assertCommandOrder(t, joined,
+		`git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`,
+		`git -C "$dest" fetch --filter=blob:none --progress origin "+refs/heads/$branch:refs/remotes/origin/$branch"`,
+		`git -C "$dest" checkout -B "$branch" "$commit"`,
+	)
 }
 
 func TestBuildBootstrapCommandDetachesHeadWithoutBranch(t *testing.T) {
@@ -39,6 +50,30 @@ func TestBuildBootstrapCommandDetachesHeadWithoutBranch(t *testing.T) {
 	if !strings.Contains(joined, "git -C \"$dest\" checkout --detach \"$commit\"") {
 		t.Fatalf("expected bootstrap command to detach HEAD without branch, got %q", joined)
 	}
+}
+
+func TestBuildBootstrapCommandRefreshesRemoteHeadTrackingBranchWithoutBranch(t *testing.T) {
+	command := BuildBootstrapCommand(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	})
+
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, `git -C "$dest" ls-remote --symref origin HEAD`) {
+		t.Fatalf("expected bootstrap command to resolve remote HEAD, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" fetch --filter=blob:none --progress origin "+$default_ref:refs/remotes/origin/$default_branch"`) {
+		t.Fatalf("expected bootstrap command to refresh the remote HEAD tracking branch, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" update-ref "$tracking_ref" "$commit"`) {
+		t.Fatalf("expected bootstrap command to repair stale remote HEAD tracking refs, got %q", joined)
+	}
+	assertCommandOrder(t, joined,
+		`git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`,
+		`default_ref="$(git -C "$dest" ls-remote --symref origin HEAD`,
+		`git -C "$dest" checkout --detach "$commit"`,
+	)
 }
 
 func TestBuildBootstrapCommandForcesCloneProgressWithoutTTY(t *testing.T) {
@@ -208,6 +243,62 @@ func TestBuildRefreshCommandResetsWorkingTreeToExactCommit(t *testing.T) {
 	}
 }
 
+func TestBuildBootstrapCommandRepairsStaleRemoteTrackingBranchWhenCommitIsAhead(t *testing.T) {
+	remoteDir, firstCommit, secondCommit := createRemoteWithStaleMainAndAvailableCommit(t)
+	checkoutDir := filepath.Join(t.TempDir(), "checkout")
+
+	command := BuildBootstrapCommand(&Checkout{
+		RemoteURL:      remoteDir,
+		CommitSHA:      secondCommit,
+		DestinationDir: checkoutDir,
+		Branch:         "main",
+	})
+	cmd := exec.Command(command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bootstrap command failed: %v\n%s", err, string(out))
+	}
+
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "HEAD")); got != secondCommit {
+		t.Fatalf("unexpected checkout commit: got %q want %q", got, secondCommit)
+	}
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "origin/main")); got != secondCommit {
+		t.Fatalf("unexpected repaired remote-tracking branch: got %q want %q", got, secondCommit)
+	}
+	if got := strings.TrimSpace(runGit(t, remoteDir, "rev-parse", "refs/heads/main")); got != firstCommit {
+		t.Fatalf("test setup should leave remote main stale: got %q want %q", got, firstCommit)
+	}
+}
+
+func TestBuildBootstrapCommandRepairsStaleRemoteHeadTrackingBranchWithoutCheckoutBranch(t *testing.T) {
+	remoteDir, firstCommit, secondCommit := createRemoteWithStaleMainAndAvailableCommit(t)
+	checkoutDir := filepath.Join(t.TempDir(), "checkout")
+
+	command := BuildBootstrapCommand(&Checkout{
+		RemoteURL:      remoteDir,
+		CommitSHA:      secondCommit,
+		DestinationDir: checkoutDir,
+	})
+	cmd := exec.Command(command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bootstrap command failed: %v\n%s", err, string(out))
+	}
+
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "HEAD")); got != secondCommit {
+		t.Fatalf("unexpected checkout commit: got %q want %q", got, secondCommit)
+	}
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "origin/main")); got != secondCommit {
+		t.Fatalf("unexpected repaired remote HEAD tracking branch: got %q want %q", got, secondCommit)
+	}
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "--abbrev-ref", "HEAD")); got != "HEAD" {
+		t.Fatalf("expected checkout to remain detached without a requested branch, got %q", got)
+	}
+	if got := strings.TrimSpace(runGit(t, remoteDir, "rev-parse", "refs/heads/main")); got != firstCommit {
+		t.Fatalf("test setup should leave remote main stale: got %q want %q", got, firstCommit)
+	}
+}
+
 func TestBuildRefreshCommandUpdatesRemoteTrackingBranch(t *testing.T) {
 	remoteDir, checkoutDir, firstCommit, secondCommit := createStaleRemoteTrackingCheckout(t)
 
@@ -270,6 +361,66 @@ func TestBuildRefreshCommandUpdatesRemoteHeadTrackingBranchWithoutCheckoutBranch
 	if got := strings.TrimSpace(runGit(t, checkoutDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")); got != "origin/main" {
 		t.Fatalf("expected origin/HEAD to point at origin/main, got %q", got)
 	}
+}
+
+func TestBuildRefreshCommandPreservesRemoteTrackingBranchAheadOfRequestedCommit(t *testing.T) {
+	remoteDir, checkoutDir, firstCommit, secondCommit := createStaleRemoteTrackingCheckout(t)
+
+	command := BuildRefreshCommand(&Checkout{
+		RemoteURL:      remoteDir,
+		CommitSHA:      firstCommit,
+		DestinationDir: checkoutDir,
+		Branch:         "main",
+	})
+	cmd := exec.Command(command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("refresh command failed: %v\n%s", err, string(out))
+	}
+
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "HEAD")); got != firstCommit {
+		t.Fatalf("unexpected checkout commit: got %q want %q", got, firstCommit)
+	}
+	if got := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "origin/main")); got != secondCommit {
+		t.Fatalf("expected remote-tracking branch to stay ahead: got %q want %q", got, secondCommit)
+	}
+	behind := strings.TrimSpace(runGit(t, checkoutDir, "rev-list", "--count", "HEAD..origin/main"))
+	if behind != "1" {
+		t.Fatalf("expected checkout branch to remain behind origin/main, behind=%s", behind)
+	}
+}
+
+func createRemoteWithStaleMainAndAvailableCommit(t *testing.T) (remoteDir, firstCommit, secondCommit string) {
+	t.Helper()
+
+	remoteDir = filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, "", "init", "--bare", remoteDir)
+	runGit(t, remoteDir, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	sourceDir := filepath.Join(t.TempDir(), "source")
+	runGit(t, "", "init", sourceDir)
+	runGit(t, sourceDir, "config", "user.name", "Test User")
+	runGit(t, sourceDir, "config", "user.email", "test@example.com")
+	runGit(t, sourceDir, "checkout", "-B", "main")
+	runGit(t, sourceDir, "remote", "add", "origin", remoteDir)
+
+	readmePath := filepath.Join(sourceDir, "README.md")
+	if err := os.WriteFile(readmePath, []byte("first\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	runGit(t, sourceDir, "add", "README.md")
+	runGit(t, sourceDir, "commit", "-m", "first")
+	runGit(t, sourceDir, "push", "origin", "HEAD:refs/heads/main")
+	firstCommit = strings.TrimSpace(runGit(t, sourceDir, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(readmePath, []byte("second\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	runGit(t, sourceDir, "commit", "-am", "second")
+	runGit(t, sourceDir, "push", "origin", "HEAD:refs/heads/cache")
+	secondCommit = strings.TrimSpace(runGit(t, sourceDir, "rev-parse", "HEAD"))
+
+	return remoteDir, firstCommit, secondCommit
 }
 
 func createStaleRemoteTrackingCheckout(t *testing.T) (remoteDir, checkoutDir, firstCommit, secondCommit string) {
