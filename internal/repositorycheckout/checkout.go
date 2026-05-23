@@ -321,9 +321,37 @@ func refreshScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 		)
 		script = append(script, bundleFetchScript(bundleRef)...)
 	} else {
-		script = append(script, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`)
+		script = append(script, refreshFetchScript(checkout)...)
 	}
 	return append(script, checkoutVerificationScript(checkout)...)
+}
+
+func refreshFetchScript(checkout *Checkout) []string {
+	if strings.TrimSpace(checkout.Branch) != "" {
+		return []string{
+			`# Prefer the branch ref so origin/$branch stays useful after refreshing cached checkouts.`,
+			`if ! git -C "$dest" fetch --filter=blob:none --progress origin "+refs/heads/$branch:refs/remotes/origin/$branch"; then`,
+			`  git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+			`fi`,
+			`git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+		}
+	}
+	return []string{
+		`default_ref="$(git -C "$dest" ls-remote --symref origin HEAD | while read -r marker ref target; do if [ "$marker" = "ref:" ] && [ "$target" = "HEAD" ]; then printf '%s\n' "$ref"; break; fi; done)"`,
+		`case "$default_ref" in`,
+		`  refs/heads/*)`,
+		`    default_branch="${default_ref#refs/heads/}"`,
+		`    if ! git -C "$dest" fetch --filter=blob:none --progress origin "+$default_ref:refs/remotes/origin/$default_branch"; then`,
+		`      git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+		`    fi`,
+		`    git -C "$dest" remote set-head origin "$default_branch" >/dev/null 2>&1 || true`,
+		`    ;;`,
+		`  *)`,
+		`    git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+		`    ;;`,
+		`esac`,
+		`git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+	}
 }
 
 func bundleInputScript() []string {
