@@ -21,6 +21,8 @@ service SandboxService {
   rpc RemoveSandboxPath(RemoveSandboxPathRequest) returns (RemoveSandboxPathResponse);
   rpc ArchiveSandboxPaths(ArchiveSandboxPathsRequest) returns (stream ArchiveSandboxPathsResponse);
   rpc ExtractSandboxArchive(stream ExtractSandboxArchiveRequest) returns (ExtractSandboxArchiveResponse);
+  rpc SuspendSandbox(SuspendSandboxRequest) returns (SuspendSandboxResponse);
+  rpc ResumeSandbox(ResumeSandboxRequest) returns (ResumeSandboxResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
   rpc DialSandboxPort(stream SandboxPortFrame) returns (stream SandboxPortFrame);
@@ -111,6 +113,9 @@ enum SandboxStatus {
   SANDBOX_STATUS_STOPPING = 3;
   SANDBOX_STATUS_STOPPED = 4;
   SANDBOX_STATUS_FAILED = 5;
+  SANDBOX_STATUS_SUSPENDING = 6;
+  SANDBOX_STATUS_SUSPENDED = 7;
+  SANDBOX_STATUS_WAKING = 8;
 }
 
 message PolicyAllowRule {
@@ -452,6 +457,22 @@ message TerminateSandboxResponse {
   string sandbox_id = 1;
   bool terminated = 2;
   string message = 3;
+}
+
+message SuspendSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message SuspendSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message ResumeSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message ResumeSandboxResponse {
+  Sandbox sandbox = 1;
 }
 
 message StreamSandboxEventsRequest {

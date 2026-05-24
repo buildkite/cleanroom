@@ -13,6 +13,9 @@ const (
 	SandboxStatus_SANDBOX_STATUS_STOPPING     = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING
 	SandboxStatus_SANDBOX_STATUS_STOPPED      = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED
 	SandboxStatus_SANDBOX_STATUS_FAILED       = cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED
+	SandboxStatus_SANDBOX_STATUS_SUSPENDING   = cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING
+	SandboxStatus_SANDBOX_STATUS_SUSPENDED    = cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED
+	SandboxStatus_SANDBOX_STATUS_WAKING       = cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING
 )
 
 type PolicyAllowRule = cleanroomv1.PolicyAllowRule
@@ -60,6 +63,10 @@ type ArchiveSandboxPathsResponse = cleanroomv1.ArchiveSandboxPathsResponse
 type ExtractSandboxArchiveInit = cleanroomv1.ExtractSandboxArchiveInit
 type ExtractSandboxArchiveRequest = cleanroomv1.ExtractSandboxArchiveRequest
 type ExtractSandboxArchiveResponse = cleanroomv1.ExtractSandboxArchiveResponse
+type SuspendSandboxRequest = cleanroomv1.SuspendSandboxRequest
+type SuspendSandboxResponse = cleanroomv1.SuspendSandboxResponse
+type ResumeSandboxRequest = cleanroomv1.ResumeSandboxRequest
+type ResumeSandboxResponse = cleanroomv1.ResumeSandboxResponse
 type TerminateSandboxRequest = cleanroomv1.TerminateSandboxRequest
 type TerminateSandboxResponse = cleanroomv1.TerminateSandboxResponse
 type StreamSandboxEventsRequest = cleanroomv1.StreamSandboxEventsRequest

@@ -20,6 +20,8 @@ type SandboxCommand struct {
 	Create    SandboxCreateCommand    `cmd:"" help:"Create a repo-agnostic sandbox"`
 	Inspect   SandboxInspectCommand   `name:"inspect" aliases:"show" cmd:"" help:"Inspect sandbox state and related execution IDs"`
 	List      SandboxListCommand      `name:"ls" aliases:"list" cmd:"" help:"List active sandboxes"`
+	Suspend   SandboxSuspendCommand   `cmd:"" help:"Suspend a sandbox until it is resumed or woken"`
+	Resume    SandboxResumeCommand    `cmd:"" help:"Resume a suspended sandbox"`
 	Terminate SandboxTerminateCommand `name:"rm" aliases:"terminate" cmd:"" help:"Terminate a sandbox"`
 }
 
@@ -52,6 +54,16 @@ type SandboxInspectCommand struct {
 type SandboxTerminateCommand struct {
 	clientFlags
 	SandboxID string `arg:"" required:"" help:"Sandbox ID to terminate"`
+}
+
+type SandboxSuspendCommand struct {
+	clientFlags
+	SandboxID string `arg:"" required:"" help:"Sandbox ID to suspend"`
+}
+
+type SandboxResumeCommand struct {
+	clientFlags
+	SandboxID string `arg:"" required:"" help:"Sandbox ID to resume"`
 }
 
 type CreateCommand struct {
@@ -288,6 +300,46 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	}
 
 	_, err = fmt.Fprintln(ctx.Stdout, resp.Message)
+	return err
+}
+
+func (c *SandboxSuspendCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{
+		SandboxId: c.SandboxID,
+	})
+	if err != nil {
+		return err
+	}
+	sandboxID := strings.TrimSpace(resp.GetSandbox().GetSandboxId())
+	if sandboxID == "" {
+		sandboxID = strings.TrimSpace(c.SandboxID)
+	}
+	_, err = fmt.Fprintf(ctx.Stdout, "sandbox %s suspended\n", sandboxID)
+	return err
+}
+
+func (c *SandboxResumeCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.ResumeSandbox(context.Background(), &cleanroomv1.ResumeSandboxRequest{
+		SandboxId: c.SandboxID,
+	})
+	if err != nil {
+		return err
+	}
+	sandboxID := strings.TrimSpace(resp.GetSandbox().GetSandboxId())
+	if sandboxID == "" {
+		sandboxID = strings.TrimSpace(c.SandboxID)
+	}
+	_, err = fmt.Fprintf(ctx.Stdout, "sandbox %s resumed\n", sandboxID)
 	return err
 }
 
@@ -657,6 +709,12 @@ func sandboxStatusString(s cleanroomv1.SandboxStatus) string {
 		return "stopped"
 	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED:
 		return "failed"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING:
+		return "suspending"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED:
+		return "suspended"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
+		return "waking"
 	default:
 		return "unknown"
 	}

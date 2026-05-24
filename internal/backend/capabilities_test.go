@@ -68,6 +68,12 @@ func (testReporterAdapter) Capabilities() map[string]bool {
 	}
 }
 
+type testSuspendableAdapter struct{ testAdapter }
+
+func (testSuspendableAdapter) SuspendSandbox(context.Context, string) error { return nil }
+
+func (testSuspendableAdapter) ResumeSandbox(context.Context, string) error { return nil }
+
 func TestCapabilitiesForAdapterInfersInterfaceCapabilities(t *testing.T) {
 	caps := CapabilitiesForAdapter(testPersistentAdapter{})
 
@@ -101,6 +107,14 @@ func TestCapabilitiesForAdapterInfersInterfaceCapabilities(t *testing.T) {
 		if caps[key] {
 			t.Fatalf("expected %s=false without backend reporter", key)
 		}
+	}
+}
+
+func TestCapabilitiesForAdapterInfersSuspendCapability(t *testing.T) {
+	caps := CapabilitiesForAdapter(testSuspendableAdapter{})
+
+	if !caps[CapabilitySandboxSuspend] {
+		t.Fatalf("expected %s=true", CapabilitySandboxSuspend)
 	}
 }
 

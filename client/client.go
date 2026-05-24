@@ -176,6 +176,20 @@ func (c *Client) ExtractSandboxArchive(ctx context.Context) (*connect.ClientStre
 	return c.inner.ExtractSandboxArchive(ctx), nil
 }
 
+func (c *Client) SuspendSandbox(ctx context.Context, req *SuspendSandboxRequest) (*SuspendSandboxResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.SuspendSandbox(ctx, req)
+}
+
+func (c *Client) ResumeSandbox(ctx context.Context, req *ResumeSandboxRequest) (*ResumeSandboxResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.ResumeSandbox(ctx, req)
+}
+
 func (c *Client) TerminateSandbox(ctx context.Context, req *TerminateSandboxRequest) (*TerminateSandboxResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")

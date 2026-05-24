@@ -464,6 +464,68 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
+func (a *Adapter) SuspendSandbox(ctx context.Context, sandboxID string) error {
+	instance, err := a.lifecycleSandboxInstance(sandboxID)
+	if err != nil {
+		return err
+	}
+	if err := a.requestVMControl(ctx, instance, "PauseVM"); err != nil {
+		return fmt.Errorf("pause darwin-vz sandbox: %w", err)
+	}
+	return nil
+}
+
+func (a *Adapter) ResumeSandbox(ctx context.Context, sandboxID string) error {
+	instance, err := a.lifecycleSandboxInstance(sandboxID)
+	if err != nil {
+		return err
+	}
+	if err := a.requestVMControl(ctx, instance, "ResumeVM"); err != nil {
+		return fmt.Errorf("resume darwin-vz sandbox: %w", err)
+	}
+	return nil
+}
+
+func (a *Adapter) lifecycleSandboxInstance(sandboxID string) (*sandboxInstance, error) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+	return instance, nil
+}
+
+func (a *Adapter) requestVMControl(ctx context.Context, instance *sandboxInstance, op string) error {
+	if instance == nil {
+		return errors.New("missing sandbox instance")
+	}
+	if instance.Helper == nil {
+		return errors.New("darwin-vz sandbox helper is not available")
+	}
+	if strings.TrimSpace(instance.VMID) == "" {
+		return errors.New("darwin-vz sandbox vm id is empty")
+	}
+	helperRequest := a.helperRequestFn
+	if helperRequest == nil {
+		helperRequest = func(ctx context.Context, helper *helperSession, req helperControlRequest) (helperControlResponse, error) {
+			return helper.request(ctx, req)
+		}
+	}
+	if _, err := helperRequest(ctx, instance.Helper, helperControlRequest{Op: op, VMID: instance.VMID}); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) (retErr error) {
 	ctx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("github.com/buildkite/cleanroom/internal/backend/darwinvz").Start(
 		ctx,

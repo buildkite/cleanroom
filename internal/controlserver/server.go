@@ -212,6 +212,22 @@ func (s *Server) ListSandboxes(ctx context.Context, req *connect.Request[cleanro
 	return connect.NewResponse(resp), nil
 }
 
+func (s *Server) SuspendSandbox(ctx context.Context, req *connect.Request[cleanroomv1.SuspendSandboxRequest]) (*connect.Response[cleanroomv1.SuspendSandboxResponse], error) {
+	resp, err := s.service.SuspendSandbox(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) ResumeSandbox(ctx context.Context, req *connect.Request[cleanroomv1.ResumeSandboxRequest]) (*connect.Response[cleanroomv1.ResumeSandboxResponse], error) {
+	resp, err := s.service.ResumeSandbox(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 func (s *Server) DownloadSandboxFile(ctx context.Context, req *connect.Request[cleanroomv1.DownloadSandboxFileRequest]) (*connect.Response[cleanroomv1.DownloadSandboxFileResponse], error) {
 	resp, err := s.service.DownloadSandboxFile(ctx, req.Msg)
 	if err != nil {
@@ -709,7 +725,7 @@ func toConnectError(err error) error {
 		code = connect.CodeInvalidArgument
 	case strings.Contains(message, "unknown sandbox"), strings.Contains(message, "unknown cleanroom"), strings.Contains(message, "unknown execution"):
 		code = connect.CodeNotFound
-	case strings.Contains(message, "not ready"):
+	case strings.Contains(message, "not ready"), strings.Contains(message, "not suspended"):
 		code = connect.CodeFailedPrecondition
 	}
 	return connect.NewError(code, err)
