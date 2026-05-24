@@ -75,6 +75,45 @@ In the local Grafana stack:
 - use the `Prometheus` datasource for `cleanroom_*` metrics
 - use the provisioned dashboard for a quick overview
 
+### External Go clients
+
+External callers using `github.com/buildkite/cleanroom/client` can install an
+`otelconnect` client interceptor to propagate W3C TraceContext and Baggage over
+standard Connect/HTTP headers:
+
+```go
+propagator := propagation.NewCompositeTextMapPropagator(
+	propagation.TraceContext{},
+	propagation.Baggage{},
+)
+interceptor, err := otelconnect.NewInterceptor(
+	otelconnect.WithTracerProvider(tracerProvider),
+	otelconnect.WithPropagator(propagator),
+)
+if err != nil {
+	return err
+}
+
+cleanroomClient, err := client.New(
+	os.Getenv("CLEANROOM_HOST"),
+	client.WithConnectInterceptors(interceptor),
+)
+if err != nil {
+	return err
+}
+
+ctx, span := tracerProvider.Tracer("botdash").Start(ctx, "bot.turn")
+defer span.End()
+
+_, err = cleanroomClient.CreateExecution(ctx, &client.CreateExecutionRequest{
+	SandboxId: sandboxID,
+	Command:   []string{"go", "test", "./..."},
+})
+```
+
+Trace propagation does not require any Cleanroom proto fields such as
+`traceparent`; it uses the normal Connect request headers.
+
 ## Related docs
 
 - [examples/observability/README.md](../examples/observability/README.md) for

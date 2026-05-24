@@ -36,7 +36,8 @@ type TLSOptions struct {
 type Option func(*options)
 
 type options struct {
-	tls tlsconfig.Options
+	tls                 tlsconfig.Options
+	connectInterceptors []connect.Interceptor
 }
 
 // WithTLS configures TLS options for HTTPS endpoints.
@@ -46,6 +47,21 @@ func WithTLS(opts TLSOptions) Option {
 			CertPath: opts.CertPath,
 			KeyPath:  opts.KeyPath,
 			CAPath:   opts.CAPath,
+		}
+	}
+}
+
+// WithConnectInterceptors adds Connect client interceptors to each RPC.
+//
+// This can be used with otelconnect to propagate OpenTelemetry trace context
+// through standard Connect/HTTP headers.
+func WithConnectInterceptors(interceptors ...connect.Interceptor) Option {
+	return func(o *options) {
+		for _, interceptor := range interceptors {
+			if interceptor == nil {
+				continue
+			}
+			o.connectInterceptors = append(o.connectInterceptors, interceptor)
 		}
 	}
 }
@@ -74,7 +90,11 @@ func New(host string, opts ...Option) (*Client, error) {
 	if ep.Scheme == "tssvc" {
 		return nil, errors.New("tssvc:// endpoints are listen-only; use https://<service>.<your-tailnet>.ts.net")
 	}
-	inner, err := controlclient.New(ep, controlclient.WithTLS(o.tls))
+	inner, err := controlclient.New(
+		ep,
+		controlclient.WithTLS(o.tls),
+		controlclient.WithConnectInterceptors(o.connectInterceptors...),
+	)
 	if err != nil {
 		return nil, err
 	}
