@@ -725,7 +725,9 @@ func toConnectError(err error) error {
 		code = connect.CodeInvalidArgument
 	case strings.Contains(message, "unknown sandbox"), strings.Contains(message, "unknown cleanroom"), strings.Contains(message, "unknown execution"):
 		code = connect.CodeNotFound
-	case strings.Contains(message, "not ready"), strings.Contains(message, "not suspended"):
+	case strings.Contains(message, "not ready"),
+		strings.Contains(message, "not suspended"),
+		strings.Contains(message, "does not support sandbox suspend"):
 		code = connect.CodeFailedPrecondition
 	}
 	return connect.NewError(code, err)

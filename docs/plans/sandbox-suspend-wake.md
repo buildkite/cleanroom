@@ -134,6 +134,8 @@ READY -> STOPPING -> STOPPED
 SUSPENDED -> STOPPING -> STOPPED
 WAKING -> FAILED
 SUSPENDING -> READY
+SUSPENDING -> SUSPENDED
+WAKING -> SUSPENDED
 ```
 
 `SUSPENDED` means the sandbox identity, metadata, rootfs, helper process, and
@@ -146,6 +148,10 @@ especially automatic idle suspend. If the backend cannot pause a still-running
 sandbox, the control service should publish a failed-suspend event and leave the
 sandbox usable. It should mark the sandbox `FAILED` only when the backend reports
 that the instance is gone, corrupt, or otherwise cannot safely continue.
+Deadline or cancellation errors are indeterminate because the backend may have
+already applied the lifecycle operation before the response failed. In those
+cases, the control plane should keep the sandbox in the conservative retryable
+state: `SUSPENDED` after ambiguous suspend or wake results.
 
 `STOPPED` remains terminal. Stopped sandboxes are not wakeable.
 
@@ -376,8 +382,11 @@ Until then, suspended sandboxes are same-daemon and same-host only.
 - Failed suspend must be non-terminal when the sandbox is still running: publish
   an event, revert to `READY`, and retry only after the next idle window. Mark
   `FAILED` only when the backend reports a lost or unusable instance.
-- Failed wake should be visible as a sandbox event and final `FAILED` state, not
-  an endless `WAKING` state.
+- Ambiguous suspend or wake results, such as deadline and cancellation errors,
+  must not leave the sandbox in `READY` unless the backend proves it is running.
+  Use `SUSPENDED` as the retryable conservative state.
+- Failed wake should be visible as a sandbox event and final `FAILED` state for
+  definite backend errors, not an endless `WAKING` state.
 - Idle timers must be disabled by default until real backend smoke tests prove
   the behavior.
 
