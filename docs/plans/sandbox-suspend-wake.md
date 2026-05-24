@@ -283,7 +283,9 @@ The helper should:
    event, and call `ResumeSandbox` without holding `s.mu`.
 4. Coalesce concurrent wake attempts so only one backend resume call runs.
 5. On successful wake, transition to `READY` and continue.
-6. On wake failure, transition to `FAILED` and return a clear error.
+6. On wake failure, transition to `FAILED` and return a clear error. Keep
+   `FAILED` sandboxes in active-resource metrics until termination confirms
+   resources are gone.
 7. Claim the requested operation marker, such as active execution or file
    transfer, only after the sandbox is ready.
 
@@ -388,7 +390,8 @@ Until then, suspended sandboxes are same-daemon and same-host only.
   backend proves it is running. Use `SUSPENDED` as the retryable conservative
   state.
 - Failed wake should be visible as a sandbox event and final `FAILED` state for
-  definite backend errors, not an endless `WAKING` state.
+  definite backend errors, not an endless `WAKING` state. `FAILED` still counts
+  in active-resource metrics until termination confirms cleanup.
 - Idle timers must be disabled by default until real backend smoke tests prove
   the behavior.
 

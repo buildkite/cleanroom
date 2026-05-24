@@ -137,7 +137,8 @@ metric labels.
 Sandbox resource metrics are aggregate gauges for active sandboxes grouped by
 backend and status. They report the effective launch envelope Cleanroom
 resolved for each sandbox, not guest runtime memory pressure or exact host
-reservations.
+reservations. Failed sandboxes remain in these aggregates until termination,
+because a failed wake can leave backend resources allocated.
 
 ### Common attributes
 

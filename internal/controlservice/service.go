@@ -305,6 +305,7 @@ func sandboxStatusHasActiveResources(status cleanroomv1.SandboxStatus) bool {
 	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,
 		cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
 		cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED,
 		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING,
 		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED,
 		cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
@@ -322,6 +323,8 @@ func sandboxStatusMetricValue(status cleanroomv1.SandboxStatus) string {
 		return "ready"
 	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING:
 		return "stopping"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED:
+		return "failed"
 	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING:
 		return "suspending"
 	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED:

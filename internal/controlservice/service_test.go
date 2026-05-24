@@ -889,7 +889,13 @@ func TestResumeSandboxSuspendedUnsupportedBackendReturnsCapabilityError(t *testi
 func TestResumeSandboxFailureMarksFailed(t *testing.T) {
 	adapter := &suspendableAdapter{}
 	svc := newTestService(adapter)
-	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	policyProto := testPolicy()
+	policyProto.Resources = &cleanroomv1.PolicyResources{
+		Vcpus:       2,
+		MemoryBytes: 2048 << 20,
+		DiskBytes:   8 << 30,
+	}
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: policyProto})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -915,6 +921,19 @@ func TestResumeSandboxFailureMarksFailed(t *testing.T) {
 	}
 	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED; got != want {
 		t.Fatalf("unexpected sandbox status after failed resume: got %v want %v", got, want)
+	}
+	snapshots := svc.sandboxResourceMetricSnapshots(context.Background())
+	if len(snapshots) != 1 {
+		t.Fatalf("expected one resource metric snapshot, got %#v", snapshots)
+	}
+	if got, want := snapshots[0].Status, "failed"; got != want {
+		t.Fatalf("unexpected resource metric status: got %q want %q", got, want)
+	}
+	if got, want := snapshots[0].Count, int64(1); got != want {
+		t.Fatalf("unexpected resource metric count: got %d want %d", got, want)
+	}
+	if got, want := snapshots[0].EffectiveMemoryBytes, int64(2048<<20); got != want {
+		t.Fatalf("unexpected resource metric memory: got %d want %d", got, want)
 	}
 }
 
