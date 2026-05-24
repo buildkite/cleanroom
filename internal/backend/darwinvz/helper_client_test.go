@@ -1,11 +1,58 @@
 package darwinvz
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/buildkite/cleanroom/internal/backend"
 )
+
+func TestHelperRequestDecodeErrorIsLifecycleIndeterminate(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	session := &helperSession{
+		conn: clientConn,
+		enc:  json.NewEncoder(clientConn),
+		dec:  json.NewDecoder(clientConn),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := session.request(context.Background(), helperControlRequest{Op: "PauseVM", VMID: "vm-test"})
+		errCh <- err
+	}()
+
+	var req helperControlRequest
+	if err := json.NewDecoder(serverConn).Decode(&req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if req.Op != "PauseVM" {
+		t.Fatalf("unexpected request op: got %q want PauseVM", req.Op)
+	}
+	if err := serverConn.Close(); err != nil {
+		t.Fatalf("close server conn: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected request error")
+		}
+		if !errors.Is(err, backend.ErrSandboxLifecycleIndeterminate) {
+			t.Fatalf("expected indeterminate lifecycle error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request error")
+	}
+}
 
 func TestCloseProcessReturnsWhenDoneChannelIsDrained(t *testing.T) {
 	sleepPath, err := exec.LookPath("sleep")

@@ -790,6 +790,36 @@ func TestSuspendSandboxIndeterminateFailureLeavesSuspended(t *testing.T) {
 	}
 }
 
+func TestSuspendSandboxBackendIndeterminateFailureLeavesSuspended(t *testing.T) {
+	adapter := &suspendableAdapter{
+		suspendFn: func(context.Context, string) error {
+			return fmt.Errorf("helper response lost: %w", backend.ErrSandboxLifecycleIndeterminate)
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	_, err = svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID})
+	if err == nil {
+		t.Fatal("expected SuspendSandbox to return backend error")
+	}
+	if !errors.Is(err, backend.ErrSandboxLifecycleIndeterminate) {
+		t.Fatalf("expected indeterminate lifecycle error, got %v", err)
+	}
+
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
+		t.Fatalf("unexpected sandbox status after indeterminate suspend: got %v want %v", got, want)
+	}
+}
+
 func TestResumeSandboxTransitionsSuspendedToReady(t *testing.T) {
 	adapter := &suspendableAdapter{}
 	svc := newTestService(adapter)
@@ -925,6 +955,38 @@ func TestResumeSandboxIndeterminateFailureLeavesSuspended(t *testing.T) {
 	}
 	if got, want := adapter.resumeCalls, 2; got != want {
 		t.Fatalf("unexpected resume call count: got %d want %d", got, want)
+	}
+}
+
+func TestResumeSandboxBackendIndeterminateFailureLeavesSuspended(t *testing.T) {
+	adapter := &suspendableAdapter{}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+	adapter.resumeFn = func(context.Context, string) error {
+		return fmt.Errorf("helper response lost: %w", backend.ErrSandboxLifecycleIndeterminate)
+	}
+
+	_, err = svc.ResumeSandbox(context.Background(), &cleanroomv1.ResumeSandboxRequest{SandboxId: sandboxID})
+	if err == nil {
+		t.Fatal("expected ResumeSandbox to return backend error")
+	}
+	if !errors.Is(err, backend.ErrSandboxLifecycleIndeterminate) {
+		t.Fatalf("expected indeterminate lifecycle error, got %v", err)
+	}
+
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
+		t.Fatalf("unexpected sandbox status after indeterminate resume: got %v want %v", got, want)
 	}
 }
 

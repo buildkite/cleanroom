@@ -1174,7 +1174,9 @@ func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSand
 }
 
 func isIndeterminateSandboxLifecycleError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, backend.ErrSandboxLifecycleIndeterminate)
 }
 
 func (s *Service) ListExecutions(_ context.Context, req *cleanroomv1.ListExecutionsRequest) (*cleanroomv1.ListExecutionsResponse, error) {

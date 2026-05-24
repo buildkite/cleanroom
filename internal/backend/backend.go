@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"maps"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/policy"
 )
+
+var ErrSandboxLifecycleIndeterminate = errors.New("sandbox lifecycle result indeterminate")
 
 const (
 	CapabilityExecStreaming               = "exec.streaming"
