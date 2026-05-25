@@ -2700,8 +2700,8 @@ func discoverGuestAgentBinaryWith(
 		if self, err := executable(); err == nil {
 			dirs := executableSearchDirs(self)
 			for _, dir := range dirs {
-				candidates = append(candidates, filepath.Join(dir, linuxName))
 				candidates = append(candidates, filepath.Join(dir, "cleanroom-guest-agent"))
+				candidates = append(candidates, filepath.Join(dir, linuxName))
 			}
 		}
 	}

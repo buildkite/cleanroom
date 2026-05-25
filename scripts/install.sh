@@ -209,6 +209,15 @@ install_binary() {
   run_with_optional_sudo install -m 0755 "$src" "$dst"
 }
 
+remove_legacy_darwin_guest_agent_arch_alias() {
+  local path
+
+  [ "$HOST_OS" = "Darwin" ] || return 0
+  path="${INSTALL_DIR}/cleanroom-guest-agent-linux-${HOST_GOARCH}"
+  [ -e "$path" ] || return 0
+  run_with_optional_sudo rm -f "$path"
+}
+
 install_app_bundle() {
   local src="$1"
   local dst="$2"
@@ -401,6 +410,7 @@ try_install_notarized_macos_pkg() {
     warn "failed to install notarized macOS package: ${pkg_asset}; falling back to archive install"
     return 1
   fi
+  remove_legacy_darwin_guest_agent_arch_alias
 
   log "Installed cleanroom via notarized macOS package"
   log "Installed cleanroom to ${INSTALL_DIR}/cleanroom"
@@ -447,8 +457,14 @@ case "$HOST_OS_RAW" in
 esac
 
 case "$HOST_ARCH_RAW" in
-  x86_64|amd64) HOST_ARCH="x86_64" ;;
-  arm64|aarch64) HOST_ARCH="arm64" ;;
+  x86_64|amd64)
+    HOST_ARCH="x86_64"
+    HOST_GOARCH="amd64"
+    ;;
+  arm64|aarch64)
+    HOST_ARCH="arm64"
+    HOST_GOARCH="arm64"
+    ;;
   *) die "unsupported architecture: ${HOST_ARCH_RAW}" ;;
 esac
 
@@ -542,6 +558,7 @@ fi
 prepare_install_dir
 install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom" "${INSTALL_DIR}/cleanroom"
 install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent" "${INSTALL_DIR}/cleanroom-guest-agent"
+remove_legacy_darwin_guest_agent_arch_alias
 
 if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
   HELPER_BUNDLE_SRC="${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz.app"
