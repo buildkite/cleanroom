@@ -4,6 +4,7 @@ package scripts_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,6 +121,40 @@ printf '%s\n' "$*" >> "$SUDO_CALLS"
 	want := cleanroomPath + " daemon install --init-config --restart"
 	if got != want {
 		t.Fatalf("unexpected sudo daemon command: got %q want %q", got, want)
+	}
+}
+
+func TestInstallScriptRemovesDarwinGuestAgentArchAlias(t *testing.T) {
+	content, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	aliasPath := filepath.Join(tmpDir, "cleanroom-guest-agent-linux-arm64")
+	if err := os.WriteFile(aliasPath, []byte("stale guest-agent"), 0o755); err != nil {
+		t.Fatalf("write guest agent alias: %v", err)
+	}
+
+	script := strings.Join([]string{
+		"declare -a SUDO_CMD=()",
+		shellFunction(t, string(content), "run_with_optional_sudo"),
+		shellFunction(t, string(content), "remove_legacy_darwin_guest_agent_arch_alias"),
+		`HOST_OS=Darwin`,
+		`HOST_GOARCH=arm64`,
+		`INSTALL_DIR="$TEST_INSTALL_DIR"`,
+		`remove_legacy_darwin_guest_agent_arch_alias`,
+	}, "\n")
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(), "TEST_INSTALL_DIR="+tmpDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("remove_legacy_darwin_guest_agent_arch_alias failed: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(aliasPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected guest agent alias to be removed, got err %v", err)
 	}
 }
 

@@ -70,6 +70,39 @@ func TestDiscoverGuestAgentBinaryUsesSiblingBeforePATH(t *testing.T) {
 	}
 }
 
+func TestDiscoverGuestAgentBinaryPrefersGenericSiblingBeforeArchAlias(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	self := tmp + "/cleanroom"
+	genericSibling := tmp + "/cleanroom-guest-agent"
+	archSibling := tmp + "/cleanroom-guest-agent-linux-arm64"
+	if err := os.WriteFile(self, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write self binary: %v", err)
+	}
+	if err := os.WriteFile(genericSibling, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write generic sibling guest agent: %v", err)
+	}
+	if err := os.WriteFile(archSibling, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write arch sibling guest agent: %v", err)
+	}
+
+	got, err := discoverGuestAgentBinaryWith(
+		"arm64",
+		func(string) (string, error) { return "", errors.New("no path") },
+		func() (string, error) { return self, nil },
+		func() (string, error) { return "", errors.New("no working directory") },
+		os.Stat,
+		func(path string) (bool, error) { return path == genericSibling || path == archSibling, nil },
+	)
+	if err != nil {
+		t.Fatalf("discoverGuestAgentBinaryWith returned error: %v", err)
+	}
+	if got != genericSibling {
+		t.Fatalf("unexpected guest agent path: got %q want %q", got, genericSibling)
+	}
+}
+
 func TestDiscoverGuestAgentBinaryPrefersSiblingBeforeAncestorDist(t *testing.T) {
 	t.Parallel()
 
