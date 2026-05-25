@@ -147,6 +147,151 @@ cache:
 	}
 }
 
+func TestLoadParsesAuthOIDCConfig(t *testing.T) {
+	cfg, err := loadConfigFromContent(t, `default_backend: firecracker
+auth:
+  required: true
+  oidc:
+    issuers:
+      - name: " github-actions "
+        issuer: " https://token.actions.githubusercontent.com/ "
+        audiences:
+          - " cleanroom "
+        jwks_url: " https://token.actions.githubusercontent.com/.well-known/jwks "
+  policy_file: " ~/.config/cleanroom/auth-policy.yaml "
+`)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Auth.Required {
+		t.Fatal("expected auth.required")
+	}
+	if got, want := cfg.Auth.PolicyFile, "~/.config/cleanroom/auth-policy.yaml"; got != want {
+		t.Fatalf("unexpected auth policy file: got %q want %q", got, want)
+	}
+	if got, want := len(cfg.Auth.OIDC.Issuers), 1; got != want {
+		t.Fatalf("unexpected issuer count: got %d want %d", got, want)
+	}
+	issuer := cfg.Auth.OIDC.Issuers[0]
+	if got, want := issuer.Name, "github-actions"; got != want {
+		t.Fatalf("unexpected issuer name: got %q want %q", got, want)
+	}
+	if got, want := issuer.Issuer, "https://token.actions.githubusercontent.com"; got != want {
+		t.Fatalf("unexpected issuer URL: got %q want %q", got, want)
+	}
+	if got, want := issuer.Audiences, []string{"cleanroom"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected audiences: got %v want %v", got, want)
+	}
+	if got, want := issuer.AllowedAlgorithms, []string{"RS256"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected allowed algorithms: got %v want %v", got, want)
+	}
+	if got, want := issuer.ClockSkewSeconds, DefaultAuthOIDCClockSkewSeconds; got != want {
+		t.Fatalf("unexpected clock skew: got %d want %d", got, want)
+	}
+	if got, want := issuer.MaxTokenLifetimeSeconds, DefaultAuthOIDCMaxTokenLifetimeSeconds; got != want {
+		t.Fatalf("unexpected max token lifetime: got %d want %d", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidAuthOIDCConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    string
+		wantErr string
+	}{
+		{
+			name: "missing issuers",
+			auth: `auth:
+  required: true
+  policy_file: ./auth-policy.yaml
+`,
+			wantErr: "auth.oidc.issuers must contain at least one issuer",
+		},
+		{
+			name: "missing policy file",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+`,
+			wantErr: "auth.policy_file is required",
+		},
+		{
+			name: "missing audience",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+  policy_file: ./auth-policy.yaml
+`,
+			wantErr: "auth.oidc.issuers[0].audiences must contain at least one audience",
+		},
+		{
+			name: "bad issuer url",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: not-a-url
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+  policy_file: ./auth-policy.yaml
+`,
+			wantErr: "invalid auth.oidc.issuers[0].issuer",
+		},
+		{
+			name: "unsupported algorithm",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+        allowed_algorithms: [none]
+  policy_file: ./auth-policy.yaml
+`,
+			wantErr: `unsupported auth.oidc.issuers[0].allowed_algorithms[0] "none"`,
+		},
+		{
+			name: "remote http jwks",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: http://metadata.example/.well-known/jwks
+  policy_file: ./auth-policy.yaml
+`,
+			wantErr: "http scheme is only allowed for loopback hosts",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadConfigFromContent(t, "default_backend: firecracker\n"+tt.auth)
+			if err == nil {
+				t.Fatal("expected Load to reject invalid auth config")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error to contain %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestLoadSupportsDarwinVZMinimumRootFSBytes(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

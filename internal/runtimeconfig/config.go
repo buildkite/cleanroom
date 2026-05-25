@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -21,10 +22,37 @@ import (
 type Config struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
+	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	Cache          CacheConfig         `yaml:"cache,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       Backends            `yaml:"backends"`
+}
+
+const (
+	DefaultAuthOIDCClockSkewSeconds        int64 = 60
+	DefaultAuthOIDCMaxTokenLifetimeSeconds int64 = 3600
+)
+
+// AuthConfig configures control-plane caller authentication.
+type AuthConfig struct {
+	Required   bool           `yaml:"required,omitempty"`
+	OIDC       AuthOIDCConfig `yaml:"oidc,omitempty"`
+	PolicyFile string         `yaml:"policy_file,omitempty"`
+}
+
+type AuthOIDCConfig struct {
+	Issuers []AuthOIDCIssuerConfig `yaml:"issuers,omitempty"`
+}
+
+type AuthOIDCIssuerConfig struct {
+	Name                    string   `yaml:"name,omitempty"`
+	Issuer                  string   `yaml:"issuer"`
+	Audiences               []string `yaml:"audiences,omitempty"`
+	JWKSURL                 string   `yaml:"jwks_url,omitempty"`
+	AllowedAlgorithms       []string `yaml:"allowed_algorithms,omitempty"`
+	ClockSkewSeconds        int64    `yaml:"clock_skew_seconds,omitempty"`
+	MaxTokenLifetimeSeconds int64    `yaml:"max_token_lifetime_seconds,omitempty"`
 }
 
 // CacheConfig configures host-to-host cache reuse.
@@ -108,6 +136,7 @@ type TraceSamplingConfig struct {
 type configFile struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
+	Auth           AuthConfig          `yaml:"auth,omitempty"`
 	Cache          CacheConfig         `yaml:"cache,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
@@ -124,6 +153,7 @@ func (f configFile) config() Config {
 	cfg := Config{
 		DefaultBackend: f.DefaultBackend,
 		ControlHost:    f.ControlHost,
+		Auth:           f.Auth,
 		Cache:          f.Cache,
 		Gateway:        f.Gateway,
 		Observability:  f.Observability,
@@ -428,6 +458,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 		cfg.DefaultBackend = inferredDefaultBackend
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
+	cfg.Auth = normalizeAuthConfig(cfg.Auth)
 	cfg.Cache.Peers = normalizeCachePeers(cfg.Cache.Peers)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Gateway.OCI.Registries = trimStringMap(cfg.Gateway.OCI.Registries)
@@ -470,6 +501,9 @@ func validateConfig(cfg Config) error {
 	if err := validateCacheConfig(cfg.Cache); err != nil {
 		return err
 	}
+	if err := validateAuthConfig(cfg.Auth); err != nil {
+		return err
+	}
 	if err := validateGatewayConfig(cfg.Gateway); err != nil {
 		return err
 	}
@@ -478,6 +512,146 @@ func validateConfig(cfg Config) error {
 	}
 	if err := validateObservabilityConfig(cfg.Observability); err != nil {
 		return err
+	}
+	return nil
+}
+
+func normalizeAuthConfig(cfg AuthConfig) AuthConfig {
+	cfg.PolicyFile = strings.TrimSpace(cfg.PolicyFile)
+	for i := range cfg.OIDC.Issuers {
+		issuer := &cfg.OIDC.Issuers[i]
+		issuer.Name = strings.TrimSpace(issuer.Name)
+		issuer.Issuer = strings.TrimRight(strings.TrimSpace(issuer.Issuer), "/")
+		issuer.JWKSURL = strings.TrimSpace(issuer.JWKSURL)
+		issuer.Audiences = trimStringSlice(issuer.Audiences)
+		issuer.AllowedAlgorithms = trimStringSlice(issuer.AllowedAlgorithms)
+		if len(issuer.AllowedAlgorithms) == 0 && issuerConfigHasValues(*issuer) {
+			issuer.AllowedAlgorithms = []string{"RS256"}
+		}
+		if issuer.ClockSkewSeconds == 0 && issuerConfigHasValues(*issuer) {
+			issuer.ClockSkewSeconds = DefaultAuthOIDCClockSkewSeconds
+		}
+		if issuer.MaxTokenLifetimeSeconds == 0 && issuerConfigHasValues(*issuer) {
+			issuer.MaxTokenLifetimeSeconds = DefaultAuthOIDCMaxTokenLifetimeSeconds
+		}
+	}
+	return cfg
+}
+
+func issuerConfigHasValues(cfg AuthOIDCIssuerConfig) bool {
+	return strings.TrimSpace(cfg.Name) != "" ||
+		strings.TrimSpace(cfg.Issuer) != "" ||
+		strings.TrimSpace(cfg.JWKSURL) != "" ||
+		len(cfg.Audiences) > 0 ||
+		len(cfg.AllowedAlgorithms) > 0 ||
+		cfg.ClockSkewSeconds != 0 ||
+		cfg.MaxTokenLifetimeSeconds != 0
+}
+
+func validateAuthConfig(cfg AuthConfig) error {
+	configured := cfg.Required || strings.TrimSpace(cfg.PolicyFile) != "" || len(cfg.OIDC.Issuers) > 0
+	if !configured {
+		return nil
+	}
+	if len(cfg.OIDC.Issuers) == 0 {
+		return errors.New("auth.oidc.issuers must contain at least one issuer when auth is configured")
+	}
+	if strings.TrimSpace(cfg.PolicyFile) == "" {
+		return errors.New("auth.policy_file is required when auth is configured")
+	}
+
+	seenNames := map[string]struct{}{}
+	seenIssuers := map[string]struct{}{}
+	for i, issuer := range cfg.OIDC.Issuers {
+		if strings.TrimSpace(issuer.Name) == "" {
+			return fmt.Errorf("auth.oidc.issuers[%d].name is required", i)
+		}
+		if strings.ContainsAny(issuer.Name, " \t\r\n/") {
+			return fmt.Errorf("auth.oidc.issuers[%d].name must not contain whitespace or slash", i)
+		}
+		if _, ok := seenNames[issuer.Name]; ok {
+			return fmt.Errorf("duplicate auth.oidc.issuers[%d].name %q", i, issuer.Name)
+		}
+		seenNames[issuer.Name] = struct{}{}
+
+		if strings.TrimSpace(issuer.Issuer) == "" {
+			return fmt.Errorf("auth.oidc.issuers[%d].issuer is required", i)
+		}
+		if err := validateAuthURL(issuer.Issuer); err != nil {
+			return fmt.Errorf("invalid auth.oidc.issuers[%d].issuer: %w", i, err)
+		}
+		if _, ok := seenIssuers[issuer.Issuer]; ok {
+			return fmt.Errorf("duplicate auth.oidc.issuers[%d].issuer %q", i, issuer.Issuer)
+		}
+		seenIssuers[issuer.Issuer] = struct{}{}
+
+		if len(issuer.Audiences) == 0 {
+			return fmt.Errorf("auth.oidc.issuers[%d].audiences must contain at least one audience", i)
+		}
+		if strings.TrimSpace(issuer.JWKSURL) == "" {
+			return fmt.Errorf("auth.oidc.issuers[%d].jwks_url is required", i)
+		}
+		if err := validateAuthURL(issuer.JWKSURL); err != nil {
+			return fmt.Errorf("invalid auth.oidc.issuers[%d].jwks_url: %w", i, err)
+		}
+		for j, alg := range issuer.AllowedAlgorithms {
+			switch alg {
+			case "RS256":
+			default:
+				return fmt.Errorf("unsupported auth.oidc.issuers[%d].allowed_algorithms[%d] %q (expected RS256)", i, j, alg)
+			}
+		}
+		if issuer.ClockSkewSeconds < 0 {
+			return fmt.Errorf("auth.oidc.issuers[%d].clock_skew_seconds must be non-negative", i)
+		}
+		if issuer.MaxTokenLifetimeSeconds <= 0 {
+			return fmt.Errorf("auth.oidc.issuers[%d].max_token_lifetime_seconds must be positive", i)
+		}
+	}
+	return nil
+}
+
+func validateAuthURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return err
+	}
+	switch parsed.Scheme {
+	case "https":
+	case "http":
+		if !isLoopbackHost(parsed.Hostname()) {
+			return errors.New("http scheme is only allowed for loopback hosts")
+		}
+	default:
+		return fmt.Errorf("unsupported scheme %q (expected https, or http for loopback)", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("must include a host")
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateHTTPURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return err
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("unsupported scheme %q (expected http or https)", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("must include a host")
 	}
 	return nil
 }
