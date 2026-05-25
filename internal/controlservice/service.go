@@ -304,7 +304,11 @@ func sandboxStatusHasActiveResources(status cleanroomv1.SandboxStatus) bool {
 	switch status {
 	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,
 		cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING:
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
 		return true
 	default:
 		return false
@@ -319,6 +323,14 @@ func sandboxStatusMetricValue(status cleanroomv1.SandboxStatus) string {
 		return "ready"
 	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING:
 		return "stopping"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED:
+		return "failed"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING:
+		return "suspending"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED:
+		return "suspended"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
+		return "waking"
 	default:
 		return "unknown"
 	}
@@ -1020,6 +1032,154 @@ func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesR
 		resp.Sandboxes = append(resp.Sandboxes, item.sandbox)
 	}
 	return resp, nil
+}
+
+func (s *Service) SuspendSandbox(ctx context.Context, req *cleanroomv1.SuspendSandboxRequest) (*cleanroomv1.SuspendSandboxResponse, error) {
+	if req == nil || strings.TrimSpace(req.GetSandboxId()) == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+
+	var suspendable backend.SuspendableAdapter
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED {
+		resp := &cleanroomv1.SuspendSandboxResponse{Sandbox: cloneSandboxLocked(state)}
+		s.mu.Unlock()
+		return resp, nil
+	}
+	if err := ensureSandboxIdleLocked(sandboxID, state, s.executions); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[backend.CapabilitySandboxSuspend] {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("backend %q does not support sandbox suspend", state.Backend)
+	}
+	suspendable, ok = adapter.(backend.SuspendableAdapter)
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("backend_capability_mismatch: backend %q reports sandbox suspend but does not implement it", state.Backend)
+	}
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING, "sandbox suspend requested")
+	s.mu.Unlock()
+
+	err := suspendable.SuspendSandbox(ctx, sandboxID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err != nil {
+		if current.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING {
+			status := cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY
+			message := fmt.Sprintf("sandbox suspend failed: %v", err)
+			if isIndeterminateSandboxLifecycleError(err) {
+				status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED
+				message = fmt.Sprintf("sandbox suspend result indeterminate: %v", err)
+			}
+			s.recordSandboxEventLocked(current, status, message)
+		}
+		return nil, fmt.Errorf("suspend backend sandbox: %w", err)
+	}
+	if current.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING {
+		s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED, "sandbox suspended")
+	}
+	return &cleanroomv1.SuspendSandboxResponse{Sandbox: cloneSandboxLocked(current)}, nil
+}
+
+func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSandboxRequest) (*cleanroomv1.ResumeSandboxResponse, error) {
+	if req == nil || strings.TrimSpace(req.GetSandboxId()) == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+
+	var resumable backend.SuspendableAdapter
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		resp := &cleanroomv1.ResumeSandboxResponse{Sandbox: cloneSandboxLocked(state)}
+		s.mu.Unlock()
+		return resp, nil
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[backend.CapabilitySandboxSuspend] {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("backend %q does not support sandbox suspend", state.Backend)
+	}
+	resumable, ok = adapter.(backend.SuspendableAdapter)
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("backend_capability_mismatch: backend %q reports sandbox suspend but does not implement it", state.Backend)
+	}
+	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox %q is not suspended", sandboxID)
+	}
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING, "sandbox wake requested")
+	s.mu.Unlock()
+
+	err := resumable.ResumeSandbox(ctx, sandboxID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err != nil {
+		if current.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING {
+			status := cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED
+			message := fmt.Sprintf("sandbox wake failed: %v", err)
+			if isIndeterminateSandboxLifecycleError(err) {
+				status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED
+				message = fmt.Sprintf("sandbox wake result indeterminate: %v", err)
+			}
+			s.recordSandboxEventLocked(current, status, message)
+		}
+		return nil, fmt.Errorf("resume backend sandbox: %w", err)
+	}
+	if current.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING {
+		s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, "sandbox ready after wake")
+	}
+	return &cleanroomv1.ResumeSandboxResponse{Sandbox: cloneSandboxLocked(current)}, nil
+}
+
+func isIndeterminateSandboxLifecycleError(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, backend.ErrSandboxLifecycleIndeterminate)
 }
 
 func (s *Service) ListExecutions(_ context.Context, req *cleanroomv1.ListExecutionsRequest) (*cleanroomv1.ListExecutionsResponse, error) {

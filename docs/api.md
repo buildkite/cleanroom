@@ -82,8 +82,10 @@ Two services are sufficient.
 10. `RemoveSandboxPath(RemoveSandboxPathRequest) returns (RemoveSandboxPathResponse)` (unary)
 11. `ArchiveSandboxPaths(ArchiveSandboxPathsRequest) returns (stream ArchiveSandboxPathsResponse)` (server-streaming)
 12. `ExtractSandboxArchive(stream ExtractSandboxArchiveRequest) returns (ExtractSandboxArchiveResponse)` (client-streaming)
-13. `TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse)` (unary)
-14. `StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent)` (server-streaming)
+13. `SuspendSandbox(SuspendSandboxRequest) returns (SuspendSandboxResponse)` (unary)
+14. `ResumeSandbox(ResumeSandboxRequest) returns (ResumeSandboxResponse)` (unary)
+15. `TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse)` (unary)
+16. `StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent)` (server-streaming)
 
 ### 4.2 ExecutionService
 
@@ -110,6 +112,9 @@ Two services are sufficient.
 - `SANDBOX_STATUS_STOPPING`
 - `SANDBOX_STATUS_STOPPED`
 - `SANDBOX_STATUS_FAILED`
+- `SANDBOX_STATUS_SUSPENDING`
+- `SANDBOX_STATUS_SUSPENDED`
+- `SANDBOX_STATUS_WAKING`
 
 ### 5.2 Execution statuses
 
@@ -177,6 +182,8 @@ service SandboxService {
   rpc RemoveSandboxPath(RemoveSandboxPathRequest) returns (RemoveSandboxPathResponse);
   rpc ArchiveSandboxPaths(ArchiveSandboxPathsRequest) returns (stream ArchiveSandboxPathsResponse);
   rpc ExtractSandboxArchive(stream ExtractSandboxArchiveRequest) returns (ExtractSandboxArchiveResponse);
+  rpc SuspendSandbox(SuspendSandboxRequest) returns (SuspendSandboxResponse);
+  rpc ResumeSandbox(ResumeSandboxRequest) returns (ResumeSandboxResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
 }
@@ -211,6 +218,25 @@ enum SandboxStatus {
   SANDBOX_STATUS_STOPPING = 3;
   SANDBOX_STATUS_STOPPED = 4;
   SANDBOX_STATUS_FAILED = 5;
+  SANDBOX_STATUS_SUSPENDING = 6;
+  SANDBOX_STATUS_SUSPENDED = 7;
+  SANDBOX_STATUS_WAKING = 8;
+}
+
+message SuspendSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message SuspendSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message ResumeSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message ResumeSandboxResponse {
+  Sandbox sandbox = 1;
 }
 
 message Execution {
@@ -304,6 +330,8 @@ Expose a server mode and API-driven commands in the same binary.
 - `cleanroom sandbox inspect <sandbox-id>`
 - `cleanroom sandbox inspect --last`
 - `cleanroom sandbox ls`
+- `cleanroom sandbox suspend <sandbox-id>`
+- `cleanroom sandbox resume <sandbox-id>`
 - `cleanroom sandbox rm <sandbox-id>`
 
 `sandbox inspect` is the primary way to discover a sandbox's `last_execution_id` and `active_execution_id`.

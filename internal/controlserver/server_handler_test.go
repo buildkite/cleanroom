@@ -530,6 +530,11 @@ func TestToConnectErrorMapsExpectedCodes(t *testing.T) {
 			want: connect.CodeFailedPrecondition,
 		},
 		{
+			name: "unsupported suspend maps to failed precondition",
+			err:  errors.New("backend \"firecracker\" does not support sandbox suspend"),
+			want: connect.CodeFailedPrecondition,
+		},
+		{
 			name: "existing connect error passes through",
 			err:  connectErr,
 			want: connect.CodeUnauthenticated,

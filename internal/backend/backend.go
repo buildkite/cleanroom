@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"maps"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/policy"
 )
+
+var ErrSandboxLifecycleIndeterminate = errors.New("sandbox lifecycle result indeterminate")
 
 const (
 	CapabilityExecStreaming               = "exec.streaming"
@@ -25,6 +28,7 @@ const (
 	CapabilitySandboxPathRemove           = "sandbox.path_remove"
 	CapabilitySandboxArchiveRead          = "sandbox.archive_read"
 	CapabilitySandboxArchiveWrite         = "sandbox.archive_write"
+	CapabilitySandboxSuspend              = "sandbox.suspend"
 	CapabilityNetworkDefaultDeny          = "network.default_deny"
 	CapabilityNetworkAllowlistEgress      = "network.allowlist_egress"
 	CapabilityNetworkStageScopedEgress    = "network.stage_scoped_egress"
@@ -48,6 +52,7 @@ var knownCapabilityKeys = []string{
 	CapabilitySandboxPathRemove,
 	CapabilitySandboxArchiveRead,
 	CapabilitySandboxArchiveWrite,
+	CapabilitySandboxSuspend,
 	CapabilityNetworkDefaultDeny,
 	CapabilityNetworkAllowlistEgress,
 	CapabilityNetworkStageScopedEgress,
@@ -86,6 +91,7 @@ type CapabilityReporter interface {
 // - SandboxPathRemoveAdapter => sandbox.path_remove
 // - SandboxArchiveReadAdapter => sandbox.archive_read
 // - SandboxArchiveWriteAdapter => sandbox.archive_write
+// - SuspendableAdapter => sandbox.suspend
 // - SandboxPortDialer => sandbox.port_dial
 //
 // Additional backend-specific capabilities can be provided by implementing
@@ -129,6 +135,9 @@ func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
 	}
 	if _, ok := adapter.(SandboxArchiveWriteAdapter); ok {
 		caps[CapabilitySandboxArchiveWrite] = true
+	}
+	if _, ok := adapter.(SuspendableAdapter); ok {
+		caps[CapabilitySandboxSuspend] = true
 	}
 	if _, ok := adapter.(SandboxPortDialer); ok {
 		caps[CapabilitySandboxPortDial] = true
@@ -175,6 +184,14 @@ type SnapshottingAdapter interface {
 type CacheOutputVolumeSnapshottingAdapter interface {
 	Adapter
 	SnapshotCacheOutputVolumes(ctx context.Context, req SnapshotCacheOutputVolumesRequest) (*SnapshotCacheOutputVolumesResult, error)
+}
+
+// SuspendableAdapter supports pausing and resuming a persistent sandbox instance
+// without changing its identity or durable filesystem state.
+type SuspendableAdapter interface {
+	Adapter
+	SuspendSandbox(ctx context.Context, sandboxID string) error
+	ResumeSandbox(ctx context.Context, sandboxID string) error
 }
 
 // RuntimeBaseKeyProvider returns a stable identifier for the backend runtime

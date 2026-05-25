@@ -143,6 +143,22 @@ func (c *Client) ListSandboxes(ctx context.Context, req *cleanroomv1.ListSandbox
 	return resp.Msg, nil
 }
 
+func (c *Client) SuspendSandbox(ctx context.Context, req *cleanroomv1.SuspendSandboxRequest) (*cleanroomv1.SuspendSandboxResponse, error) {
+	resp, err := c.sandboxClient.SuspendSandbox(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSandboxRequest) (*cleanroomv1.ResumeSandboxResponse, error) {
+	resp, err := c.sandboxClient.ResumeSandbox(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *Client) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.DownloadSandboxFileRequest) (*cleanroomv1.DownloadSandboxFileResponse, error) {
 	resp, err := c.sandboxClient.DownloadSandboxFile(ctx, connect.NewRequest(req))
 	if err != nil {

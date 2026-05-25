@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/buildkite/cleanroom/internal/backend"
 )
 
 const (
@@ -196,12 +198,18 @@ func (s *helperSession) request(ctx context.Context, req helperControlRequest) (
 	defer s.conn.SetDeadline(time.Time{})
 
 	if err := s.enc.Encode(req); err != nil {
-		return helperControlResponse{}, s.decorateError(fmt.Errorf("send helper request %q: %w", req.Op, err))
+		return helperControlResponse{}, fmt.Errorf("%w: %w",
+			backend.ErrSandboxLifecycleIndeterminate,
+			s.decorateError(fmt.Errorf("send helper request %q: %w", req.Op, err)),
+		)
 	}
 
 	var res helperControlResponse
 	if err := s.dec.Decode(&res); err != nil {
-		return helperControlResponse{}, s.decorateError(fmt.Errorf("decode helper response %q: %w", req.Op, err))
+		return helperControlResponse{}, fmt.Errorf("%w: %w",
+			backend.ErrSandboxLifecycleIndeterminate,
+			s.decorateError(fmt.Errorf("decode helper response %q: %w", req.Op, err)),
+		)
 	}
 	if !res.OK {
 		msg := strings.TrimSpace(res.Error)

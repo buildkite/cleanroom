@@ -44,6 +44,9 @@ func TestCapabilitiesExposeSnapshotAndFileTransfer(t *testing.T) {
 	if !caps[backend.CapabilitySandboxOverlayWriteCapture] {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxOverlayWriteCapture)
 	}
+	if !caps[backend.CapabilitySandboxSuspend] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxSuspend)
+	}
 	for _, key := range []string{
 		backend.CapabilitySandboxPathStat,
 		backend.CapabilitySandboxTreeWalk,
@@ -56,6 +59,35 @@ func TestCapabilitiesExposeSnapshotAndFileTransfer(t *testing.T) {
 		if !caps[key] {
 			t.Fatalf("expected %s=true", key)
 		}
+	}
+}
+
+func TestSuspendAndResumeSandboxCallHelper(t *testing.T) {
+	t.Parallel()
+
+	var helperOps []string
+	adapter := &Adapter{
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID: "cr-test",
+				Helper:    &helperSession{},
+				VMID:      "vm-test",
+			},
+		},
+		helperRequestFn: func(_ context.Context, _ *helperSession, req helperControlRequest) (helperControlResponse, error) {
+			helperOps = append(helperOps, req.Op+":"+req.VMID)
+			return helperControlResponse{OK: true}, nil
+		},
+	}
+
+	if err := adapter.SuspendSandbox(context.Background(), "cr-test"); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+	if err := adapter.ResumeSandbox(context.Background(), "cr-test"); err != nil {
+		t.Fatalf("ResumeSandbox returned error: %v", err)
+	}
+	if got, want := strings.Join(helperOps, ","), "PauseVM:vm-test,ResumeVM:vm-test"; got != want {
+		t.Fatalf("unexpected helper ops: got %q want %q", got, want)
 	}
 }
 
