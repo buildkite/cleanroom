@@ -220,6 +220,16 @@ func readAuthCheckRequest(cwd, path string) (map[string]any, error) {
 	if err := dec.Decode(&request); err != nil {
 		return nil, fmt.Errorf("decode request fixture %s: %w", path, err)
 	}
+	if request == nil {
+		return nil, fmt.Errorf("request fixture %s must contain a JSON object", path)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("decode request fixture %s: %w", path, err)
+		}
+		return nil, fmt.Errorf("request fixture %s must contain one JSON object", path)
+	}
 	return normalizeJSONNumbers(request).(map[string]any), nil
 }
 

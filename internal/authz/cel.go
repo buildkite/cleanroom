@@ -3,6 +3,7 @@ package authz
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -125,7 +126,10 @@ var celKeywords = map[string]struct{}{
 	"in":    {},
 }
 
+var celComprehensionVarRE = regexp.MustCompile(`\.(?:exists|exists_one|all|map|filter)\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,`)
+
 func validateCELPaths(source string, rules celPathRules) error {
+	localRoots := collectCELLocalRoots(source)
 	for i := 0; i < len(source); {
 		r := rune(source[i])
 		if source[i] == '"' || source[i] == '\'' {
@@ -153,15 +157,55 @@ func validateCELPaths(source string, rules celPathRules) error {
 			continue
 		}
 		root := strings.Split(path, ".")[0]
+		if _, ok := localRoots[root]; ok {
+			continue
+		}
 		if _, ok := rules.allowedDynamicRoot[root]; ok {
 			continue
 		}
 		if next < len(source) && source[next] == '(' {
-			continue
+			if base, ok := methodBase(path); ok && celPathAllowed(base, rules, localRoots) {
+				continue
+			}
+			if _, ok := methodBase(path); !ok {
+				continue
+			}
 		}
 		return fmt.Errorf("unknown CEL field %q", path)
 	}
 	return nil
+}
+
+func collectCELLocalRoots(source string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, match := range celComprehensionVarRE.FindAllStringSubmatch(source, -1) {
+		if len(match) == 2 {
+			out[match[1]] = struct{}{}
+		}
+	}
+	return out
+}
+
+func methodBase(path string) (string, bool) {
+	idx := strings.LastIndexByte(path, '.')
+	if idx <= 0 {
+		return "", false
+	}
+	return path[:idx], true
+}
+
+func celPathAllowed(path string, rules celPathRules, localRoots map[string]struct{}) bool {
+	if _, ok := rules.allowedExact[path]; ok {
+		return true
+	}
+	root := strings.Split(path, ".")[0]
+	if _, ok := localRoots[root]; ok {
+		return true
+	}
+	if _, ok := rules.allowedDynamicRoot[root]; ok {
+		return true
+	}
+	return false
 }
 
 func skipQuoted(source string, start int) (int, error) {

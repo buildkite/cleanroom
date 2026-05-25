@@ -282,3 +282,18 @@ func TestResolveAuthPolicyPath(t *testing.T) {
 		t.Fatalf("expected missing policy error, got %v", err)
 	}
 }
+
+func TestReadAuthCheckRequestRejectsNullFixture(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "request.json")
+	if err := os.WriteFile(path, []byte("null\n"), 0o644); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	_, err := readAuthCheckRequest(dir, path)
+	if err == nil {
+		t.Fatal("expected null request fixture error")
+	}
+	if !strings.Contains(err.Error(), "must contain a JSON object") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

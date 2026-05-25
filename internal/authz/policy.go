@@ -176,7 +176,7 @@ func (p *CompiledPolicy) Bind(token ValidatedToken) (BoundPrincipal, error) {
 		binding := &p.bindings[i]
 		matched, err := binding.when.eval(activation)
 		if err != nil {
-			return BoundPrincipal{}, fmt.Errorf("binding %q: evaluate when: %w", binding.name, err)
+			continue
 		}
 		if !matched {
 			continue
@@ -225,6 +225,7 @@ func (b BoundPrincipal) Authorize(req DecisionRequest) Decision {
 	}
 
 	matchedGrant := false
+	var conditionErrorDecision *Decision
 	for _, grant := range b.binding.grants {
 		if !grant.matches(decision.Action, req.Resource.Kind) {
 			continue
@@ -232,9 +233,13 @@ func (b BoundPrincipal) Authorize(req DecisionRequest) Decision {
 		matchedGrant = true
 		ok, err := grant.condition.eval(grantActivation(req))
 		if err != nil {
-			decision.Grant = grant.name
-			decision.Reason = ReasonConditionError
-			return decision
+			if conditionErrorDecision == nil {
+				errorDecision := decision
+				errorDecision.Grant = grant.name
+				errorDecision.Reason = ReasonConditionError
+				conditionErrorDecision = &errorDecision
+			}
+			continue
 		}
 		if !ok {
 			decision.Grant = grant.name
@@ -245,6 +250,9 @@ func (b BoundPrincipal) Authorize(req DecisionRequest) Decision {
 		decision.Grant = grant.name
 		decision.Reason = ReasonAllowed
 		return decision
+	}
+	if conditionErrorDecision != nil {
+		return *conditionErrorDecision
 	}
 	if matchedGrant && decision.Reason == ReasonNoGrant {
 		decision.Reason = ReasonConditionFalse

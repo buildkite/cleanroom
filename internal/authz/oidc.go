@@ -17,6 +17,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+const defaultJWKSCacheMaxAge = 5 * time.Minute
+
+var errUnsupportedJWK = errors.New("unsupported jwk")
+
 type OIDCValidator struct {
 	issuersByURL map[string]*trustedOIDCIssuer
 	httpClient   *http.Client
@@ -116,6 +120,8 @@ func NewOIDCValidator(issuers []runtimeconfig.AuthOIDCIssuerConfig, opts ...OIDC
 			url:        trusted.JWKSURL,
 			httpClient: v.httpClient,
 			keys:       map[string]any{},
+			now:        v.now,
+			maxAge:     defaultJWKSCacheMaxAge,
 		}
 		v.issuersByURL[issuer] = trusted
 	}
@@ -211,13 +217,18 @@ type jwksCache struct {
 
 	mu   sync.Mutex
 	keys map[string]any
+	at   time.Time
+	now  func() time.Time
+
+	maxAge time.Duration
 }
 
 func (c *jwksCache) key(ctx context.Context, kid string) (any, error) {
 	c.mu.Lock()
 	key, ok := c.keys[kid]
+	fresh := c.maxAge <= 0 || (!c.at.IsZero() && c.now().Sub(c.at) < c.maxAge)
 	c.mu.Unlock()
-	if ok {
+	if ok && fresh {
 		return key, nil
 	}
 
@@ -259,16 +270,23 @@ func (c *jwksCache) refresh(ctx context.Context) error {
 	for _, jwk := range payload.Keys {
 		key, err := jwk.publicKey()
 		if err != nil {
+			if errors.Is(err, errUnsupportedJWK) {
+				continue
+			}
 			return err
 		}
 		if strings.TrimSpace(jwk.KID) == "" {
-			return errors.New("jwks key is missing kid")
+			continue
 		}
 		keys[jwk.KID] = key
+	}
+	if len(keys) == 0 {
+		return errors.New("jwks contained no supported RSA signing keys")
 	}
 
 	c.mu.Lock()
 	c.keys = keys
+	c.at = c.now()
 	c.mu.Unlock()
 	return nil
 }
@@ -288,13 +306,13 @@ type jwkKey struct {
 
 func (k jwkKey) publicKey() (any, error) {
 	if k.KTY != "RSA" {
-		return nil, fmt.Errorf("unsupported jwks key type %q", k.KTY)
+		return nil, fmt.Errorf("%w: key type %q", errUnsupportedJWK, k.KTY)
 	}
 	if k.Use != "" && k.Use != "sig" {
-		return nil, fmt.Errorf("unsupported jwks key use %q", k.Use)
+		return nil, fmt.Errorf("%w: key use %q", errUnsupportedJWK, k.Use)
 	}
 	if k.Alg != "" && k.Alg != "RS256" {
-		return nil, fmt.Errorf("unsupported jwks key algorithm %q", k.Alg)
+		return nil, fmt.Errorf("%w: key algorithm %q", errUnsupportedJWK, k.Alg)
 	}
 	n, err := base64.RawURLEncoding.DecodeString(k.N)
 	if err != nil {

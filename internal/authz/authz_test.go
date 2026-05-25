@@ -90,6 +90,94 @@ func TestOIDCValidatorRefreshesJWKSOnReusedKidSignatureFailure(t *testing.T) {
 	}
 }
 
+func TestOIDCValidatorIgnoresUnsupportedJWKSKeys(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	key := mustRSAKey(t)
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				{"kty": "oct", "kid": "symmetric", "k": "secret"},
+				jwkPayload("kid-1", &key.PublicKey),
+			},
+		}); err != nil {
+			t.Fatalf("encode jwks: %v", err)
+		}
+	}))
+	t.Cleanup(jwks.Close)
+	validator := newTestOIDCValidator(t, jwks.URL, now)
+	token := signTestToken(t, key, "kid-1", jwt.MapClaims{
+		"iss": "https://issuer.example",
+		"sub": "bot-123",
+		"aud": []string{"cleanroom"},
+		"iat": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"nbf": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"exp": jwt.NewNumericDate(now.Add(time.Minute)),
+	})
+	if _, err := validator.Validate(context.Background(), token); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
+func TestOIDCValidatorExpiresJWKSCache(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	firstKey := mustRSAKey(t)
+	secondKey := mustRSAKey(t)
+	var mu sync.Mutex
+	currentKid := "kid-1"
+	currentKey := firstKey
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		kid := currentKid
+		key := currentKey
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				jwkPayload(kid, &key.PublicKey),
+			},
+		}); err != nil {
+			t.Fatalf("encode jwks: %v", err)
+		}
+	}))
+	t.Cleanup(jwks.Close)
+	validator, err := NewOIDCValidator([]runtimeconfig.AuthOIDCIssuerConfig{
+		{
+			Name:                    "issuer",
+			Issuer:                  "https://issuer.example",
+			Audiences:               []string{"cleanroom"},
+			JWKSURL:                 jwks.URL,
+			AllowedAlgorithms:       []string{"RS256"},
+			ClockSkewSeconds:        60,
+			MaxTokenLifetimeSeconds: 3600,
+		},
+	}, WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("NewOIDCValidator returned error: %v", err)
+	}
+	claims := jwt.MapClaims{
+		"iss": "https://issuer.example",
+		"sub": "bot-123",
+		"aud": []string{"cleanroom"},
+		"iat": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"nbf": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"exp": jwt.NewNumericDate(now.Add(10 * time.Minute)),
+	}
+	oldToken := signTestToken(t, firstKey, "kid-1", claims)
+	if _, err := validator.Validate(context.Background(), oldToken); err != nil {
+		t.Fatalf("Validate with first key returned error: %v", err)
+	}
+
+	mu.Lock()
+	currentKid = "kid-2"
+	currentKey = secondKey
+	mu.Unlock()
+	now = now.Add(defaultJWKSCacheMaxAge + time.Second)
+	if _, err := validator.Validate(context.Background(), oldToken); err == nil {
+		t.Fatal("expected old token to fail after JWKS cache expiry")
+	}
+}
+
 func TestOIDCValidatorRejectsInvalidTokens(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	trustedKey := mustRSAKey(t)
@@ -202,6 +290,114 @@ func TestPolicyBindsPrincipalAndAuthorizesGrant(t *testing.T) {
 	}
 	if got, want := decision.Grant, "create-cleanroom-sandbox"; got != want {
 		t.Fatalf("unexpected grant: got %q want %q", got, want)
+	}
+}
+
+func TestPolicyContinuesBindingEvaluationAfterWhenError(t *testing.T) {
+	policy := compileTestPolicy(t, `bindings:
+  - name: missing-claim
+    when: 'claims.repository.owner == "buildkite"'
+    principal:
+      id: 'bad:${claims.repository}'
+    grants:
+      - actions: [sandbox.create]
+        resources: [sandbox]
+  - name: fallback
+    when: 'token.issuer == "github-actions"'
+    principal:
+      id: 'oidc:${token.issuer}:${claims.sub}'
+    grants:
+      - actions: [sandbox.create]
+        resources: [sandbox]
+`)
+	bound, err := policy.Bind(ValidatedToken{
+		IssuerName: "github-actions",
+		Subject:    "repo:buildkite/cleanroom:ref:refs/heads/main",
+		Claims: map[string]any{
+			"sub": "repo:buildkite/cleanroom:ref:refs/heads/main",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Bind returned error: %v", err)
+	}
+	if got, want := bound.Binding, "fallback"; got != want {
+		t.Fatalf("unexpected binding: got %q want %q", got, want)
+	}
+}
+
+func TestPolicyContinuesGrantEvaluationAfterConditionError(t *testing.T) {
+	policy := compileTestPolicy(t, `bindings:
+  - name: cleanroom-repo-bots
+    when: 'token.issuer == "github-actions"'
+    principal:
+      id: 'oidc:${token.issuer}:${claims.sub}'
+    grants:
+      - name: optional-request-field
+        actions: [sandbox.create]
+        resources: [sandbox]
+        condition: 'request.repository.remote_url == "https://github.com/buildkite/cleanroom.git"'
+      - name: fallback
+        actions: [sandbox.create]
+        resources: [sandbox]
+`)
+	bound, err := policy.Bind(ValidatedToken{
+		IssuerName: "github-actions",
+		Subject:    "repo:buildkite/cleanroom:ref:refs/heads/main",
+		Claims: map[string]any{
+			"sub": "repo:buildkite/cleanroom:ref:refs/heads/main",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Bind returned error: %v", err)
+	}
+	decision := bound.Authorize(DecisionRequest{
+		Action:   "sandbox.create",
+		Resource: Resource{Kind: "sandbox"},
+		Request:  map[string]any{},
+	})
+	if !decision.Allowed {
+		t.Fatalf("expected fallback grant to allow, got %#v", decision)
+	}
+	if got, want := decision.Grant, "fallback"; got != want {
+		t.Fatalf("unexpected grant: got %q want %q", got, want)
+	}
+}
+
+func TestPolicyCompilesCELComprehensionVariables(t *testing.T) {
+	policy := compileTestPolicy(t, `bindings:
+  - name: cleanroom-repo-bots
+    when: 'token.issuer == "github-actions"'
+    principal:
+      id: 'oidc:${token.issuer}:${claims.sub}'
+    grants:
+      - name: private-hosts
+        actions: [sandbox.create]
+        resources: [sandbox]
+        condition: 'request.policy.network.hosts.all(host, host == "github.com")'
+`)
+	bound, err := policy.Bind(ValidatedToken{
+		IssuerName: "github-actions",
+		Subject:    "repo:buildkite/cleanroom:ref:refs/heads/main",
+		Claims: map[string]any{
+			"sub": "repo:buildkite/cleanroom:ref:refs/heads/main",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Bind returned error: %v", err)
+	}
+	decision := bound.Authorize(DecisionRequest{
+		Action:   "sandbox.create",
+		Resource: Resource{Kind: "sandbox"},
+		Request: map[string]any{
+			"policy": map[string]any{
+				"network": map[string]any{
+					"hosts": []any{"github.com"},
+				},
+			},
+		},
+	})
+	if !decision.Allowed {
+		t.Fatalf("expected comprehension grant to allow, got %#v", decision)
 	}
 }
 
