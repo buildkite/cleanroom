@@ -15,7 +15,7 @@ require (
 	github.com/google/go-containerregistry v0.21.6
 	github.com/inetaf/tcpproxy v0.0.0-20260515195445-c159a6051109
 	github.com/mdlayher/netlink v1.11.2
-	github.com/mdlayher/vsock v1.2.1
+	github.com/mdlayher/vsock v1.3.0
 	github.com/miekg/dns v1.1.72
 	github.com/quic-go/quic-go v0.59.1
 	github.com/sirupsen/logrus v1.9.4
