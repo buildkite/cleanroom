@@ -185,10 +185,15 @@ func (p *CompiledPolicy) Bind(token ValidatedToken) (BoundPrincipal, error) {
 		if err != nil {
 			return BoundPrincipal{}, fmt.Errorf("binding %q principal.id: %w", binding.name, err)
 		}
+		principalID = strings.TrimSpace(principalID)
+		if principalID == "" {
+			return BoundPrincipal{}, fmt.Errorf("binding %q principal.id rendered empty", binding.name)
+		}
 		scope, err := renderPrincipalTemplate(binding.principal.Scope, token, tokenVars)
 		if err != nil {
 			return BoundPrincipal{}, fmt.Errorf("binding %q principal.scope: %w", binding.name, err)
 		}
+		scope = strings.TrimSpace(scope)
 		return BoundPrincipal{
 			Principal: Principal{
 				ID:      principalID,
