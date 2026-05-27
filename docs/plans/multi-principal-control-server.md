@@ -1,8 +1,8 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Slice 1 in progress
-**Last reviewed:** 2026-05-25
+**Status:** Slice 2A implemented; Slice 2B next
+**Last reviewed:** 2026-05-26
 
 ## Summary
 
@@ -35,9 +35,12 @@ Slice 1 now has the backend-neutral auth engine and local operator check path:
 - `cleanroom auth check` evaluates a token, local policy, action, resource, and
   JSON request fixture without starting the control server
 
-Control server behavior is intentionally unchanged in Slice 1. Enforcement,
-ownership stamping, embedded `content-cache` gateway envelopes, and stage-cache
-partitioning remain Slice 2 work.
+Slice 2 is split into PR-sized enforcement work:
+
+- Slice 2A now wires bearer-token client support, server authentication,
+  create-time grant checks, and exact owner checks for control-plane resources.
+- Slice 2B carries owner authorization into embedded gateway routes,
+  `content-cache` request envelopes, and stage-cache metadata partitioning.
 
 Focused validation run on 2026-05-25:
 
@@ -50,6 +53,16 @@ Result: passed.
 Repository validation run on 2026-05-25:
 
 ```text
+mise run check
+```
+
+Result: passed.
+
+Slice 2A validation run on 2026-05-26:
+
+```text
+mise exec -- go test ./internal/controlservice -run 'TestDeleteSnapshotRejectsSnapshotWithMetadataLoadInFlight|TestAuthzSnapshotRestoreEvaluatesSandboxCreateAgainstSnapshotBackend|TestAuthz' -count=1
+mise exec -- go test ./internal/authz ./internal/controlserver ./internal/controlclient ./internal/cli ./internal/snapshotstore
 mise run check
 ```
 
@@ -177,8 +190,20 @@ bindings:
       id: 'oidc:${token.issuer}:${claims.sub}'
       scope: 'repo:${claims.repository}'
     grants:
-      - actions:
+      - name: create-cleanroom-sandboxes
+        actions:
           - sandbox.create
+        resources:
+          - sandbox
+        condition: >
+          request.repository.remote_url == "https://github.com/buildkite/cleanroom.git" &&
+          request.backend in ["darwin-vz"] &&
+          request.policy.resources.vcpus <= 4 &&
+          request.policy.resources.memory_bytes <= 8589934592 &&
+          request.policy.docker.required == false &&
+          request.policy.network_default == "deny"
+      - name: manage-owned-resources
+        actions:
           - sandbox.get
           - sandbox.list
           - sandbox.terminate
@@ -189,13 +214,6 @@ bindings:
         resources:
           - sandbox
           - execution
-        condition: >
-          request.repository.remote_url == "https://github.com/buildkite/cleanroom.git" &&
-          request.backend in ["darwin-vz"] &&
-          request.policy.resources.vcpus <= 4 &&
-          request.policy.resources.memory_bytes <= 8589934592 &&
-          request.policy.docker.required == false &&
-          request.policy.network_default == "deny"
 ```
 
 The exact schema can change during implementation, but the ownership boundary
@@ -213,6 +231,8 @@ Initial action set:
 sandbox.create
 sandbox.get
 sandbox.list
+sandbox.suspend
+sandbox.resume
 sandbox.terminate
 sandbox.file.stat
 sandbox.file.walk
@@ -580,7 +600,7 @@ Definition of done: invalid issuers, audiences, signatures, expiry, malformed
 bindings, unknown CEL fields, and condition failures are covered by unit tests,
 and operators can run a local auth check without starting a server.
 
-### Slice 2: Server Enforcement, Exact Ownership, And Create Constraints
+### Slice 2A: Server Enforcement Spine And Exact Ownership
 
 Scope:
 
@@ -591,27 +611,41 @@ Scope:
   network, and snapshot source attributes.
 - Evaluate create-time grants and CEL conditions before repository mirror,
   snapshot restore, stage-cache lookup, or backend work.
+- Stamp owner metadata on new sandboxes, executions, interactive sessions, and
+  snapshots.
+- Enforce exact-owner access on sandbox, execution, snapshot, file, archive,
+  extract, port, and stream RPCs.
+- Filter sandbox, execution, and snapshot list APIs by owner.
+- Deny auth-enabled access to pre-existing snapshot records that have no owner
+  metadata.
+- Add docs for OIDC setup and ownership behavior.
+
+Definition of done: with auth enabled for HTTP(S), two valid principals can use
+the same server and cannot list, get, execute in, attach to, copy from,
+snapshot, restore, port-forward, or stream each other's resources. A principal
+can create sandboxes only within its configured repository, backend, image,
+resource, and network constraints, and attempts outside those constraints fail
+before any host-side fetch, snapshot restore, cache lookup, or VM provisioning
+begins.
+
+### Slice 2B: Embedded Gateway And Stage Cache Boundaries
+
+Scope:
+
 - Register owner and gateway authorization metadata with the sandbox gateway
   scope.
 - Authorize Git and OCI gateway requests against the sandbox owner's gateway
   authorization envelope before embedded `content-cache` handlers can serve
   cached or upstream responses.
-- Stamp owner metadata on new sandboxes, executions, interactive sessions,
-  snapshots, and cache records.
-- Enforce exact-owner access on every sandbox, execution, snapshot, file,
-  archive, extract, port, and stream RPC.
-- Filter list APIs by owner.
+- Stamp owner metadata on cache records.
 - Partition stage-cache lookup and publication by owner.
-- Deny auth-enabled access to pre-existing snapshot or cache records that have no
-  owner metadata.
-- Add docs for OIDC setup and ownership behavior.
+- Deny auth-enabled access to pre-existing cache records that have no owner
+  metadata.
 
-Definition of done: with auth enabled, two valid principals can use the same
-server and cannot list, get, execute in, attach to, copy from, snapshot, restore,
-port-forward, stream, or warm-cache-hit each other's resources. A principal can
-create sandboxes only within its configured repository, backend, image, resource,
-and network constraints, and attempts outside those constraints fail before any
-host-side fetch, restore, cache lookup, or VM provisioning begins.
+Definition of done: with auth enabled, a sandbox can only receive cached Git or
+OCI content and reusable stage-cache filesystem state that is authorized for its
+owner, including warm cache hits. Routes that cannot authorize cached objects
+precisely are partitioned by owner or disabled under auth-enabled servers.
 
 ### Slice 3: Runtime Hardening And Audit
 

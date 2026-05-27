@@ -389,6 +389,9 @@ func (s *Server) TerminateSandbox(ctx context.Context, req *connect.Request[clea
 }
 
 func (s *Server) StreamSandboxEvents(ctx context.Context, req *connect.Request[cleanroomv1.StreamSandboxEventsRequest], stream *connect.ServerStream[cleanroomv1.SandboxEvent]) error {
+	if err := s.service.AuthorizeSandboxAction(ctx, "sandbox.get", req.Msg.GetSandboxId()); err != nil {
+		return toConnectError(err)
+	}
 	history, updates, done, unsubscribe, err := s.service.SubscribeSandboxEvents(req.Msg.GetSandboxId())
 	if err != nil {
 		return toConnectError(err)
@@ -533,14 +536,20 @@ func (s *Server) CancelExecution(ctx context.Context, req *connect.Request[clean
 	return connect.NewResponse(resp), nil
 }
 
-func (s *Server) WriteExecutionStdin(_ context.Context, req *connect.Request[cleanroomv1.WriteExecutionStdinRequest]) (*connect.Response[cleanroomv1.WriteExecutionStdinResponse], error) {
+func (s *Server) WriteExecutionStdin(ctx context.Context, req *connect.Request[cleanroomv1.WriteExecutionStdinRequest]) (*connect.Response[cleanroomv1.WriteExecutionStdinResponse], error) {
+	if err := s.service.AuthorizeExecutionAction(ctx, "execution.stdin.write", req.Msg.GetSandboxId(), req.Msg.GetExecutionId()); err != nil {
+		return nil, toConnectError(err)
+	}
 	if err := s.service.WriteExecutionStdin(req.Msg.GetSandboxId(), req.Msg.GetExecutionId(), req.Msg.GetData()); err != nil {
 		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(&cleanroomv1.WriteExecutionStdinResponse{}), nil
 }
 
-func (s *Server) CloseExecutionStdin(_ context.Context, req *connect.Request[cleanroomv1.CloseExecutionStdinRequest]) (*connect.Response[cleanroomv1.CloseExecutionStdinResponse], error) {
+func (s *Server) CloseExecutionStdin(ctx context.Context, req *connect.Request[cleanroomv1.CloseExecutionStdinRequest]) (*connect.Response[cleanroomv1.CloseExecutionStdinResponse], error) {
+	if err := s.service.AuthorizeExecutionAction(ctx, "execution.stdin.close", req.Msg.GetSandboxId(), req.Msg.GetExecutionId()); err != nil {
+		return nil, toConnectError(err)
+	}
 	if err := s.service.CloseExecutionStdin(req.Msg.GetSandboxId(), req.Msg.GetExecutionId()); err != nil {
 		return nil, toConnectError(err)
 	}
@@ -548,6 +557,9 @@ func (s *Server) CloseExecutionStdin(_ context.Context, req *connect.Request[cle
 }
 
 func (s *Server) StreamExecution(ctx context.Context, req *connect.Request[cleanroomv1.StreamExecutionRequest], stream *connect.ServerStream[cleanroomv1.ExecutionStreamEvent]) error {
+	if err := s.service.AuthorizeExecutionAction(ctx, "execution.stream", req.Msg.GetSandboxId(), req.Msg.GetExecutionId()); err != nil {
+		return toConnectError(err)
+	}
 	history, updates, done, unsubscribe, err := s.service.SubscribeExecutionEvents(req.Msg.GetSandboxId(), req.Msg.GetExecutionId())
 	if err != nil {
 		return toConnectError(err)
@@ -721,6 +733,8 @@ func toConnectError(err error) error {
 		code = connect.CodeDeadlineExceeded
 	case errors.Is(err, backend.ErrSandboxPathNotFound):
 		code = connect.CodeNotFound
+	case errors.Is(err, controlservice.ErrAuthorizationDenied):
+		code = connect.CodePermissionDenied
 	case strings.Contains(message, "missing "), strings.Contains(message, "invalid"):
 		code = connect.CodeInvalidArgument
 	case strings.Contains(message, "unknown sandbox"), strings.Contains(message, "unknown cleanroom"), strings.Contains(message, "unknown execution"):

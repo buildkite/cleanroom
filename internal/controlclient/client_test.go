@@ -1,12 +1,15 @@
 package controlclient
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"net/http"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"golang.org/x/net/http2"
 )
@@ -71,5 +74,19 @@ func TestBuildTransportFallsBackToHTTPTransportOnInvalidBaseURL(t *testing.T) {
 	}
 	if _, ok := rt.(*http.Transport); !ok {
 		t.Fatalf("expected *http.Transport, got %T", rt)
+	}
+}
+
+func TestBearerTokenInterceptorSetsUnaryAuthorizationHeader(t *testing.T) {
+	interceptor := bearerTokenInterceptor(" token-value ")
+	wrapped := interceptor.WrapUnary(func(_ context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if got, want := req.Header().Get("Authorization"), "Bearer token-value"; got != want {
+			t.Fatalf("Authorization header mismatch: got %q want %q", got, want)
+		}
+		return connect.NewResponse(&cleanroomv1.GetSandboxResponse{}), nil
+	})
+
+	if _, err := wrapped(context.Background(), connect.NewRequest(&cleanroomv1.GetSandboxRequest{})); err != nil {
+		t.Fatalf("wrapped unary returned error: %v", err)
 	}
 }

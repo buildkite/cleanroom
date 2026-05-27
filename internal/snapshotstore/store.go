@@ -26,6 +26,8 @@ type Record struct {
 	RepositoryHasChangeset bool
 	StorageDriver          string
 	StorageRef             string
+	OwnerPrincipalID       string
+	OwnerScope             string
 	CreatedAt              time.Time
 }
 
@@ -113,9 +115,11 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 			repository_has_changeset,
 			storage_driver,
 			storage_ref,
+			owner_principal_id,
+			owner_scope,
 			created_at_unix,
 			created_at_unix_nano
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.SnapshotID,
 		record.SourceSandboxID,
@@ -127,6 +131,8 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 		boolToInt(record.RepositoryHasChangeset),
 		record.StorageDriver,
 		record.StorageRef,
+		strings.TrimSpace(record.OwnerPrincipalID),
+		strings.TrimSpace(record.OwnerScope),
 		record.CreatedAt.UTC().Unix(),
 		record.CreatedAt.UTC().UnixNano(),
 	); err != nil {
@@ -154,6 +160,8 @@ func (s *Store) Get(ctx context.Context, snapshotID string) (Record, bool, error
 			repository_has_changeset,
 			storage_driver,
 			storage_ref,
+			owner_principal_id,
+			owner_scope,
 			created_at_unix_nano
 		FROM snapshots
 		WHERE snapshot_id = ?
@@ -188,6 +196,8 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			repository_has_changeset,
 			storage_driver,
 			storage_ref,
+			owner_principal_id,
+			owner_scope,
 			created_at_unix_nano
 		FROM snapshots
 		ORDER BY created_at_unix_nano ASC, snapshot_id ASC
@@ -254,6 +264,8 @@ func (s *Store) initDB(ctx context.Context) error {
 			repository_has_changeset INTEGER NOT NULL DEFAULT 0,
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
+			owner_principal_id TEXT NOT NULL DEFAULT '',
+			owner_scope TEXT NOT NULL DEFAULT '',
 			created_at_unix INTEGER NOT NULL,
 			created_at_unix_nano INTEGER NOT NULL DEFAULT 0
 		);
@@ -273,6 +285,12 @@ func (s *Store) initDB(ctx context.Context) error {
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN created_at_unix_nano INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure snapshot metadata created_at_unix_nano column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN owner_principal_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure snapshot metadata owner_principal_id column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN owner_scope TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure snapshot metadata owner_scope column: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE snapshots SET created_at_unix_nano = created_at_unix * 1000000000 WHERE created_at_unix_nano = 0`); err != nil {
 		return fmt.Errorf("backfill snapshot metadata created_at_unix_nano column: %w", err)
@@ -306,6 +324,8 @@ func scanRecord(row recordScanner) (Record, error) {
 		&repositoryHasChangeset,
 		&record.StorageDriver,
 		&record.StorageRef,
+		&record.OwnerPrincipalID,
+		&record.OwnerScope,
 		&createdAtNano,
 	); err != nil {
 		return Record{}, err

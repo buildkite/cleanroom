@@ -57,8 +57,11 @@ type Decision struct {
 
 const (
 	ReasonAllowed        = "allowed"
+	ReasonMissing        = "auth_missing"
 	ReasonNoBinding      = "auth_no_binding"
 	ReasonNoGrant        = "auth_no_grant"
 	ReasonConditionFalse = "auth_condition_false"
 	ReasonConditionError = "auth_condition_error"
+	ReasonOwnerMismatch  = "auth_owner_mismatch"
+	ReasonMissingOwner   = "auth_resource_missing_owner"
 )

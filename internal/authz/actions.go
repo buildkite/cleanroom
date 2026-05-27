@@ -10,6 +10,8 @@ var knownActions = map[string]struct{}{
 	"sandbox.create":       {},
 	"sandbox.get":          {},
 	"sandbox.list":         {},
+	"sandbox.suspend":      {},
+	"sandbox.resume":       {},
 	"sandbox.terminate":    {},
 	"sandbox.file.stat":    {},
 	"sandbox.file.walk":    {},

@@ -1,0 +1,259 @@
+package controlservice
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/buildkite/cleanroom/internal/authz"
+	"github.com/buildkite/cleanroom/internal/backend"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
+)
+
+func TestAuthzEnforcesExactSandboxAndExecutionOwnership(t *testing.T) {
+	svc := &Service{
+		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
+		Backends: map[string]backend.Adapter{
+			"firecracker": &stubAdapter{},
+		},
+	}
+	aliceCtx := testAuthContext(t, "alice")
+	bobCtx := testAuthContext(t, "bob")
+
+	createResp, err := svc.CreateSandbox(aliceCtx, &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	if _, err := svc.GetSandbox(bobCtx, &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID}); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("GetSandbox as different principal error = %v, want authorization denied", err)
+	}
+	bobList, err := svc.ListSandboxes(bobCtx, &cleanroomv1.ListSandboxesRequest{})
+	if err != nil {
+		t.Fatalf("ListSandboxes as bob returned error: %v", err)
+	}
+	if got := len(bobList.GetSandboxes()); got != 0 {
+		t.Fatalf("bob ListSandboxes returned %d sandboxes, want 0", got)
+	}
+	if _, err := svc.CreateExecution(bobCtx, &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "nope"},
+	}); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("CreateExecution as different principal error = %v, want authorization denied", err)
+	}
+
+	execResp, err := svc.CreateExecution(aliceCtx, &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "ok"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution as owner returned error: %v", err)
+	}
+	executionID := execResp.GetExecution().GetExecutionId()
+	if _, err := svc.GetExecution(bobCtx, &cleanroomv1.GetExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	}); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("GetExecution as different principal error = %v, want authorization denied", err)
+	}
+}
+
+func TestAuthzStampsAndEnforcesSnapshotOwnership(t *testing.T) {
+	store := newMemorySnapshotStore()
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{Firecracker: runtimeconfig.FirecrackerConfig{
+				Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "file"},
+			}},
+		},
+		Backends: map[string]backend.Adapter{
+			"firecracker": &stubAdapter{},
+		},
+		SnapshotStore: store,
+	}
+	aliceCtx := testAuthContext(t, "alice")
+	bobCtx := testAuthContext(t, "bob")
+
+	createResp, err := svc.CreateSandbox(aliceCtx, &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	snapshotResp, err := svc.CreateSnapshot(aliceCtx, &cleanroomv1.CreateSnapshotRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+	snapshotID := snapshotResp.GetSnapshot().GetSnapshotId()
+
+	record, ok, err := store.Get(context.Background(), snapshotID)
+	if err != nil {
+		t.Fatalf("Get snapshot record returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected snapshot record")
+	}
+	if got, want := record.OwnerPrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("snapshot owner mismatch: got %q want %q", got, want)
+	}
+
+	if _, err := svc.GetSnapshot(bobCtx, &cleanroomv1.GetSnapshotRequest{SnapshotId: snapshotID}); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("GetSnapshot as different principal error = %v, want authorization denied", err)
+	}
+	bobList, err := svc.ListSnapshots(bobCtx, &cleanroomv1.ListSnapshotsRequest{})
+	if err != nil {
+		t.Fatalf("ListSnapshots as bob returned error: %v", err)
+	}
+	if got := len(bobList.GetSnapshots()); got != 0 {
+		t.Fatalf("bob ListSnapshots returned %d snapshots, want 0", got)
+	}
+	if _, err := svc.CreateSandbox(bobCtx, &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: snapshotID},
+	}); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("restore as different principal error = %v, want authorization denied", err)
+	}
+}
+
+func TestAuthzSnapshotRestoreEvaluatesSandboxCreateAgainstSnapshotBackend(t *testing.T) {
+	store := newMemorySnapshotStore()
+	record := snapshotstoreRecord("snap-darwin")
+	record.Backend = "darwin-vz"
+	record.StorageDriver = "apfs"
+	record.StorageRef = "/tmp/snapshot.apfs"
+	record.OwnerPrincipalID = "oidc:test:alice"
+	record.OwnerScope = "scope:alice"
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create snapshot record returned error: %v", err)
+	}
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{DarwinVZ: runtimeconfig.DarwinVZConfig{
+				Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "apfs"},
+			}},
+		},
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": adapter,
+		},
+		SnapshotStore: store,
+	}
+	ctx := testAuthContextWithPolicy(t, "alice", authz.Policy{Bindings: []authz.Binding{{
+		Name: "test",
+		Principal: authz.PrincipalTemplate{
+			ID:    "oidc:${token.issuer}:${token.subject}",
+			Scope: "scope:${token.subject}",
+		},
+		Grants: []authz.Grant{
+			{
+				Name:      "firecracker-create-only",
+				Actions:   []string{"sandbox.create"},
+				Resources: []string{"sandbox"},
+				Condition: `request.backend == "firecracker"`,
+			},
+			{
+				Name:      "snapshot-restore",
+				Actions:   []string{"snapshot.restore"},
+				Resources: []string{"snapshot"},
+			},
+		},
+	}}})
+
+	_, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: "snap-darwin"},
+	})
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("CreateSandbox from darwin snapshot error = %v, want authorization denied", err)
+	}
+	if got := adapter.provisionFromSnapshotCalls; got != 0 {
+		t.Fatalf("ProvisionSandboxFromSnapshot calls = %d, want 0", got)
+	}
+}
+
+func TestAuthzDeniesOwnerlessSnapshotWhenAuthenticated(t *testing.T) {
+	store := newMemorySnapshotStore()
+	if err := store.Create(context.Background(), snapshotstoreRecord("snap-ownerless")); err != nil {
+		t.Fatalf("Create snapshot record returned error: %v", err)
+	}
+	svc := &Service{SnapshotStore: store}
+
+	_, err := svc.GetSnapshot(testAuthContext(t, "alice"), &cleanroomv1.GetSnapshotRequest{SnapshotId: "snap-ownerless"})
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("GetSnapshot ownerless error = %v, want authorization denied", err)
+	}
+}
+
+func testAuthContext(t *testing.T, subject string) context.Context {
+	t.Helper()
+	return testAuthContextWithPolicy(t, subject, authz.Policy{Bindings: []authz.Binding{{
+		Name: "test",
+		Principal: authz.PrincipalTemplate{
+			ID:    "oidc:${token.issuer}:${token.subject}",
+			Scope: "scope:${token.subject}",
+		},
+		Grants: []authz.Grant{{
+			Name: "all",
+			Actions: []string{
+				"sandbox.create",
+				"sandbox.get",
+				"sandbox.list",
+				"sandbox.terminate",
+				"execution.create",
+				"execution.get",
+				"execution.list",
+				"execution.attach",
+				"execution.inspect",
+				"execution.cancel",
+				"snapshot.create",
+				"snapshot.get",
+				"snapshot.list",
+				"snapshot.delete",
+				"snapshot.restore",
+			},
+			Resources: []string{"sandbox", "execution", "snapshot"},
+		}},
+	}}})
+}
+
+func testAuthContextWithPolicy(t *testing.T, subject string, spec authz.Policy) context.Context {
+	t.Helper()
+	policy, err := authz.CompilePolicy(spec)
+	if err != nil {
+		t.Fatalf("CompilePolicy returned error: %v", err)
+	}
+	bound, err := policy.Bind(authz.ValidatedToken{
+		IssuerName: "test",
+		Issuer:     "https://issuer.example.test",
+		Subject:    subject,
+		Claims:     map[string]any{"sub": subject},
+		ExpiresAt:  time.Now().Add(time.Hour),
+		IssuedAt:   time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Bind returned error: %v", err)
+	}
+	return authz.ContextWithBoundPrincipal(context.Background(), bound)
+}
+
+func snapshotstoreRecord(snapshotID string) snapshotstore.Record {
+	return snapshotstore.Record{
+		SnapshotID:      snapshotID,
+		SourceSandboxID: "sandbox-source",
+		Backend:         "firecracker",
+		PolicyHash:      "policy-hash",
+		Policy:          testPolicy(),
+		StorageDriver:   "file",
+		StorageRef:      "/tmp/snapshot.ext4",
+		CreatedAt:       time.Now().UTC(),
+	}
+}
