@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -293,10 +294,75 @@ func (s *DaemonCommand) installDaemon(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	if err := validateDaemonServiceCommand(executablePath, args); err != nil {
+		return err
+	}
+	if err := validateDaemonInstallListenAuth(args, ctx.Config); err != nil {
+		return err
+	}
 	return installFn(ctx.Stdout, executablePath, args, daemonInstallOptions{
 		Restart: s.Restart,
 		DryRun:  s.DryRun,
 	})
+}
+
+func validateDaemonServiceCommand(executablePath string, args []string) error {
+	values := append([]string{executablePath}, args...)
+	for i, value := range values {
+		if !strings.ContainsAny(value, "\x00\r\n") {
+			continue
+		}
+		name := "executable path"
+		if i > 0 {
+			name = fmt.Sprintf("argument %d", i)
+		}
+		return fmt.Errorf("daemon service %s must not contain newlines or NUL bytes", name)
+	}
+	return nil
+}
+
+func validateDaemonInstallListenAuth(args []string, cfg runtimeconfig.Config) error {
+	listen := daemonServiceArgValue(args, "--listen")
+	ep, err := endpoint.ResolveListen(listen)
+	if err != nil {
+		return fmt.Errorf("validate daemon listen endpoint: %w", err)
+	}
+	if ep.Scheme == "unix" {
+		return nil
+	}
+	if cfg.Auth.Required {
+		if err := validateBearerAuthListenEndpoint(ep); err != nil {
+			return err
+		}
+		return nil
+	}
+	if daemonTCPEndpointIsLoopback(ep) {
+		return nil
+	}
+	return errors.New("daemon install with a non-loopback TCP listener requires auth.required=true; use a unix socket, loopback listener, or enable auth")
+}
+
+func daemonServiceArgValue(args []string, name string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if strings.TrimSpace(args[i]) == name {
+			return strings.TrimSpace(args[i+1])
+		}
+	}
+	return ""
+}
+
+func daemonTCPEndpointIsLoopback(ep endpoint.Endpoint) bool {
+	switch ep.Scheme {
+	case "http", "https":
+	default:
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(ep.Address))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	return host != "" && isLoopbackListenHost(host)
 }
 
 func (s *DaemonCommand) uninstallDaemon(ctx *runtimeContext) error {

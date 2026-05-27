@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 3 ready for review
+**Status:** Slice 4a ready for review
 **Last reviewed:** 2026-05-27
 
 ## Summary
@@ -95,6 +95,32 @@ MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.to
 
 Result: passed.
 
+Slice 4a is implemented and ready for review. Daemon install now rejects
+newlines, carriage returns, and NUL bytes in the generated service command
+before writing systemd or launchd service files. It also refuses non-loopback
+TCP control-plane daemon listeners unless runtime `auth.required` is enabled.
+When auth is enabled, non-loopback plain HTTP is still rejected because bearer
+tokens are only allowed over HTTPS or loopback HTTP.
+
+The DNS resolver install and exposure certificate symlink hardening findings
+remain in Slice 4b.
+
+Focused validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise exec -- go test ./internal/cli
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -106,39 +132,40 @@ Result: passed.
 | Remote control-plane RPCs are exposed without authentication | High | Needs fix | Slice 3: multi-principal control-server enforcement |
 | Sandbox port dial RPC lacks caller authentication and authorization | High | Needs fix | Slice 3: multi-principal control-server enforcement |
 | Network control-plane listeners do not enforce configured caller authentication | High | Needs fix | Slice 3: multi-principal control-server enforcement |
-| Daemon install can expose the unauthenticated control plane on TCP | High | Needs fix | Slice 4: privileged installer argument and path hardening, plus TCP auth guardrails |
-| Newlines in daemon arguments can inject systemd unit directives | High | Needs fix | Slice 4: privileged installer argument and path hardening |
-| Privileged DNS install writes and chowns certificate paths in a user-controlled directory without symlink checks | High | Needs fix | Slice 4: privileged installer argument and path hardening |
-| Privileged certificate writes follow user-controlled symlinks | High | Needs fix | Slice 4: privileged installer argument and path hardening |
-| Remote URL path can inject fields into git credential fill lookup | High | Needs fix | Slice 5: gateway credential and cache authorization hardening |
-| Cached Git pack responses are not scoped to current repo authorization | High | Needs fix | Slice 5: gateway credential and cache authorization hardening |
-| Policy protobufs can request allow-all sandbox egress | High | Needs fix | Slice 6: policy compile and protobuf validation hardening |
+| Daemon install can expose the unauthenticated control plane on TCP | High | Needs fix | Slice 4a: daemon install listener and argument hardening |
+| Newlines in daemon arguments can inject systemd unit directives | High | Needs fix | Slice 4a: daemon install listener and argument hardening |
+| Privileged DNS install writes and chowns certificate paths in a user-controlled directory without symlink checks | High | Needs fix | Slice 4b: DNS and exposure certificate path hardening |
+| Privileged certificate writes follow user-controlled symlinks | High | Needs fix | Slice 4b: DNS and exposure certificate path hardening |
+| Remote URL path can inject fields into git credential fill lookup | High | Needs fix | Slice 6: gateway credential and cache authorization hardening |
+| Cached Git pack responses are not scoped to current repo authorization | High | Needs fix | Slice 6: gateway credential and cache authorization hardening |
+| Policy protobufs can request allow-all sandbox egress | High | Needs fix | Slice 7: policy compile and protobuf validation hardening |
 | Repository-controlled submodule URLs are mirrored by the host without policy validation | High | Needs fix | Slice 2: host-side repository mirror policy enforcement |
-| Unbounded OCI handler creation from request-controlled registry prefixes | High bug | Needs fix | Slice 5: gateway credential and cache authorization hardening |
-| Unbounded rootfs tar extraction can exhaust host disk | High bug | Needs fix | Slice 7: image and boot asset resource bounds |
+| Unbounded OCI handler creation from request-controlled registry prefixes | High bug | Needs fix | Slice 6: gateway credential and cache authorization hardening |
+| Unbounded rootfs tar extraction can exhaust host disk | High bug | Needs fix | Slice 8: image and boot asset resource bounds |
 | Submodule digesting conflates identical mirror paths at different commits | High bug | Needs fix | Slice 2: host-side repository mirror policy enforcement |
-| Mutable GitHub Action refs run with package publish permission | Medium | Needs fix | Slice 8: CI supply-chain pinning |
-| Release manifest fields are used as host cache path components | Medium | Needs fix | Slice 7: image and boot asset resource bounds |
-| Fetch cache hits can bypass per-sandbox redirect policy | Medium | Needs fix | Slice 5: gateway credential and cache authorization hardening |
-| Go proxy cache hits can bypass effective policy validation | Medium | Needs fix | Slice 5: gateway credential and cache authorization hardening |
-| Snapshot storage can be orphaned when VM resume fails | Bug | Needs fix | Slice 9: darwin-vz lifecycle cleanup |
-| Portable dependency validation treats glob key files as literals | Bug | Needs fix | Slice 10: dependency validation correctness |
-| Newline-containing Git paths break batched digest calculation | Bug | Needs fix | Slice 10: dependency validation correctness |
-| Workspace copy-out trusts guest-reported paths before applying the guest patch | High | Needs fix | Slice 11: workspace copy-out trust-boundary hardening |
+| Mutable GitHub Action refs run with package publish permission | Medium | Needs fix | Slice 9: CI supply-chain pinning |
+| Release manifest fields are used as host cache path components | Medium | Needs fix | Slice 8: image and boot asset resource bounds |
+| Fetch cache hits can bypass per-sandbox redirect policy | Medium | Needs fix | Slice 6: gateway credential and cache authorization hardening |
+| Go proxy cache hits can bypass effective policy validation | Medium | Needs fix | Slice 6: gateway credential and cache authorization hardening |
+| Snapshot storage can be orphaned when VM resume fails | Bug | Needs fix | Slice 10: darwin-vz lifecycle cleanup |
+| Portable dependency validation treats glob key files as literals | Bug | Needs fix | Slice 11: dependency validation correctness |
+| Newline-containing Git paths break batched digest calculation | Bug | Needs fix | Slice 11: dependency validation correctness |
+| Workspace copy-out trusts guest-reported paths before applying the guest patch | High | Needs fix | Slice 12: workspace copy-out trust-boundary hardening |
 
 ## Slice Order
 
 1. Block unsafe darwin-vz file-handle gateway host dials.
 2. Enforce repository mirror policy for submodules, including `file://` and host-local targets, and repair submodule cache keys.
 3. Land configured multi-principal control-server enforcement using the existing auth plan.
-4. Harden privileged installer argument handling, certificate writes, symlink behavior, and daemon TCP auth guardrails.
-5. Bind gateway credentials and cache hits to the current authorization and effective policy.
-6. Reject unsafe policy protobufs before backend execution.
-7. Bound image/rootfs extraction and sanitize boot asset cache path components.
-8. Pin publish-capable GitHub Actions workflows to immutable refs.
-9. Clean up darwin-vz snapshot storage when resume fails.
-10. Fix dependency and Git path validation edge cases.
-11. Apply guest workspace patches before trusting copy-out paths.
+4. Harden daemon install listener and argument handling.
+5. Harden DNS installer and exposure certificate path behavior.
+6. Bind gateway credentials and cache hits to the current authorization and effective policy.
+7. Reject unsafe policy protobufs before backend execution.
+8. Bound image/rootfs extraction and sanitize boot asset cache path components.
+9. Pin publish-capable GitHub Actions workflows to immutable refs.
+10. Clean up darwin-vz snapshot storage when resume fails.
+11. Fix dependency and Git path validation edge cases.
+12. Apply guest workspace patches before trusting copy-out paths.
 
 ## Key Learnings From Pressure-Testing
 
