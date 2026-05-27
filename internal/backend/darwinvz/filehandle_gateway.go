@@ -51,6 +51,37 @@ const (
 
 var fileHandleDNSClientConfigFromFile = mdns.ClientConfigFromFile
 
+var fileHandleGatewayBlockedHostDialDestinationPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("::/128"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:2::/48"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
+
 type fileHandleGatewayConfig struct {
 	RunDir          string
 	SandboxID       string
@@ -453,6 +484,23 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			r.Complete(true)
 			return
 		}
+		if !fileHandleGatewayAllowsHostDialDestination(destIP) {
+			msg := fmt.Sprintf("network connection blocked: unsafe destination %s:%d", destIP.String(), r.ID().LocalPort)
+			network.warnings.Emit(msg)
+			logFn := log.Info
+			if network.warnings.HasHandler() {
+				logFn = log.Debug
+			}
+			logFn("filehandle network connection blocked",
+				"sandbox_id", cfg.SandboxID,
+				"dest_host", destIP.String(),
+				"dest_port", r.ID().LocalPort,
+				"source_ip", sourceIP.String(),
+				"reason", "unsafe host-dial destination",
+			)
+			r.Complete(true)
+			return
+		}
 		conn := dnsproxy.Connection{
 			SandboxID:  cfg.SandboxID,
 			SourceIP:   sourceIP,
@@ -487,7 +535,8 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 		dialCtx, cancelDial := context.WithCancel(context.Background())
 		tracked, untrack := network.trackTCPProxyConnLocked(cancelDial)
 		network.activeMu.Unlock()
-		outbound, err := new(net.Dialer).DialContext(dialCtx, "tcp", fmt.Sprintf("%s:%d", destIP.String(), r.ID().LocalPort))
+		outboundAddr := net.JoinHostPort(destIP.String(), fmt.Sprint(r.ID().LocalPort))
+		outbound, err := new(net.Dialer).DialContext(dialCtx, "tcp", outboundAddr)
 		if err != nil {
 			untrack()
 			if dnsRuntime != nil {
@@ -533,6 +582,19 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
 	return network, nil
+}
+
+func fileHandleGatewayAllowsHostDialDestination(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return false
+	}
+	for _, prefix := range fileHandleGatewayBlockedHostDialDestinationPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *fileHandleVirtualNetwork) AcceptVfkit(ctx context.Context, conn net.Conn) error {

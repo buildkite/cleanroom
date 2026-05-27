@@ -151,6 +151,45 @@ func TestNewFileHandleDNSRuntimeAcceptsAllowDefaultPolicy(t *testing.T) {
 	}
 }
 
+func TestFileHandleGatewayAllowsOnlyPublicHostDialDestinations(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		addr    netip.Addr
+		allowed bool
+	}{
+		{name: "public IPv4", addr: netip.MustParseAddr("93.184.216.34"), allowed: true},
+		{name: "public IPv6", addr: netip.MustParseAddr("2606:4700:4700::1111"), allowed: true},
+		{name: "private IPv4", addr: netip.MustParseAddr("10.0.0.1")},
+		{name: "private IPv4 mapped", addr: netip.MustParseAddr("::ffff:10.0.0.1")},
+		{name: "loopback IPv4", addr: netip.MustParseAddr("127.0.0.1")},
+		{name: "link local IPv4", addr: netip.MustParseAddr("169.254.169.254")},
+		{name: "carrier grade NAT", addr: netip.MustParseAddr("100.64.0.1")},
+		{name: "documentation IPv4", addr: netip.MustParseAddr("192.0.2.1")},
+		{name: "benchmarking IPv4", addr: netip.MustParseAddr("198.19.0.1")},
+		{name: "reserved IPv4", addr: netip.MustParseAddr("240.0.0.1")},
+		{name: "loopback IPv6", addr: netip.MustParseAddr("::1")},
+		{name: "NAT64 well known IPv6", addr: netip.MustParseAddr("64:ff9b::a00:1")},
+		{name: "private IPv6", addr: netip.MustParseAddr("fd00::1")},
+		{name: "link local IPv6", addr: netip.MustParseAddr("fe80::1")},
+		{name: "documentation IPv6", addr: netip.MustParseAddr("2001:db8::1")},
+		{name: "multicast IPv6", addr: netip.MustParseAddr("ff02::1")},
+		{name: "invalid"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := fileHandleGatewayAllowsHostDialDestination(tc.addr)
+			if got != tc.allowed {
+				t.Fatalf("fileHandleGatewayAllowsHostDialDestination(%s) = %t, want %t", tc.addr, got, tc.allowed)
+			}
+		})
+	}
+}
+
 func TestFileHandleGatewaySetPolicyUpdatesDNSRuntime(t *testing.T) {
 	t.Parallel()
 
