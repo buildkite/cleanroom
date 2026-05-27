@@ -727,6 +727,197 @@ func TestDaemonInstallUsesProvidedListenInUnit(t *testing.T) {
 	}
 }
 
+func TestDaemonInstallRejectsControlCharactersInServiceArgs(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallRunCommand = func(name string, args ...string) error {
+		t.Fatalf("did not expect service manager command %s %v", name, args)
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{
+		Action: "install",
+		Listen: "unix:///tmp/cleanroom.sock\n" +
+			"Environment=EVIL=1",
+	}
+	err := cmd.Run(daemonInstallContext(tmpDir, stdout))
+	if err == nil {
+		t.Fatal("expected control-character rejection")
+	}
+	if !strings.Contains(err.Error(), "must not contain newlines or NUL bytes") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(unitPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected no service file to be written, stat err=%v", statErr)
+	}
+}
+
+func TestDaemonInstallRejectsNonLoopbackTCPWithoutAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallRunCommand = func(name string, args ...string) error {
+		t.Fatalf("did not expect service manager command %s %v", name, args)
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", Listen: "https://0.0.0.0:7777"}
+	err := cmd.Run(daemonInstallContext(tmpDir, stdout))
+	if err == nil {
+		t.Fatal("expected non-loopback TCP auth error")
+	}
+	if !strings.Contains(err.Error(), "requires auth.required=true") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(unitPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected no service file to be written, stat err=%v", statErr)
+	}
+}
+
+func TestDaemonInstallAllowsNonLoopbackHTTPSWithAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+	stdout, _ := makeStdoutCapture(t)
+	ctx := daemonInstallContext(tmpDir, stdout)
+	writeDaemonAuthRuntimeConfig(t, ctx.ConfigPath)
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		if len(args) > 0 && args[0] == "is-active" {
+			return &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	cmd := &DaemonCommand{Action: "install", Listen: "https://0.0.0.0:7777"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read generated unit: %v", err)
+	}
+	if !strings.Contains(string(raw), "--listen https://0.0.0.0:7777") {
+		t.Fatalf("expected configured https listener in unit, got:\n%s", raw)
+	}
+	if len(calls) == 0 {
+		t.Fatal("expected service manager calls")
+	}
+}
+
+func TestDaemonInstallRejectsNonLoopbackHTTPWithAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+	stdout, _ := makeStdoutCapture(t)
+	ctx := daemonInstallContext(tmpDir, stdout)
+	writeDaemonAuthRuntimeConfig(t, ctx.ConfigPath)
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallRunCommand = func(name string, args ...string) error {
+		t.Fatalf("did not expect service manager command %s %v", name, args)
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	cmd := &DaemonCommand{Action: "install", Listen: "http://0.0.0.0:7777"}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected non-loopback HTTP auth error")
+	}
+	if !strings.Contains(err.Error(), "non-loopback http listen endpoint") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(unitPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected no service file to be written, stat err=%v", statErr)
+	}
+}
+
+func writeDaemonAuthRuntimeConfig(t *testing.T, path string) {
+	t.Helper()
+	content := `default_backend: firecracker
+auth:
+  required: true
+  policy_file: /tmp/cleanroom-auth-policy.yaml
+  oidc:
+    issuers:
+      - name: test
+        issuer: https://issuer.example
+        audiences:
+          - cleanroom
+        jwks_url: https://issuer.example/jwks
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write auth runtime config: %v", err)
+	}
+}
+
 func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
