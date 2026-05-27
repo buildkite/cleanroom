@@ -10,7 +10,10 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
+	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -330,6 +333,111 @@ func TestAuthzDeniesOwnerlessSnapshotWhenAuthenticated(t *testing.T) {
 	_, err := svc.GetSnapshot(testAuthContext(t, "alice"), &cleanroomv1.GetSnapshotRequest{SnapshotId: "snap-ownerless"})
 	if !errors.Is(err, ErrAuthorizationDenied) {
 		t.Fatalf("GetSnapshot ownerless error = %v, want authorization denied", err)
+	}
+}
+
+func TestAuthzStageCacheLookupRequiresMatchingOwner(t *testing.T) {
+	cacheStore := newMemoryCacheStore()
+	svc := &Service{CacheStore: cacheStore}
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	cacheKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil)
+	record := cachestore.Record{
+		CacheKey:          cacheKey,
+		Stage:             workspaceStageName,
+		OwnerPrincipalID:  "oidc:test:alice",
+		OwnerScope:        "scope:alice",
+		State:             cacheStateReady,
+		BackingSnapshotID: "snapshot-alice",
+		Backend:           "firecracker",
+		PolicyHash:        compiled.Hash,
+		Policy:            compiled.ToProto(),
+		Repository:        cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
+		ParentCacheKey:    "runtime-base:test",
+		StorageDriver:     "file",
+		StorageRef:        "/tmp/alice.ext4",
+		ProducerVersion:   workspaceStageProducerVersion,
+	}
+	if err := cacheStore.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create owned cache record returned error: %v", err)
+	}
+	ownerlessRecord := record
+	ownerlessRecord.OwnerPrincipalID = ""
+	ownerlessRecord.OwnerScope = ""
+	ownerlessRecord.BackingSnapshotID = "snapshot-ownerless"
+	ownerlessRecord.StorageRef = "/tmp/ownerless.ext4"
+	if err := cacheStore.Create(context.Background(), ownerlessRecord); err != nil {
+		t.Fatalf("Create ownerless cache record returned error: %v", err)
+	}
+
+	got, ok, reason, err := svc.lookupWorkspaceStageCache(testAuthContext(t, "alice"), "firecracker", compiled, "runtime-base:test", repository, nil)
+	if err != nil {
+		t.Fatalf("lookup as owner returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("lookup as owner missed with reason %q", reason)
+	}
+	if got.OwnerPrincipalID != "oidc:test:alice" {
+		t.Fatalf("lookup as owner returned owner %q", got.OwnerPrincipalID)
+	}
+
+	if _, ok, reason, err := svc.lookupWorkspaceStageCache(testAuthContext(t, "bob"), "firecracker", compiled, "runtime-base:test", repository, nil); err != nil {
+		t.Fatalf("lookup as other principal returned error: %v", err)
+	} else if ok || reason != observability.CacheLookupReasonRecordNotFound {
+		t.Fatalf("lookup as other principal = ok %v reason %q, want owner miss", ok, reason)
+	}
+
+	got, ok, reason, err = svc.lookupWorkspaceStageCache(context.Background(), "firecracker", compiled, "runtime-base:test", repository, nil)
+	if err != nil {
+		t.Fatalf("ownerless lookup returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("ownerless lookup missed with reason %q", reason)
+	}
+	if got.OwnerPrincipalID != "" || got.StorageRef != "/tmp/ownerless.ext4" {
+		t.Fatalf("ownerless lookup returned %#v", got)
+	}
+}
+
+func TestAuthzStageCachePublishStampsOwner(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestServiceWithSnapshotStore(adapter, newMemorySnapshotStore())
+	cacheStore := newMemoryCacheStore()
+	svc.CacheStore = cacheStore
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+
+	svc.maybePublishWorkspaceStageCache(
+		testAuthContext(t, "alice"),
+		adapter,
+		"sandbox-1",
+		"firecracker",
+		compiled,
+		backend.FirecrackerConfig{},
+		"runtime-base:test",
+		repository,
+		nil,
+		nil,
+	)
+
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 1; got != want {
+		t.Fatalf("unexpected cache record count: got %d want %d", got, want)
+	}
+	if got, want := records[0].OwnerPrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("cache owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := records[0].OwnerScope, "scope:alice"; got != want {
+		t.Fatalf("cache owner scope mismatch: got %q want %q", got, want)
 	}
 }
 

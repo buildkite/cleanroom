@@ -282,17 +282,29 @@ func newHandlerCacheStore() *handlerCacheStore {
 }
 
 func (s *handlerCacheStore) Create(_ context.Context, record cachestore.Record) error {
-	s.records[handlerCacheStoreKey(record.Stage, record.CacheKey)] = record
+	s.records[handlerCacheStoreOwnerKey(record.Stage, record.CacheKey, record.OwnerPrincipalID)] = record
 	return nil
 }
 
 func (s *handlerCacheStore) Upsert(_ context.Context, record cachestore.Record) error {
-	s.records[handlerCacheStoreKey(record.Stage, record.CacheKey)] = record
+	s.records[handlerCacheStoreOwnerKey(record.Stage, record.CacheKey, record.OwnerPrincipalID)] = record
 	return nil
 }
 
 func (s *handlerCacheStore) GetReady(_ context.Context, stage, cacheKey string) (cachestore.Record, bool, error) {
-	record, ok := s.records[handlerCacheStoreKey(stage, cacheKey)]
+	record, ok := s.records[handlerCacheStoreOwnerKey(stage, cacheKey, "")]
+	if !ok || record.State != "ready" {
+		return cachestore.Record{}, false, nil
+	}
+	return record, true, nil
+}
+
+func (s *handlerCacheStore) GetReadyForOwner(_ context.Context, stage, cacheKey, ownerPrincipalID string) (cachestore.Record, bool, error) {
+	ownerPrincipalID = strings.TrimSpace(ownerPrincipalID)
+	if ownerPrincipalID == "" {
+		return cachestore.Record{}, false, nil
+	}
+	record, ok := s.records[handlerCacheStoreOwnerKey(stage, cacheKey, ownerPrincipalID)]
 	if !ok || record.State != "ready" {
 		return cachestore.Record{}, false, nil
 	}
@@ -300,6 +312,10 @@ func (s *handlerCacheStore) GetReady(_ context.Context, stage, cacheKey string) 
 }
 
 func (s *handlerCacheStore) Touch(context.Context, string, string) error {
+	return nil
+}
+
+func (s *handlerCacheStore) TouchForOwner(context.Context, string, string, string) error {
 	return nil
 }
 
@@ -312,12 +328,25 @@ func (s *handlerCacheStore) List(context.Context) ([]cachestore.Record, error) {
 }
 
 func (s *handlerCacheStore) Delete(_ context.Context, stage, cacheKey string) error {
-	delete(s.records, handlerCacheStoreKey(stage, cacheKey))
+	for key, record := range s.records {
+		if strings.TrimSpace(record.Stage) == strings.TrimSpace(stage) && strings.TrimSpace(record.CacheKey) == strings.TrimSpace(cacheKey) {
+			delete(s.records, key)
+		}
+	}
+	return nil
+}
+
+func (s *handlerCacheStore) DeleteForOwner(_ context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	delete(s.records, handlerCacheStoreOwnerKey(stage, cacheKey, ownerPrincipalID))
 	return nil
 }
 
 func handlerCacheStoreKey(stage, cacheKey string) string {
 	return strings.TrimSpace(stage) + "\x00" + strings.TrimSpace(cacheKey)
+}
+
+func handlerCacheStoreOwnerKey(stage, cacheKey, ownerPrincipalID string) string {
+	return handlerCacheStoreKey(stage, cacheKey) + "\x00" + strings.TrimSpace(ownerPrincipalID)
 }
 
 type handlerCachePeerRecordOptions struct {

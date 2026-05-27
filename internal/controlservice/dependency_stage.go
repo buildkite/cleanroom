@@ -839,7 +839,7 @@ func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName st
 		return cachestore.Record{}, false, "", nil
 	}
 
-	record, ok, err := store.GetReady(ctx, dependencyStageName, plan.CacheKey)
+	record, ok, err := lookupReadyCacheRecord(ctx, store, dependencyStageName, plan.CacheKey)
 	if err != nil {
 		return cachestore.Record{}, false, "", err
 	}
@@ -876,7 +876,7 @@ func (s *Service) lookupPortableDependencyStageCache(ctx context.Context, backen
 		return cachestore.Record{}, false, "", nil
 	}
 
-	record, ok, err := store.GetReady(ctx, dependencyStageName, plan.PortableCacheKey)
+	record, ok, err := lookupReadyCacheRecord(ctx, store, dependencyStageName, plan.PortableCacheKey)
 	if err != nil {
 		return cachestore.Record{}, false, "", err
 	}
@@ -1222,6 +1222,7 @@ func (s *Service) maybePublishDependencyStageCache(
 		ProducerVersion:          dependencyStageProducerVersion,
 	}
 	populateStageCacheRecordMetadata(&record, plan.ParentRuntimeCacheKey, result, now)
+	stampCacheRecordOwner(ctx, &record)
 
 	persist := store.Create
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == plan.CacheKey {

@@ -94,7 +94,7 @@ func (s *Service) lookupServicesStageCache(ctx context.Context, backendName stri
 		return cachestore.Record{}, false, "", nil
 	}
 
-	record, ok, err := store.GetReady(ctx, servicesStageName, plan.CacheKey)
+	record, ok, err := lookupReadyCacheRecord(ctx, store, servicesStageName, plan.CacheKey)
 	if err != nil {
 		return cachestore.Record{}, false, "", err
 	}
@@ -184,6 +184,7 @@ func (s *Service) maybePublishServicesStageCache(
 		ProducerVersion:        servicesStageProducerVersion,
 	}
 	populateStageCacheRecordMetadata(&record, plan.RuntimeBaseKey, result, now)
+	stampCacheRecordOwner(ctx, &record)
 
 	persist := store.Create
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == plan.CacheKey {

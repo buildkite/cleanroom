@@ -84,7 +84,7 @@ func (s *Service) lookupWorkspaceStageCache(ctx context.Context, backendName str
 		return cachestore.Record{}, false, "", nil
 	}
 
-	record, ok, err := store.GetReady(ctx, workspaceStageName, cacheKey)
+	record, ok, err := lookupReadyCacheRecord(ctx, store, workspaceStageName, cacheKey)
 	if err != nil {
 		return cachestore.Record{}, false, "", err
 	}
@@ -176,6 +176,7 @@ func (s *Service) maybePublishWorkspaceStageCache(
 		ProducerVersion:        workspaceStageProducerVersion,
 	}
 	populateStageCacheRecordMetadata(&record, runtimeBaseKey, result, now)
+	stampCacheRecordOwner(ctx, &record)
 
 	persist := store.Create
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey {

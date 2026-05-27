@@ -202,9 +202,12 @@ type cacheMetadataStore interface {
 	Create(context.Context, cachestore.Record) error
 	Upsert(context.Context, cachestore.Record) error
 	GetReady(context.Context, string, string) (cachestore.Record, bool, error)
+	GetReadyForOwner(context.Context, string, string, string) (cachestore.Record, bool, error)
 	Touch(context.Context, string, string) error
+	TouchForOwner(context.Context, string, string, string) error
 	List(context.Context) ([]cachestore.Record, error)
 	Delete(context.Context, string, string) error
+	DeleteForOwner(context.Context, string, string, string) error
 }
 
 type changesetMetadataStore interface {

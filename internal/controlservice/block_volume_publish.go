@@ -115,6 +115,7 @@ func (s *Service) maybePublishBlockVolumeCaches(
 	for i, block := range missed {
 		snapshot := snapshots[i]
 		record := blockVolumeCacheRecordFromSnapshot(backendName, compiled, repository, changeset, phase.StageName, block, snapshot, now)
+		stampCacheRecordOwner(ctx, &record)
 		if reason := blockVolumeOutputRecordMissReason(block.Outputs, record.OutputRecords); reason != "" {
 			s.cleanupBlockVolumeSnapshots(adapter, backendName, firecrackerCfg, phase, snapshots)
 			phase.warn(s, phase.PublishWarning, sandboxID, fmt.Errorf("snapshot output records for block %q do not match declared outputs: %s", block.BlockName, reason))

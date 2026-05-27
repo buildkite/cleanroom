@@ -169,7 +169,7 @@ func blockVolumeRepositorySourceDigest(repository *repositorycheckout.Checkout, 
 }
 
 func lookupBlockVolumeCache(ctx context.Context, store cacheMetadataStore, stageName, backendName string, compiled *policy.CompiledPolicy, block blockVolumeBlockPlan) (blockVolumeBlockPlan, error) {
-	record, ok, err := store.GetReady(ctx, stageName, block.CacheKey)
+	record, ok, err := lookupReadyCacheRecord(ctx, store, stageName, block.CacheKey)
 	if err != nil {
 		return block, err
 	}
@@ -199,6 +199,9 @@ func suggestedBlockVolumeMinimumBytes(ctx context.Context, store cacheMetadataSt
 	}
 	var maxSize int64
 	for _, record := range records {
+		if !cacheRecordVisibleToContext(ctx, record) {
+			continue
+		}
 		if !blockVolumeRecordCanInformMinimum(record, stageName, backendName, compiled, block) {
 			continue
 		}

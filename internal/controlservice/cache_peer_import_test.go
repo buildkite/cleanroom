@@ -61,6 +61,46 @@ func TestCachePeerImportHTTPClientsHaveBoundedTimeouts(t *testing.T) {
 	}
 }
 
+func TestCachePeerImportSkipsAuthenticatedPrincipals(t *testing.T) {
+	t.Setenv("CACHE_PEER_TOKEN", "token")
+	driver := &stubCachePeerTransferDriver{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			Cache: runtimeconfig.CacheConfig{Peers: []runtimeconfig.CachePeerConfig{{
+				URL:      "http://cache-peer.example.test",
+				TokenEnv: "CACHE_PEER_TOKEN",
+			}}},
+		},
+		CachePeerTransferDriver: driver,
+	}
+
+	result, err := svc.importCachePeerStage(testAuthContext(t, "alice"), &stubAdapter{}, backend.FirecrackerConfig{}, cachePeerImportOptions{
+		Stage:          dependencyStageName,
+		CacheKey:       "dependency-stage:test",
+		ParentStage:    workspaceStageName,
+		ParentCacheKey: "workspace-stage:test",
+		Backend:        "firecracker",
+		StorageDriver:  "zfs",
+		NewRecord: func(string, volumestore.Snapshot, time.Time) cachestore.Record {
+			t.Fatal("NewRecord should not run for authenticated cache peer import")
+			return cachestore.Record{}
+		},
+		ValidateRecord: func(context.Context) (cachestore.Record, bool, string, error) {
+			t.Fatal("ValidateRecord should not run for authenticated cache peer import")
+			return cachestore.Record{}, false, "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("importCachePeerStage returned error: %v", err)
+	}
+	if result.imported {
+		t.Fatal("authenticated cache peer import should not import")
+	}
+	if got := len(driver.describeRequests); got != 0 {
+		t.Fatalf("expected no snapshot metadata lookup, got %d", got)
+	}
+}
+
 func TestCachePeerTimeoutConnReadTimesOutWhenIdle(t *testing.T) {
 	reader, writer := net.Pipe()
 	t.Cleanup(func() {

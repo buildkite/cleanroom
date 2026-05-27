@@ -286,7 +286,7 @@ func (s *Service) resolveServicesStageCache(ctx context.Context, req servicesSta
 	})
 	if restoreErr == nil {
 		if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-			if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
+			if err := touchCacheRecord(ctx, cacheStore, record); err != nil {
 				s.logServicesStageWarning("touch services stage cache", "", err)
 			}
 		}
@@ -383,7 +383,7 @@ func (s *Service) restoreDependencyStageCache(ctx context.Context, req dependenc
 	})
 	if restoreErr == nil {
 		if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-			if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
+			if err := touchCacheRecord(ctx, cacheStore, record); err != nil {
 				s.logDependencyStageWarning("touch dependency stage cache", "", err)
 			}
 		}
@@ -459,7 +459,7 @@ func (s *Service) resolvePortableDependencyStageCache(ctx context.Context, req d
 	}
 
 	if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-		if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
+		if err := touchCacheRecord(ctx, cacheStore, record); err != nil {
 			s.logDependencyStageWarning("touch portable dependency stage cache", "", err)
 		}
 	}
@@ -523,7 +523,7 @@ func (s *Service) resolveWorkspaceStageCache(ctx context.Context, req workspaceS
 	})
 	if restoreErr == nil {
 		if cacheStore, err := s.cacheStoreOrErr(); err == nil {
-			if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
+			if err := touchCacheRecord(ctx, cacheStore, record); err != nil {
 				s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
 			}
 		}

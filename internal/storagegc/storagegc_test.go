@@ -43,6 +43,18 @@ func (s *stubCacheStore) Delete(_ context.Context, stage, cacheKey string) error
 	return nil
 }
 
+func (s *stubCacheStore) DeleteForOwner(_ context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	if ownerPrincipalID == "" {
+		s.deleted = append(s.deleted, stage+"/"+cacheKey)
+	} else {
+		s.deleted = append(s.deleted, stage+"/"+cacheKey+"/"+ownerPrincipalID)
+	}
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return nil
+}
+
 type stubImageManager struct {
 	records []imagemgr.Record
 	err     error
