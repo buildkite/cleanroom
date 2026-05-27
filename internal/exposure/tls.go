@@ -309,34 +309,17 @@ func rejectLocalCertificateSymlinkPath(path string) error {
 	if path == "" || path == "." {
 		return nil
 	}
-	ancestor := path
-	for {
-		info, err := os.Lstat(ancestor)
-		switch {
-		case err == nil:
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("%s contains symbolic link component %s", path, ancestor)
-			}
-			return rejectLocalCertificateSymlinkPathFromAncestor(path, ancestor)
-		case errors.Is(err, os.ErrNotExist):
-			parent := filepath.Dir(ancestor)
-			if parent == ancestor {
-				return nil
-			}
-			ancestor = parent
-		default:
-			return err
-		}
+	current := ""
+	rest := path
+	if volume := filepath.VolumeName(path); volume != "" {
+		current = volume
+		rest = strings.TrimPrefix(path, volume)
 	}
-}
-
-func rejectLocalCertificateSymlinkPathFromAncestor(path, ancestor string) error {
-	rel, err := filepath.Rel(ancestor, path)
-	if err != nil || rel == "." {
-		return nil
+	if filepath.IsAbs(path) {
+		current += string(filepath.Separator)
+		rest = strings.TrimPrefix(rest, string(filepath.Separator))
 	}
-	current := ancestor
-	for _, elem := range strings.Split(rel, string(filepath.Separator)) {
+	for _, elem := range strings.Split(rest, string(filepath.Separator)) {
 		if elem == "" || elem == "." {
 			continue
 		}
@@ -348,11 +331,31 @@ func rejectLocalCertificateSymlinkPathFromAncestor(path, ancestor string) error 
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if info.Mode()&os.ModeSymlink != 0 && !allowLocalCertificateSymlinkComponent(current) {
 			return fmt.Errorf("%s contains symbolic link component %s", path, current)
 		}
 	}
 	return nil
+}
+
+func allowLocalCertificateSymlinkComponent(path string) bool {
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Clean(filepath.Join(filepath.Dir(path), target))
+	}
+	switch filepath.Clean(path) {
+	case "/etc":
+		return target == "/private/etc"
+	case "/tmp":
+		return target == "/private/tmp"
+	case "/var":
+		return target == "/private/var"
+	default:
+		return false
+	}
 }
 
 func parseLocalCertificate(certPEM, keyPEM []byte) (*LocalCertificate, error) {

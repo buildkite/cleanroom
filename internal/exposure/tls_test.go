@@ -204,6 +204,29 @@ func TestEnsureLocalCertificateRejectsSymlinkedTLSParent(t *testing.T) {
 	}
 }
 
+func TestEnsureLocalCertificateRejectsExistingCertificateUnderSymlinkedTLSParent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	outside := t.TempDir()
+	actualDir := filepath.Join(outside, "cleanroom", "tls")
+	if _, err := EnsureLocalCertificate(Domain, actualDir); err != nil {
+		t.Fatalf("seed outside certificate: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, ".config")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	dir := filepath.Join(home, ".config", "cleanroom", "tls")
+
+	_, err := EnsureLocalCertificate(Domain, dir)
+	if err == nil {
+		t.Fatal("expected existing certificate under symlinked TLS parent to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func writeLegacyLeafCertificate(t *testing.T, dir, domain string) {
 	t.Helper()
 

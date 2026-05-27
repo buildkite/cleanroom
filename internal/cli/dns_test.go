@@ -455,6 +455,35 @@ func TestDNSStatusReportsCertificateTrust(t *testing.T) {
 	}
 }
 
+func TestDNSStatusReportsInvalidXDGConfigHome(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	outside := filepath.Join(t.TempDir(), "xdg-config")
+	baseGetenv := dnsInstallGetenv
+	dnsInstallGetenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return outside
+		}
+		return baseGetenv(key)
+	}
+
+	status := (&DNSCommand{}).currentDNSStatus()
+	if !strings.Contains(status.Message, "must be inside invoking user home") {
+		t.Fatalf("expected invalid XDG_CONFIG_HOME message, got %+v", status)
+	}
+	if !strings.Contains(status.TrustMessage, "must be inside invoking user home") {
+		t.Fatalf("expected invalid XDG_CONFIG_HOME trust message, got %+v", status)
+	}
+	if status.CertificatePath != "" {
+		t.Fatalf("expected no certificate path for invalid config home, got %+v", status)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for invalid config home, got %v", calls)
+	}
+}
+
 func TestDNSUninstallRemovesCertificateTrustAndFiles(t *testing.T) {
 	home := t.TempDir()
 	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)

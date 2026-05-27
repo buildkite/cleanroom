@@ -214,18 +214,20 @@ func (c *DNSCommand) currentDNSStatus() dnsStatusPayload {
 		Domain:    exposure.Domain,
 		Listen:    listen,
 	}
-	if tlsDir, err := dnsExposureTLSDir(); err == nil {
-		status.CertificatePath = filepath.Join(tlsDir, exposure.LocalCertificateFilename)
-	}
 	if !status.Supported {
 		status.Message = "dns resolver install is unsupported on this platform"
 		return status
 	}
-	if strings.TrimSpace(status.CertificatePath) != "" {
-		trusted, trustMessage := exposureCertificateTrustStatus(status.CertificatePath)
-		status.Trusted = trusted
-		status.TrustMessage = trustMessage
+	tlsDir, err := dnsExposureTLSDir()
+	if err != nil {
+		status.Message = err.Error()
+		status.TrustMessage = err.Error()
+		return status
 	}
+	status.CertificatePath = filepath.Join(tlsDir, exposure.LocalCertificateFilename)
+	trusted, trustMessage := exposureCertificateTrustStatus(status.CertificatePath)
+	status.Trusted = trusted
+	status.TrustMessage = trustMessage
 
 	data, err := dnsInstallReadFile(dnsResolverInstallPath)
 	switch {

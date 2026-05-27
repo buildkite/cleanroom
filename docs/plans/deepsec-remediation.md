@@ -130,7 +130,8 @@ certificate paths when the invoking user's TLS directory path contains symlink
 components from the user's home or configured XDG config root, and it validates
 the existing certificate/key pair before changing trust-store state. During
 sudo installs, `XDG_CONFIG_HOME` must stay inside the invoking user's home, and
-the ownership handoff uses `lchown`.
+`dns status` reports that configuration error instead of hiding it. The
+ownership handoff uses `lchown`.
 
 Focused validation run on 2026-05-27:
 
