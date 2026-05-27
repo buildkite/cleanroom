@@ -259,6 +259,37 @@ func TestDNSInstallRejectsSymlinkedXDGConfigHomeBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestDNSInstallRejectsXDGConfigHomeOutsideInvokingHome(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	outside := filepath.Join(t.TempDir(), "xdg-config")
+	baseGetenv := dnsInstallGetenv
+	dnsInstallGetenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return outside
+		}
+		return baseGetenv(key)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	err := cmd.Run(&runtimeContext{Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected XDG_CONFIG_HOME outside invoking home to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must be inside invoking user home") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for outside XDG config home, got %v", calls)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "cleanroom")); !os.IsNotExist(err) {
+		t.Fatalf("expected outside XDG config home not to receive certificate files, got err=%v", err)
+	}
+}
+
 func TestChownExposureTLSMaterialRejectsSymlinkedTarget(t *testing.T) {
 	dir := t.TempDir()
 	parent := filepath.Join(t.TempDir(), "parent-link")

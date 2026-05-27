@@ -127,8 +127,9 @@ the opened file still matches the inspected regular file, and write refreshed
 certificate material through a same-directory temporary file before rename. The
 privileged DNS installer also refuses to trust, remove trust for, or chown
 certificate paths when the invoking user's TLS directory path contains symlink
-components from the user's home or configured XDG config root, and it uses
-`lchown` for the ownership handoff.
+components from the user's home or configured XDG config root. During sudo
+installs, `XDG_CONFIG_HOME` must stay inside the invoking user's home, and the
+ownership handoff uses `lchown`.
 
 Focused validation run on 2026-05-27:
 

@@ -312,6 +312,10 @@ func resolverFileListen(data []byte, fallback string) string {
 
 func dnsExposureTLSDir() (string, error) {
 	if configHome := strings.TrimSpace(dnsInstallGetenv("XDG_CONFIG_HOME")); configHome != "" {
+		configHome = filepath.Clean(configHome)
+		if home := dnsExposureInvokingHomeDir(); home != "" && !pathWithinDir(home, configHome) {
+			return "", fmt.Errorf("XDG_CONFIG_HOME %s must be inside invoking user home %s for dns install", configHome, home)
+		}
 		return filepath.Join(configHome, "cleanroom", "tls"), nil
 	}
 	if home := dnsExposureInvokingHomeDir(); home != "" {
