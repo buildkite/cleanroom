@@ -88,7 +88,13 @@ func ensureSandboxPortDialSupported(ctx context.Context, client *controlclient.C
 	if sandbox == nil {
 		return errors.New("sandbox lookup returned no sandbox")
 	}
-	if sandbox.GetStatus() != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+	switch sandbox.GetStatus() {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY:
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED:
+		if !sandbox.GetBackendCapabilities()[backend.CapabilitySandboxSuspend] {
+			return fmt.Errorf("sandbox %q is suspended but backend %q does not support sandbox wake", sandboxID, sandbox.GetBackend())
+		}
+	default:
 		return fmt.Errorf("sandbox %q is not ready", sandboxID)
 	}
 	if !sandbox.GetBackendCapabilities()[backend.CapabilitySandboxPortDial] {

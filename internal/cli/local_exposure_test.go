@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,6 +22,10 @@ import (
 
 type localExposureTestAdapter struct {
 	capabilities map[string]bool
+}
+
+type localExposureSuspendAdapter struct {
+	localExposureTestAdapter
 }
 
 func (a *localExposureTestAdapter) Name() string { return "firecracker" }
@@ -40,6 +46,14 @@ func (a *localExposureTestAdapter) TerminateSandbox(context.Context, string) err
 	return nil
 }
 
+func (a *localExposureSuspendAdapter) SuspendSandbox(context.Context, string) error {
+	return nil
+}
+
+func (a *localExposureSuspendAdapter) ResumeSandbox(context.Context, string) error {
+	return nil
+}
+
 func TestStartClientExposuresRejectsUnsupportedSandboxPortDial(t *testing.T) {
 	client, sandboxID := newLocalExposureTestClient(t, &localExposureTestAdapter{
 		capabilities: map[string]bool{backend.CapabilitySandboxPortDial: false},
@@ -57,6 +71,32 @@ func TestStartClientExposuresRejectsUnsupportedSandboxPortDial(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not support sandbox port dialing") {
 		t.Fatalf("unexpected startClientExposures error: %v", err)
+	}
+}
+
+func TestStartClientExposuresAllowsSuspendedWakeableSandbox(t *testing.T) {
+	client, sandboxID := newLocalExposureTestClient(t, &localExposureSuspendAdapter{
+		localExposureTestAdapter: localExposureTestAdapter{
+			capabilities: map[string]bool{
+				backend.CapabilitySandboxPortDial: true,
+				backend.CapabilitySandboxSuspend:  true,
+			},
+		},
+	})
+	if _, err := client.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	manager, _, err := startClientExposures(context.Background(), client, sandboxID, []*cleanroomv1.PortExposure{{
+		Protocol:  exposureProtocolTCP,
+		HostPort:  int32(freeLocalExposureTCPPort(t)),
+		GuestPort: 3000,
+	}})
+	if manager != nil {
+		_ = manager.Close()
+	}
+	if err != nil {
+		t.Fatalf("startClientExposures returned error: %v", err)
 	}
 }
 
@@ -121,4 +161,22 @@ func newLocalExposureTestClient(t *testing.T, adapter backend.Adapter) (*control
 		t.Fatal("CreateSandbox returned empty sandbox id")
 	}
 	return client, sandboxID
+}
+
+func freeLocalExposureTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on free TCP port: %v", err)
+	}
+	defer ln.Close()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split listen address %q: %v", ln.Addr().String(), err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("parse listen port %q: %v", port, err)
+	}
+	return n
 }

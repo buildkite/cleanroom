@@ -73,6 +73,7 @@ type Service struct {
 	executions        map[string]*executionState
 	snapshotOps       map[string]int
 	snapshotDeletions map[string]struct{}
+	sandboxWakeOps    singleflight.Group
 }
 
 type storageCleanupScheduler struct {
@@ -118,6 +119,7 @@ type sandboxState struct {
 	RepositoryBusy                      bool
 	ActiveExecutionID                   string
 	FileTransferInProgress              bool
+	GuestInteractionCount               int
 	CreatedAt                           time.Time
 	UpdatedAt                           time.Time
 	LastExecutionID                     string
@@ -1111,6 +1113,45 @@ func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSand
 	}
 	sandboxID := strings.TrimSpace(req.GetSandboxId())
 
+	sandbox, err := s.wakeSandbox(ctx, sandboxID, false)
+	if err != nil {
+		return nil, err
+	}
+	return &cleanroomv1.ResumeSandboxResponse{Sandbox: sandbox}, nil
+}
+
+func (s *Service) ensureSandboxReadyForGuestOperation(ctx context.Context, sandboxID string) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	_, err := s.wakeSandbox(ctx, sandboxID, true)
+	return err
+}
+
+func (s *Service) wakeSandbox(ctx context.Context, sandboxID string, guestOperation bool) (*cleanroomv1.Sandbox, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ch := s.sandboxWakeOps.DoChan(sandboxID, func() (any, error) {
+		return s.resumeSandbox(context.WithoutCancel(ctx), sandboxID, guestOperation)
+	})
+	select {
+	case result := <-ch:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		sandbox, ok := result.Val.(*cleanroomv1.Sandbox)
+		if !ok || sandbox == nil {
+			return nil, fmt.Errorf("resume sandbox %q returned no sandbox", sandboxID)
+		}
+		return sandbox, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) resumeSandbox(ctx context.Context, sandboxID string, guestOperation bool) (*cleanroomv1.Sandbox, error) {
 	var resumable backend.SuspendableAdapter
 
 	s.mu.Lock()
@@ -1121,9 +1162,16 @@ func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSand
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
 	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
-		resp := &cleanroomv1.ResumeSandboxResponse{Sandbox: cloneSandboxLocked(state)}
+		resp := cloneSandboxLocked(state)
 		s.mu.Unlock()
 		return resp, nil
+	}
+	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED {
+		s.mu.Unlock()
+		if guestOperation {
+			return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
+		}
+		return nil, fmt.Errorf("sandbox %q is not suspended", sandboxID)
 	}
 	adapter, ok := s.Backends[state.Backend]
 	if !ok {
@@ -1142,10 +1190,6 @@ func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSand
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("backend_capability_mismatch: backend %q reports sandbox suspend but does not implement it", state.Backend)
-	}
-	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox %q is not suspended", sandboxID)
 	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING, "sandbox wake requested")
 	s.mu.Unlock()
@@ -1173,7 +1217,7 @@ func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSand
 	if current.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING {
 		s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, "sandbox ready after wake")
 	}
-	return &cleanroomv1.ResumeSandboxResponse{Sandbox: cloneSandboxLocked(current)}, nil
+	return cloneSandboxLocked(current), nil
 }
 
 func isIndeterminateSandboxLifecycleError(err error) bool {
@@ -1254,6 +1298,13 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		record          snapshotstore.Record
 		snapshotAdapter backend.SnapshottingAdapter
 	)
+
+	if err := s.ensureSandboxSnapshotSupported(sandboxID); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
@@ -1444,6 +1495,41 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 	}, nil
 }
 
+func (s *Service) ensureSandboxSnapshotSupported(sandboxID string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	switch state.Status {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
+	default:
+		return fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[backend.CapabilitySandboxSnapshot] {
+		return fmt.Errorf("backend %q does not support snapshots", state.Backend)
+	}
+	if _, ok := adapter.(backend.SnapshottingAdapter); !ok {
+		return fmt.Errorf("backend %q does not support snapshots", state.Backend)
+	}
+	if !snapshotOperationsEnabledForBackend(state.Backend, s.Config) {
+		return fmt.Errorf("snapshots are not enabled for backend %q", state.Backend)
+	}
+	return nil
+}
+
 func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.DownloadSandboxFileRequest) (*cleanroomv1.DownloadSandboxFileResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
@@ -1465,49 +1551,16 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 		maxBytes = s.downloadMaxBytesDefault()
 	}
 
-	s.mu.Lock()
-	state, ok := s.sandboxes[sandboxID]
-	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileDownloadSupport)
+	if err != nil {
+		return nil, err
 	}
-	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
-	}
-	adapter, ok := s.Backends[state.Backend]
-	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("unknown backend %q", state.Backend)
-	}
+	defer finish()
+
 	downloader, ok := adapter.(backend.SandboxFileDownloadAdapter)
 	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("backend %q does not support sandbox file downloads", state.Backend)
+		return nil, fmt.Errorf("backend %q does not support sandbox file downloads", backendName)
 	}
-	if state.FileTransferInProgress {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file transfer", sandboxID)
-	}
-	if state.RepositoryBusy {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
-	}
-	if activeID := strings.TrimSpace(state.ActiveExecutionID); activeID != "" {
-		if activeExecution, ok := s.executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
-			s.mu.Unlock()
-			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
-		}
-	}
-	state.FileTransferInProgress = true
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		if current, ok := s.sandboxes[sandboxID]; ok {
-			current.FileTransferInProgress = false
-		}
-		s.mu.Unlock()
-	}()
 
 	data, err := downloader.DownloadSandboxFile(ctx, sandboxID, path, maxBytes)
 	if err != nil {
@@ -1543,49 +1596,16 @@ func (s *Service) UploadSandboxFile(ctx context.Context, req *cleanroomv1.Upload
 		return nil, fmt.Errorf("upload data exceeds max_bytes=%d", maxBytes)
 	}
 
-	s.mu.Lock()
-	state, ok := s.sandboxes[sandboxID]
-	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileUploadSupport)
+	if err != nil {
+		return nil, err
 	}
-	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
-	}
-	adapter, ok := s.Backends[state.Backend]
-	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("unknown backend %q", state.Backend)
-	}
+	defer finish()
+
 	uploader, ok := adapter.(backend.SandboxFileUploadAdapter)
 	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("backend %q does not support sandbox file uploads", state.Backend)
+		return nil, fmt.Errorf("backend %q does not support sandbox file uploads", backendName)
 	}
-	if state.FileTransferInProgress {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file transfer", sandboxID)
-	}
-	if state.RepositoryBusy {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
-	}
-	if activeID := strings.TrimSpace(state.ActiveExecutionID); activeID != "" {
-		if activeExecution, ok := s.executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
-			s.mu.Unlock()
-			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
-		}
-	}
-	state.FileTransferInProgress = true
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		if current, ok := s.sandboxes[sandboxID]; ok {
-			current.FileTransferInProgress = false
-		}
-		s.mu.Unlock()
-	}()
 
 	if err := uploader.UploadSandboxFile(ctx, sandboxID, path, data, mode); err != nil {
 		return nil, fmt.Errorf("upload sandbox file: %w", err)
@@ -1605,7 +1625,7 @@ func (s *Service) StatSandboxPath(ctx context.Context, req *cleanroomv1.StatSand
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxPathStatSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1630,7 +1650,7 @@ func (s *Service) WalkSandboxTree(ctx context.Context, req *cleanroomv1.WalkSand
 	if err != nil {
 		return err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxTreeWalkSupport)
 	if err != nil {
 		return err
 	}
@@ -1663,7 +1683,7 @@ func (s *Service) ReadSandboxFile(ctx context.Context, req *cleanroomv1.ReadSand
 	if maxBytes <= 0 {
 		maxBytes = s.downloadMaxBytesDefault()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileReadSupport)
 	if err != nil {
 		return err
 	}
@@ -1699,35 +1719,88 @@ func (s *Service) DialSandboxPort(ctx context.Context, req *cleanroomv1.SandboxP
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("invalid guest port %d", port)
 	}
+	if err := s.ensureSandboxPortDialSupported(sandboxID); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
+		return nil, err
+	}
 
-	s.mu.RLock()
+	s.mu.Lock()
 	state, ok := s.sandboxes[sandboxID]
 	if !ok {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
 	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
 	}
 	adapter, ok := s.Backends[state.Backend]
 	backendName := state.Backend
 	capabilities := state.Capabilities
-	s.mu.RUnlock()
 	if !ok {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown backend %q", backendName)
 	}
 	if capabilities == nil {
 		capabilities = backend.CapabilitiesForAdapter(adapter)
 	}
 	if !capabilities[backend.CapabilitySandboxPortDial] {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("backend %q does not support sandbox port dialing", backendName)
 	}
 	dialer, ok := adapter.(backend.SandboxPortDialer)
 	if !ok {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("backend %q does not support sandbox port dialing", backendName)
 	}
-	return dialer.DialSandboxPort(ctx, sandboxID, port)
+	state.GuestInteractionCount++
+	s.mu.Unlock()
+
+	release := s.finishSandboxGuestInteractionOnce(sandboxID)
+	conn, err := dialer.DialSandboxPort(ctx, sandboxID, port)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if conn == nil {
+		release()
+		return nil, fmt.Errorf("backend %q returned no sandbox port connection", backendName)
+	}
+	return &sandboxGuestInteractionConn{Conn: conn, release: release}, nil
+}
+
+func (s *Service) ensureSandboxPortDialSupported(sandboxID string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	switch state.Status {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
+	default:
+		return fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[backend.CapabilitySandboxPortDial] {
+		return fmt.Errorf("backend %q does not support sandbox port dialing", state.Backend)
+	}
+	if _, ok := adapter.(backend.SandboxPortDialer); !ok {
+		return fmt.Errorf("backend %q does not support sandbox port dialing", state.Backend)
+	}
+	return nil
 }
 
 func (s *Service) WriteSandboxFile(ctx context.Context, init *cleanroomv1.WriteSandboxFileInit, r io.Reader) (*cleanroomv1.WriteSandboxFileResponse, error) {
@@ -1746,7 +1819,7 @@ func (s *Service) WriteSandboxFile(ctx context.Context, init *cleanroomv1.WriteS
 	if init.GetMtime() != nil {
 		mtime = init.GetMtime().AsTime()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileWriteSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1775,7 +1848,7 @@ func (s *Service) RemoveSandboxPath(ctx context.Context, req *cleanroomv1.Remove
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxPathRemoveSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1811,7 +1884,7 @@ func (s *Service) ArchiveSandboxPaths(ctx context.Context, req *cleanroomv1.Arch
 	if maxBytes <= 0 {
 		maxBytes = s.downloadMaxBytesDefault()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxArchiveReadSupport)
 	if err != nil {
 		return err
 	}
@@ -1846,7 +1919,7 @@ func (s *Service) ExtractSandboxArchive(ctx context.Context, init *cleanroomv1.E
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxArchiveWriteSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -2057,6 +2130,10 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 
 	now := s.clock().Now()
 	executionID := s.ids().NewExecutionID()
+
+	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
@@ -4006,6 +4083,9 @@ func ensureSandboxIdleLocked(sandboxID string, sb *sandboxState, executions map[
 	if sb.RepositoryBusy {
 		return fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
 	}
+	if sb.GuestInteractionCount > 0 {
+		return fmt.Errorf("sandbox_busy: sandbox %q has active guest interactions", sandboxID)
+	}
 	if activeID := strings.TrimSpace(sb.ActiveExecutionID); activeID != "" {
 		if activeExecution, ok := executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
 			return fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
@@ -4028,7 +4108,124 @@ func validateSandboxPathRequest(sandboxID, path string) (string, string, error) 
 	return sandboxID, path, nil
 }
 
-func (s *Service) beginSandboxFileTransfer(sandboxID string) (backend.Adapter, string, func(), error) {
+type sandboxFileOperationSupport struct {
+	capability  string
+	description string
+	implements  func(backend.Adapter) bool
+}
+
+var (
+	sandboxFileDownloadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileDownload,
+		description: "sandbox file downloads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileDownloadAdapter)
+			return ok
+		},
+	}
+	sandboxFileUploadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileUpload,
+		description: "sandbox file uploads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileUploadAdapter)
+			return ok
+		},
+	}
+	sandboxPathStatSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxPathStat,
+		description: "sandbox path stat",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxPathStatAdapter)
+			return ok
+		},
+	}
+	sandboxTreeWalkSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxTreeWalk,
+		description: "sandbox tree walks",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxTreeWalkAdapter)
+			return ok
+		},
+	}
+	sandboxFileReadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileRead,
+		description: "sandbox file reads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileReadAdapter)
+			return ok
+		},
+	}
+	sandboxFileWriteSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileWrite,
+		description: "sandbox file writes",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileWriteAdapter)
+			return ok
+		},
+	}
+	sandboxPathRemoveSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxPathRemove,
+		description: "sandbox path removal",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxPathRemoveAdapter)
+			return ok
+		},
+	}
+	sandboxArchiveReadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxArchiveRead,
+		description: "sandbox archive reads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxArchiveReadAdapter)
+			return ok
+		},
+	}
+	sandboxArchiveWriteSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxArchiveWrite,
+		description: "sandbox archive writes",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxArchiveWriteAdapter)
+			return ok
+		},
+	}
+)
+
+func (s *Service) ensureSandboxFileOperationSupported(sandboxID string, support sandboxFileOperationSupport) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	switch state.Status {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
+	default:
+		return fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[support.capability] || !support.implements(adapter) {
+		return fmt.Errorf("backend %q does not support %s", state.Backend, support.description)
+	}
+	return nil
+}
+
+func (s *Service) beginSandboxFileTransfer(ctx context.Context, sandboxID string, support sandboxFileOperationSupport) (backend.Adapter, string, func(), error) {
+	if err := s.ensureSandboxFileOperationSupported(sandboxID, support); err != nil {
+		return nil, "", nil, err
+	}
+	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
+		return nil, "", nil, err
+	}
+
 	s.mu.Lock()
 	state, ok := s.sandboxes[sandboxID]
 	if !ok {
@@ -4070,6 +4267,37 @@ func (s *Service) beginSandboxFileTransfer(sandboxID string) (backend.Adapter, s
 		s.mu.Unlock()
 	}
 	return adapter, backendName, finish, nil
+}
+
+func (s *Service) finishSandboxGuestInteractionOnce(sandboxID string) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if current, ok := s.sandboxes[sandboxID]; ok && current.GuestInteractionCount > 0 {
+				current.GuestInteractionCount--
+			}
+			s.mu.Unlock()
+		})
+	}
+}
+
+type sandboxGuestInteractionConn struct {
+	net.Conn
+	release func()
+}
+
+func (c *sandboxGuestInteractionConn) Close() error {
+	err := c.Conn.Close()
+	c.release()
+	return err
+}
+
+func (c *sandboxGuestInteractionConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 func sandboxPathInfoToProto(info *backend.SandboxPathInfo) *cleanroomv1.SandboxPathInfo {
