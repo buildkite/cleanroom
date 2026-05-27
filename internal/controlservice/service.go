@@ -1113,15 +1113,9 @@ func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSand
 	}
 	sandboxID := strings.TrimSpace(req.GetSandboxId())
 
-	result, err, _ := s.sandboxWakeOps.Do(sandboxID, func() (any, error) {
-		return s.resumeSandbox(ctx, sandboxID, false)
-	})
+	sandbox, err := s.wakeSandbox(ctx, sandboxID, false)
 	if err != nil {
 		return nil, err
-	}
-	sandbox, ok := result.(*cleanroomv1.Sandbox)
-	if !ok || sandbox == nil {
-		return nil, fmt.Errorf("resume sandbox %q returned no sandbox", sandboxID)
 	}
 	return &cleanroomv1.ResumeSandboxResponse{Sandbox: sandbox}, nil
 }
@@ -1131,10 +1125,30 @@ func (s *Service) ensureSandboxReadyForGuestOperation(ctx context.Context, sandb
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")
 	}
-	_, err, _ := s.sandboxWakeOps.Do(sandboxID, func() (any, error) {
-		return s.resumeSandbox(ctx, sandboxID, true)
-	})
+	_, err := s.wakeSandbox(ctx, sandboxID, true)
 	return err
+}
+
+func (s *Service) wakeSandbox(ctx context.Context, sandboxID string, guestOperation bool) (*cleanroomv1.Sandbox, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ch := s.sandboxWakeOps.DoChan(sandboxID, func() (any, error) {
+		return s.resumeSandbox(context.WithoutCancel(ctx), sandboxID, guestOperation)
+	})
+	select {
+	case result := <-ch:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		sandbox, ok := result.Val.(*cleanroomv1.Sandbox)
+		if !ok || sandbox == nil {
+			return nil, fmt.Errorf("resume sandbox %q returned no sandbox", sandboxID)
+		}
+		return sandbox, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (s *Service) resumeSandbox(ctx context.Context, sandboxID string, guestOperation bool) (*cleanroomv1.Sandbox, error) {
@@ -1499,7 +1513,7 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 		maxBytes = s.downloadMaxBytesDefault()
 	}
 
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileDownloadSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1544,7 +1558,7 @@ func (s *Service) UploadSandboxFile(ctx context.Context, req *cleanroomv1.Upload
 		return nil, fmt.Errorf("upload data exceeds max_bytes=%d", maxBytes)
 	}
 
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileUploadSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1573,7 +1587,7 @@ func (s *Service) StatSandboxPath(ctx context.Context, req *cleanroomv1.StatSand
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxPathStatSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1598,7 +1612,7 @@ func (s *Service) WalkSandboxTree(ctx context.Context, req *cleanroomv1.WalkSand
 	if err != nil {
 		return err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxTreeWalkSupport)
 	if err != nil {
 		return err
 	}
@@ -1631,7 +1645,7 @@ func (s *Service) ReadSandboxFile(ctx context.Context, req *cleanroomv1.ReadSand
 	if maxBytes <= 0 {
 		maxBytes = s.downloadMaxBytesDefault()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileReadSupport)
 	if err != nil {
 		return err
 	}
@@ -1767,7 +1781,7 @@ func (s *Service) WriteSandboxFile(ctx context.Context, init *cleanroomv1.WriteS
 	if init.GetMtime() != nil {
 		mtime = init.GetMtime().AsTime()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileWriteSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1796,7 +1810,7 @@ func (s *Service) RemoveSandboxPath(ctx context.Context, req *cleanroomv1.Remove
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxPathRemoveSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1832,7 +1846,7 @@ func (s *Service) ArchiveSandboxPaths(ctx context.Context, req *cleanroomv1.Arch
 	if maxBytes <= 0 {
 		maxBytes = s.downloadMaxBytesDefault()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxArchiveReadSupport)
 	if err != nil {
 		return err
 	}
@@ -1867,7 +1881,7 @@ func (s *Service) ExtractSandboxArchive(ctx context.Context, init *cleanroomv1.E
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxArchiveWriteSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -4056,7 +4070,120 @@ func validateSandboxPathRequest(sandboxID, path string) (string, string, error) 
 	return sandboxID, path, nil
 }
 
-func (s *Service) beginSandboxFileTransfer(ctx context.Context, sandboxID string) (backend.Adapter, string, func(), error) {
+type sandboxFileOperationSupport struct {
+	capability  string
+	description string
+	implements  func(backend.Adapter) bool
+}
+
+var (
+	sandboxFileDownloadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileDownload,
+		description: "sandbox file downloads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileDownloadAdapter)
+			return ok
+		},
+	}
+	sandboxFileUploadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileUpload,
+		description: "sandbox file uploads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileUploadAdapter)
+			return ok
+		},
+	}
+	sandboxPathStatSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxPathStat,
+		description: "sandbox path stat",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxPathStatAdapter)
+			return ok
+		},
+	}
+	sandboxTreeWalkSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxTreeWalk,
+		description: "sandbox tree walks",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxTreeWalkAdapter)
+			return ok
+		},
+	}
+	sandboxFileReadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileRead,
+		description: "sandbox file reads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileReadAdapter)
+			return ok
+		},
+	}
+	sandboxFileWriteSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxFileWrite,
+		description: "sandbox file writes",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxFileWriteAdapter)
+			return ok
+		},
+	}
+	sandboxPathRemoveSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxPathRemove,
+		description: "sandbox path removal",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxPathRemoveAdapter)
+			return ok
+		},
+	}
+	sandboxArchiveReadSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxArchiveRead,
+		description: "sandbox archive reads",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxArchiveReadAdapter)
+			return ok
+		},
+	}
+	sandboxArchiveWriteSupport = sandboxFileOperationSupport{
+		capability:  backend.CapabilitySandboxArchiveWrite,
+		description: "sandbox archive writes",
+		implements: func(adapter backend.Adapter) bool {
+			_, ok := adapter.(backend.SandboxArchiveWriteAdapter)
+			return ok
+		},
+	}
+)
+
+func (s *Service) ensureSandboxFileOperationSupported(sandboxID string, support sandboxFileOperationSupport) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	switch state.Status {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
+	default:
+		return fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[support.capability] || !support.implements(adapter) {
+		return fmt.Errorf("backend %q does not support %s", state.Backend, support.description)
+	}
+	return nil
+}
+
+func (s *Service) beginSandboxFileTransfer(ctx context.Context, sandboxID string, support sandboxFileOperationSupport) (backend.Adapter, string, func(), error) {
+	if err := s.ensureSandboxFileOperationSupported(sandboxID, support); err != nil {
+		return nil, "", nil, err
+	}
 	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
 		return nil, "", nil, err
 	}
@@ -4126,6 +4253,13 @@ func (c *sandboxGuestInteractionConn) Close() error {
 	err := c.Conn.Close()
 	c.release()
 	return err
+}
+
+func (c *sandboxGuestInteractionConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 func sandboxPathInfoToProto(info *backend.SandboxPathInfo) *cleanroomv1.SandboxPathInfo {

@@ -103,11 +103,51 @@ type suspendableAdapter struct {
 	resumeSandbox  string
 }
 
+type suspendOnlyAdapter struct {
+	resumeFn     func(context.Context, string) error
+	suspendCalls int
+	resumeCalls  int
+}
+
 func (s *suspendableAdapter) SuspendSandbox(ctx context.Context, sandboxID string) error {
 	s.suspendCalls++
 	s.suspendSandbox = sandboxID
 	if s.suspendFn != nil {
 		return s.suspendFn(ctx, sandboxID)
+	}
+	return nil
+}
+
+func (s *suspendOnlyAdapter) Name() string { return "suspend-only" }
+
+func (s *suspendOnlyAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
+
+func (s *suspendOnlyAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
+		ExitCode:    0,
+		LaunchedVM:  true,
+		PlanPath:    "/tmp/plan",
+		RunDir:      "/tmp/run",
+		Message:     "ok",
+	}, nil
+}
+
+func (s *suspendOnlyAdapter) TerminateSandbox(context.Context, string) error {
+	return nil
+}
+
+func (s *suspendOnlyAdapter) SuspendSandbox(context.Context, string) error {
+	s.suspendCalls++
+	return nil
+}
+
+func (s *suspendOnlyAdapter) ResumeSandbox(ctx context.Context, sandboxID string) error {
+	s.resumeCalls++
+	if s.resumeFn != nil {
+		return s.resumeFn(ctx, sandboxID)
 	}
 	return nil
 }
@@ -1181,6 +1221,43 @@ func TestDialSandboxPortWakesSuspendedSandbox(t *testing.T) {
 	}
 }
 
+func TestDialSandboxPortPreservesCloseWrite(t *testing.T) {
+	var dialedConn *closeWriteTrackingConn
+	adapter := &suspendablePortDialAdapter{
+		dialFn: func(context.Context, string, int) (net.Conn, error) {
+			serverConn, clientConn := net.Pipe()
+			t.Cleanup(func() { _ = serverConn.Close() })
+			dialedConn = &closeWriteTrackingConn{Conn: clientConn}
+			return dialedConn, nil
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	conn, err := svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		GuestPort: 3000,
+	})
+	if err != nil {
+		t.Fatalf("DialSandboxPort returned error: %v", err)
+	}
+	defer conn.Close()
+
+	closeWriter, ok := conn.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatal("expected sandbox port connection to preserve CloseWrite")
+	}
+	if err := closeWriter.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite returned error: %v", err)
+	}
+	if got, want := dialedConn.closeWriteCalls, 1; got != want {
+		t.Fatalf("unexpected CloseWrite calls: got %d want %d", got, want)
+	}
+}
+
 func TestDialSandboxPortHoldsGuestInteractionLease(t *testing.T) {
 	var serverConn net.Conn
 	adapter := &suspendablePortDialAdapter{
@@ -1234,6 +1311,16 @@ func TestDialSandboxPortHoldsGuestInteractionLease(t *testing.T) {
 	if got, want := activeInteractions, 0; got != want {
 		t.Fatalf("unexpected active guest interactions after close: got %d want %d", got, want)
 	}
+}
+
+type closeWriteTrackingConn struct {
+	net.Conn
+	closeWriteCalls int
+}
+
+func (c *closeWriteTrackingConn) CloseWrite() error {
+	c.closeWriteCalls++
+	return nil
 }
 
 func TestDialSandboxPortUnsupportedBackendDoesNotWakeSuspendedSandbox(t *testing.T) {
@@ -1333,6 +1420,108 @@ func TestConcurrentWakeAttemptsCoalesce(t *testing.T) {
 	}
 	if got, want := adapter.dialCalls, callers; got != want {
 		t.Fatalf("unexpected dial calls: got %d want %d", got, want)
+	}
+}
+
+func TestConcurrentWakeIgnoresFirstCallerCancellation(t *testing.T) {
+	resumeStarted := make(chan struct{})
+	releaseResume := make(chan struct{})
+	resumeContextErr := make(chan error, 2)
+	var resumeStartedOnce sync.Once
+	adapter := &suspendablePortDialAdapter{}
+	adapter.resumeFn = func(ctx context.Context, _ string) error {
+		resumeStartedOnce.Do(func() { close(resumeStarted) })
+		select {
+		case <-releaseResume:
+			resumeContextErr <- ctx.Err()
+			return nil
+		case <-ctx.Done():
+			resumeContextErr <- ctx.Err()
+			return ctx.Err()
+		}
+	}
+	adapter.dialFn = func(context.Context, string, int) (net.Conn, error) {
+		serverConn, clientConn := net.Pipe()
+		_ = serverConn.Close()
+		return clientConn, nil
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstErr := make(chan error, 1)
+	go func() {
+		conn, err := svc.DialSandboxPort(firstCtx, &cleanroomv1.SandboxPortOpen{
+			SandboxId: sandboxID,
+			GuestPort: 3000,
+		})
+		if conn != nil {
+			_ = conn.Close()
+		}
+		firstErr <- err
+	}()
+	select {
+	case <-resumeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for resume to start")
+	}
+
+	secondErr := make(chan error, 1)
+	go func() {
+		conn, err := svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+			SandboxId: sandboxID,
+			GuestPort: 3000,
+		})
+		if conn != nil {
+			_ = conn.Close()
+		}
+		secondErr <- err
+	}()
+	select {
+	case err := <-secondErr:
+		t.Fatalf("second caller returned before resume completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancelFirst()
+	select {
+	case err := <-firstErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected first caller cancellation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first caller cancellation")
+	}
+	select {
+	case err := <-secondErr:
+		t.Fatalf("second caller returned after first cancellation but before resume completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseResume)
+	select {
+	case err := <-secondErr:
+		if err != nil {
+			t.Fatalf("second DialSandboxPort returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second caller")
+	}
+	if got, want := adapter.resumeCalls, 1; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	select {
+	case err := <-resumeContextErr:
+		if err != nil {
+			t.Fatalf("backend resume context was canceled: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for resume context result")
 	}
 }
 
@@ -8413,6 +8602,149 @@ func TestSandboxArchivePrimitiveDispatch(t *testing.T) {
 	}
 	if got, want := resp.GetSizeBytes(), int64(len("tar-data")); got != want {
 		t.Fatalf("unexpected extract size: got %d want %d", got, want)
+	}
+}
+
+func TestUnsupportedSandboxFileOperationsDoNotWakeSuspendedSandbox(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		call func(*Service, string) error
+	}{
+		{
+			name: "download",
+			want: "does not support sandbox file downloads",
+			call: func(svc *Service, sandboxID string) error {
+				_, err := svc.DownloadSandboxFile(context.Background(), &cleanroomv1.DownloadSandboxFileRequest{
+					SandboxId: sandboxID,
+					Path:      "/tmp/file",
+				})
+				return err
+			},
+		},
+		{
+			name: "upload",
+			want: "does not support sandbox file uploads",
+			call: func(svc *Service, sandboxID string) error {
+				_, err := svc.UploadSandboxFile(context.Background(), &cleanroomv1.UploadSandboxFileRequest{
+					SandboxId: sandboxID,
+					Path:      "/tmp/file",
+					Data:      []byte("payload"),
+				})
+				return err
+			},
+		},
+		{
+			name: "stat",
+			want: "does not support sandbox path stat",
+			call: func(svc *Service, sandboxID string) error {
+				_, err := svc.StatSandboxPath(context.Background(), &cleanroomv1.StatSandboxPathRequest{
+					SandboxId: sandboxID,
+					Path:      "/tmp/file",
+				})
+				return err
+			},
+		},
+		{
+			name: "walk",
+			want: "does not support sandbox tree walks",
+			call: func(svc *Service, sandboxID string) error {
+				return svc.WalkSandboxTree(context.Background(), &cleanroomv1.WalkSandboxTreeRequest{
+					SandboxId: sandboxID,
+					Path:      "/tmp/tree",
+				}, nil)
+			},
+		},
+		{
+			name: "read",
+			want: "does not support sandbox file reads",
+			call: func(svc *Service, sandboxID string) error {
+				return svc.ReadSandboxFile(context.Background(), &cleanroomv1.ReadSandboxFileRequest{
+					SandboxId: sandboxID,
+					Path:      "/tmp/file",
+				}, nil)
+			},
+		},
+		{
+			name: "write",
+			want: "does not support sandbox file writes",
+			call: func(svc *Service, sandboxID string) error {
+				_, err := svc.WriteSandboxFile(context.Background(), &cleanroomv1.WriteSandboxFileInit{
+					SandboxId: sandboxID,
+					Path:      "/tmp/file",
+				}, strings.NewReader("payload"))
+				return err
+			},
+		},
+		{
+			name: "remove",
+			want: "does not support sandbox path removal",
+			call: func(svc *Service, sandboxID string) error {
+				_, err := svc.RemoveSandboxPath(context.Background(), &cleanroomv1.RemoveSandboxPathRequest{
+					SandboxId: sandboxID,
+					Path:      "/tmp/file",
+				})
+				return err
+			},
+		},
+		{
+			name: "archive",
+			want: "does not support sandbox archive reads",
+			call: func(svc *Service, sandboxID string) error {
+				return svc.ArchiveSandboxPaths(context.Background(), &cleanroomv1.ArchiveSandboxPathsRequest{
+					SandboxId: sandboxID,
+					Paths:     []string{"/tmp/file"},
+				}, nil)
+			},
+		},
+		{
+			name: "extract",
+			want: "does not support sandbox archive writes",
+			call: func(svc *Service, sandboxID string) error {
+				_, err := svc.ExtractSandboxArchive(context.Background(), &cleanroomv1.ExtractSandboxArchiveInit{
+					SandboxId:   sandboxID,
+					Destination: "/tmp/out",
+				}, strings.NewReader("payload"))
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &suspendOnlyAdapter{
+				resumeFn: func(context.Context, string) error {
+					return errors.New("unexpected wake")
+				},
+			}
+			svc := newTestService(adapter)
+			createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+			if err != nil {
+				t.Fatalf("CreateSandbox returned error: %v", err)
+			}
+			sandboxID := createResp.GetSandbox().GetSandboxId()
+			if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+				t.Fatalf("SuspendSandbox returned error: %v", err)
+			}
+
+			err = tt.call(svc, sandboxID)
+			if err == nil {
+				t.Fatal("expected unsupported operation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected error: got %v want substring %q", err, tt.want)
+			}
+			if got, want := adapter.resumeCalls, 0; got != want {
+				t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+			}
+			getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+			if err != nil {
+				t.Fatalf("GetSandbox returned error: %v", err)
+			}
+			if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
+				t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+			}
+		})
 	}
 }
 
