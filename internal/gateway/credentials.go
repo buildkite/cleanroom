@@ -154,17 +154,28 @@ func buildGitCredentialFillLookup(remoteURL string) (string, error) {
 
 	var lookup strings.Builder
 	lookup.WriteString("protocol=https\n")
-	lookup.WriteString("host=")
-	lookup.WriteString(parsed.Host)
-	lookup.WriteString("\n")
-	path := strings.TrimPrefix(strings.TrimSpace(parsed.Path), "/")
+	if err := writeGitCredentialFillField(&lookup, "host", parsed.Host); err != nil {
+		return "", err
+	}
+	path := strings.TrimPrefix(parsed.Path, "/")
 	if path != "" {
-		lookup.WriteString("path=")
-		lookup.WriteString(path)
-		lookup.WriteString("\n")
+		if err := writeGitCredentialFillField(&lookup, "path", path); err != nil {
+			return "", err
+		}
 	}
 	lookup.WriteString("\n")
 	return lookup.String(), nil
+}
+
+func writeGitCredentialFillField(lookup *strings.Builder, key, value string) error {
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("remote URL %s contains characters that cannot be passed to git credential fill", key)
+	}
+	lookup.WriteString(key)
+	lookup.WriteString("=")
+	lookup.WriteString(value)
+	lookup.WriteString("\n")
+	return nil
 }
 
 func parseGitCredentialFillOutput(raw string) (string, string) {

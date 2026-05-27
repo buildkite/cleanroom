@@ -104,6 +104,27 @@ func TestGitCredentialFillProviderResolveUsesCanonicalRemoteURL(t *testing.T) {
 	}
 }
 
+func TestGitCredentialFillProviderRejectsInjectedPathFields(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	provider := NewGitCredentialFillProvider("/tmp/repo", func(string, string) (string, error) {
+		called = true
+		return "", nil
+	})
+
+	_, err := provider.Resolve(context.Background(), "https://github.com/buildkite/cleanroom.git%0ahost=evil.example")
+	if err == nil {
+		t.Fatal("expected credential fill lookup to reject injected path field")
+	}
+	if !strings.Contains(err.Error(), "git credential fill") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatal("expected git credential fill not to be invoked")
+	}
+}
+
 func TestGitCredentialFillFromHostDisablesPrompts(t *testing.T) {
 	tmpDir := t.TempDir()
 	envFile := filepath.Join(tmpDir, "env.txt")
