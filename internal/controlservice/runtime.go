@@ -62,6 +62,7 @@ type serviceRuntime struct {
 	storageCleanupQueueSize         int
 	cachePeerExportTokenTTL         time.Duration
 	cachePeerExportConcurrency      int
+	idleSuspendPollInterval         time.Duration
 }
 
 var defaultRetentionPolicy = retentionPolicy{
@@ -142,4 +143,14 @@ func (s *Service) cachePeerExportConcurrency() int {
 		return s.runtime.cachePeerExportConcurrency
 	}
 	return defaultCachePeerExportConcurrency
+}
+
+func (s *Service) idleSuspendPollInterval(threshold time.Duration) time.Duration {
+	if s.runtime.idleSuspendPollInterval > 0 {
+		return s.runtime.idleSuspendPollInterval
+	}
+	if threshold > 0 && threshold < 30*time.Second {
+		return threshold
+	}
+	return 30 * time.Second
 }

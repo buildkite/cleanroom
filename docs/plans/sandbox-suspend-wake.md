@@ -103,16 +103,20 @@ Slice 1 has landed: lifecycle statuses, backend capability inference, explicit
 suspend/resume RPCs, control-client and control-server plumbing, manual CLI
 commands, `darwin-vz` helper calls, and focused unit and integration tests.
 
-Slice 2 is implemented in this change: guest-touching operations now wake
-suspended sandboxes before execution, file transfer, snapshot creation, or
-sandbox port dialing. Client-side local exposure registration also accepts a
-suspended sandbox when the backend advertises suspend and port-dial support, so
-the incoming connection wakes through `DialSandboxPort`. Active port dials hold
-a guest-interaction lease so later idle-suspend work has a concrete busy marker
-for open tunnels.
+Slice 2 has landed: guest-touching operations wake suspended sandboxes before
+execution, file transfer, snapshot creation, or sandbox port dialing.
+Client-side local exposure registration also accepts a suspended sandbox when
+the backend advertises suspend and port-dial support, so the incoming connection
+wakes through `DialSandboxPort`. Active port dials hold a guest-interaction
+lease so idle-suspend work has a concrete busy marker for open tunnels.
 
-The idle suspend scheduler, runtime config, metrics, real installed-daemon
-smoke tests, and Firecracker support remain follow-up slices.
+Slice 3 is implemented in this change: `sandbox_lifecycle` is runtime config,
+the daemon starts an idle suspend worker when
+`idle_suspend_after_seconds` is positive, and transparent wake is bounded by
+`wake_timeout_seconds` or the sandbox launch timeout when unset.
+
+Metrics, real installed-daemon smoke tests, and Firecracker support remain
+follow-up slices.
 
 ## Target Lifecycle Model
 

@@ -79,6 +79,31 @@ func TestConfigValidateRejectsMissingFile(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsInvalidSandboxLifecycleConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `default_backend: firecracker
+sandbox_lifecycle:
+  idle_suspend_after_seconds: -1
+backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ConfigValidateCommand{Path: configPath}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected invalid lifecycle config error")
+	}
+	if !strings.Contains(err.Error(), "sandbox_lifecycle.idle_suspend_after_seconds") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRunConfigValidateBypassesBrokenDefaultRuntimeConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	xdgConfigHome := filepath.Join(tmpDir, "xdg")

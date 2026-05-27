@@ -1083,8 +1083,28 @@ func (s *Service) SuspendSandbox(ctx context.Context, req *cleanroomv1.SuspendSa
 		return nil, errors.New("missing sandbox_id")
 	}
 	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	sandbox, err := s.suspendSandbox(ctx, sandboxID, suspendSandboxOptions{
+		authorize:        true,
+		requestedMessage: "sandbox suspend requested",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &cleanroomv1.SuspendSandboxResponse{Sandbox: sandbox}, nil
+}
 
+type suspendSandboxOptions struct {
+	authorize        bool
+	requestedMessage string
+	idleThreshold    time.Duration
+}
+
+func (s *Service) suspendSandbox(ctx context.Context, sandboxID string, opts suspendSandboxOptions) (*cleanroomv1.Sandbox, error) {
 	var suspendable backend.SuspendableAdapter
+	requestedMessage := strings.TrimSpace(opts.requestedMessage)
+	if requestedMessage == "" {
+		requestedMessage = "sandbox suspend requested"
+	}
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
@@ -1093,18 +1113,26 @@ func (s *Service) SuspendSandbox(ctx context.Context, req *cleanroomv1.SuspendSa
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
-	if err := s.authorizeOwnedResource(ctx, "sandbox.suspend", "sandbox", sandboxID, state.Owner, nil); err != nil {
-		s.mu.Unlock()
-		return nil, err
+	if opts.authorize {
+		if err := s.authorizeOwnedResource(ctx, "sandbox.suspend", "sandbox", sandboxID, state.Owner, nil); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
 	}
 	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED {
-		resp := &cleanroomv1.SuspendSandboxResponse{Sandbox: cloneSandboxLocked(state)}
+		resp := cloneSandboxLocked(state)
 		s.mu.Unlock()
 		return resp, nil
 	}
 	if err := ensureSandboxIdleLocked(sandboxID, state, s.executions); err != nil {
 		s.mu.Unlock()
 		return nil, err
+	}
+	if opts.idleThreshold > 0 {
+		if state.UpdatedAt.IsZero() || s.clock().Now().Sub(state.UpdatedAt) < opts.idleThreshold {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("sandbox %q is not idle long enough", sandboxID)
+		}
 	}
 	adapter, ok := s.Backends[state.Backend]
 	if !ok {
@@ -1124,7 +1152,7 @@ func (s *Service) SuspendSandbox(ctx context.Context, req *cleanroomv1.SuspendSa
 		s.mu.Unlock()
 		return nil, fmt.Errorf("backend_capability_mismatch: backend %q reports sandbox suspend but does not implement it", state.Backend)
 	}
-	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING, "sandbox suspend requested")
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING, requestedMessage)
 	s.mu.Unlock()
 
 	err := suspendable.SuspendSandbox(ctx, sandboxID)
@@ -1150,7 +1178,7 @@ func (s *Service) SuspendSandbox(ctx context.Context, req *cleanroomv1.SuspendSa
 	if current.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING {
 		s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED, "sandbox suspended")
 	}
-	return &cleanroomv1.SuspendSandboxResponse{Sandbox: cloneSandboxLocked(current)}, nil
+	return cloneSandboxLocked(current), nil
 }
 
 func (s *Service) ResumeSandbox(ctx context.Context, req *cleanroomv1.ResumeSandboxRequest) (*cleanroomv1.ResumeSandboxResponse, error) {
@@ -1182,7 +1210,13 @@ func (s *Service) wakeSandbox(ctx context.Context, sandboxID string, guestOperat
 		return nil, err
 	}
 	ch := s.sandboxWakeOps.DoChan(sandboxID, func() (any, error) {
-		return s.resumeSandbox(context.WithoutCancel(ctx), sandboxID, guestOperation)
+		wakeCtx := context.WithoutCancel(ctx)
+		if timeout := s.sandboxWakeTimeout(sandboxID); timeout > 0 {
+			var cancel context.CancelFunc
+			wakeCtx, cancel = context.WithTimeout(wakeCtx, timeout)
+			defer cancel()
+		}
+		return s.resumeSandbox(wakeCtx, sandboxID, guestOperation)
 	})
 	select {
 	case result := <-ch:
@@ -1197,6 +1231,18 @@ func (s *Service) wakeSandbox(ctx context.Context, sandboxID string, guestOperat
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func (s *Service) sandboxWakeTimeout(sandboxID string) time.Duration {
+	if seconds := s.Config.SandboxLifecycle.WakeTimeoutSeconds; seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sb, ok := s.sandboxes[sandboxID]; ok && sb != nil && sb.Firecracker.LaunchSeconds > 0 {
+		return time.Duration(sb.Firecracker.LaunchSeconds) * time.Second
+	}
+	return 30 * time.Second
 }
 
 func (s *Service) resumeSandbox(ctx context.Context, sandboxID string, guestOperation bool) (*cleanroomv1.Sandbox, error) {
@@ -1278,6 +1324,92 @@ func isIndeterminateSandboxLifecycleError(err error) bool {
 	return errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, backend.ErrSandboxLifecycleIndeterminate)
+}
+
+func (s *Service) StartIdleSuspendWorker(ctx context.Context) bool {
+	threshold := s.idleSuspendAfter()
+	if threshold <= 0 {
+		return false
+	}
+	go s.runIdleSuspendWorker(ctx, threshold, s.idleSuspendPollInterval(threshold))
+	return true
+}
+
+func (s *Service) idleSuspendAfter() time.Duration {
+	seconds := s.Config.SandboxLifecycle.IdleSuspendAfterSeconds
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *Service) runIdleSuspendWorker(ctx context.Context, threshold, interval time.Duration) {
+	if threshold <= 0 {
+		return
+	}
+	if interval <= 0 {
+		interval = s.idleSuspendPollInterval(threshold)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.clock().After(interval):
+			s.runIdleSuspendOnce(ctx, threshold)
+		}
+	}
+}
+
+func (s *Service) runIdleSuspendOnce(ctx context.Context, threshold time.Duration) {
+	if threshold <= 0 {
+		return
+	}
+	for _, sandboxID := range s.idleSuspendCandidates(s.clock().Now(), threshold) {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		if _, err := s.suspendSandbox(ctx, sandboxID, suspendSandboxOptions{requestedMessage: "sandbox idle suspend requested", idleThreshold: threshold}); err != nil && s.Logger != nil {
+			s.Logger.Debug("idle suspend skipped", observability.LogFieldSandboxID, sandboxID, "error", err)
+		}
+	}
+}
+
+func (s *Service) idleSuspendCandidates(now time.Time, threshold time.Duration) []string {
+	if threshold <= 0 {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := make([]string, 0)
+	for sandboxID, sb := range s.sandboxes {
+		if sb == nil || sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+			continue
+		}
+		if !sandboxSupportsSuspend(sb, s.Backends[sb.Backend]) {
+			continue
+		}
+		if err := ensureSandboxIdleLocked(sandboxID, sb, s.executions); err != nil {
+			continue
+		}
+		if sb.UpdatedAt.IsZero() || now.Sub(sb.UpdatedAt) < threshold {
+			continue
+		}
+		ids = append(ids, sandboxID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func sandboxSupportsSuspend(sb *sandboxState, adapter backend.Adapter) bool {
+	if sb == nil {
+		return false
+	}
+	capabilities := sb.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	return capabilities[backend.CapabilitySandboxSuspend]
 }
 
 func (s *Service) ListExecutions(ctx context.Context, req *cleanroomv1.ListExecutionsRequest) (*cleanroomv1.ListExecutionsResponse, error) {
@@ -1862,6 +1994,7 @@ func (s *Service) DialSandboxPort(ctx context.Context, req *cleanroomv1.SandboxP
 		return nil, fmt.Errorf("backend %q does not support sandbox port dialing", backendName)
 	}
 	state.GuestInteractionCount++
+	state.UpdatedAt = s.clock().Now()
 	s.mu.Unlock()
 
 	release := s.finishSandboxGuestInteractionOnce(sandboxID)
@@ -3742,11 +3875,13 @@ func (s *Service) preparePersistentSandboxRepository(
 	switch {
 	case sandbox.Repository == nil:
 		sandbox.RepositoryBusy = true
+		sandbox.UpdatedAt = s.clock().Now()
 	case repositoryCheckoutsEqual(sandbox.Repository, repository) && (!sandbox.RepositoryHasChangeset || sandbox.RepositoryChangesetPendingExecution):
 		s.mu.Unlock()
 		return nil
 	case repositoryCheckoutsEqual(sandbox.Repository, repository):
 		sandbox.RepositoryBusy = true
+		sandbox.UpdatedAt = s.clock().Now()
 		refreshExisting = true
 		commitBundle = cloneRepositoryCommitBundle(sandbox.RepositoryCommitBundle)
 	default:
@@ -3760,6 +3895,7 @@ func (s *Service) preparePersistentSandboxRepository(
 	s.mu.Lock()
 	if sandbox, ok := s.sandboxes[sandboxID]; ok {
 		sandbox.RepositoryBusy = false
+		sandbox.UpdatedAt = s.clock().Now()
 		if err == nil {
 			sandbox.Repository = cloneRepositoryCheckout(repository)
 			sandbox.RepositoryCommitBundle = cloneRepositoryCommitBundle(commitBundle)
@@ -4440,6 +4576,7 @@ func (s *Service) beginSandboxFileTransfer(ctx context.Context, action, sandboxI
 		}
 	}
 	state.FileTransferInProgress = true
+	state.UpdatedAt = s.clock().Now()
 	backendName := state.Backend
 	s.mu.Unlock()
 
@@ -4447,6 +4584,7 @@ func (s *Service) beginSandboxFileTransfer(ctx context.Context, action, sandboxI
 		s.mu.Lock()
 		if current, ok := s.sandboxes[sandboxID]; ok {
 			current.FileTransferInProgress = false
+			current.UpdatedAt = s.clock().Now()
 		}
 		s.mu.Unlock()
 	}
@@ -4460,6 +4598,7 @@ func (s *Service) finishSandboxGuestInteractionOnce(sandboxID string) func() {
 			s.mu.Lock()
 			if current, ok := s.sandboxes[sandboxID]; ok && current.GuestInteractionCount > 0 {
 				current.GuestInteractionCount--
+				current.UpdatedAt = s.clock().Now()
 			}
 			s.mu.Unlock()
 		})

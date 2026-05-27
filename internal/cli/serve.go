@@ -226,6 +226,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 
 	runCtx, cancel := serveSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	service.StartIdleSuspendWorker(runCtx)
 	interactiveListen, interactiveHost := resolveInteractiveQUICEndpoint(ep)
 	interactiveServer, err := interactivequic.Start(runCtx, interactiveListen, service, interactiveLogger)
 	if err != nil {

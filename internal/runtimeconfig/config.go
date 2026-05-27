@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bytesize"
@@ -20,13 +21,14 @@ import (
 )
 
 type Config struct {
-	DefaultBackend string              `yaml:"default_backend"`
-	ControlHost    string              `yaml:"control_host,omitempty"`
-	Auth           AuthConfig          `yaml:"auth,omitempty"`
-	Cache          CacheConfig         `yaml:"cache,omitempty"`
-	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
-	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
-	Backends       Backends            `yaml:"backends"`
+	DefaultBackend   string                 `yaml:"default_backend"`
+	ControlHost      string                 `yaml:"control_host,omitempty"`
+	Auth             AuthConfig             `yaml:"auth,omitempty"`
+	Cache            CacheConfig            `yaml:"cache,omitempty"`
+	Gateway          GatewayConfig          `yaml:"gateway,omitempty"`
+	Observability    ObservabilityConfig    `yaml:"observability,omitempty"`
+	SandboxLifecycle SandboxLifecycleConfig `yaml:"sandbox_lifecycle,omitempty"`
+	Backends         Backends               `yaml:"backends"`
 }
 
 const (
@@ -64,6 +66,11 @@ type CacheConfig struct {
 type CachePeerConfig struct {
 	URL      string `yaml:"url"`
 	TokenEnv string `yaml:"token_env,omitempty"`
+}
+
+type SandboxLifecycleConfig struct {
+	IdleSuspendAfterSeconds int64 `yaml:"idle_suspend_after_seconds,omitempty"`
+	WakeTimeoutSeconds      int64 `yaml:"wake_timeout_seconds,omitempty"`
 }
 
 type GatewayConfig struct {
@@ -134,13 +141,14 @@ type TraceSamplingConfig struct {
 }
 
 type configFile struct {
-	DefaultBackend string              `yaml:"default_backend"`
-	ControlHost    string              `yaml:"control_host,omitempty"`
-	Auth           AuthConfig          `yaml:"auth,omitempty"`
-	Cache          CacheConfig         `yaml:"cache,omitempty"`
-	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
-	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
-	Backends       backendsFile        `yaml:"backends"`
+	DefaultBackend   string                 `yaml:"default_backend"`
+	ControlHost      string                 `yaml:"control_host,omitempty"`
+	Auth             AuthConfig             `yaml:"auth,omitempty"`
+	Cache            CacheConfig            `yaml:"cache,omitempty"`
+	Gateway          GatewayConfig          `yaml:"gateway,omitempty"`
+	Observability    ObservabilityConfig    `yaml:"observability,omitempty"`
+	SandboxLifecycle SandboxLifecycleConfig `yaml:"sandbox_lifecycle,omitempty"`
+	Backends         backendsFile           `yaml:"backends"`
 }
 
 type backendsFile struct {
@@ -151,12 +159,13 @@ type backendsFile struct {
 
 func (f configFile) config() Config {
 	cfg := Config{
-		DefaultBackend: f.DefaultBackend,
-		ControlHost:    f.ControlHost,
-		Auth:           f.Auth,
-		Cache:          f.Cache,
-		Gateway:        f.Gateway,
-		Observability:  f.Observability,
+		DefaultBackend:   f.DefaultBackend,
+		ControlHost:      f.ControlHost,
+		Auth:             f.Auth,
+		Cache:            f.Cache,
+		Gateway:          f.Gateway,
+		Observability:    f.Observability,
+		SandboxLifecycle: f.SandboxLifecycle,
 		Backends: Backends{
 			Firecracker: f.Backends.Firecracker,
 			DarwinVZ:    f.Backends.DarwinVZ,
@@ -512,6 +521,30 @@ func validateConfig(cfg Config) error {
 	}
 	if err := validateObservabilityConfig(cfg.Observability); err != nil {
 		return err
+	}
+	if err := validateSandboxLifecycleConfig(cfg.SandboxLifecycle); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSandboxLifecycleConfig(cfg SandboxLifecycleConfig) error {
+	if err := validateDurationSeconds("sandbox_lifecycle.idle_suspend_after_seconds", cfg.IdleSuspendAfterSeconds); err != nil {
+		return err
+	}
+	if err := validateDurationSeconds("sandbox_lifecycle.wake_timeout_seconds", cfg.WakeTimeoutSeconds); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateDurationSeconds(name string, seconds int64) error {
+	if seconds < 0 {
+		return fmt.Errorf("%s must be greater than or equal to 0", name)
+	}
+	const maxDurationSeconds = int64(1<<63-1) / int64(time.Second)
+	if seconds > maxDurationSeconds {
+		return fmt.Errorf("%s is too large", name)
 	}
 	return nil
 }

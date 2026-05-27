@@ -1498,6 +1498,118 @@ backends:
 	}
 }
 
+func TestLoadSandboxLifecycleConfig(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: firecracker
+sandbox_lifecycle:
+  idle_suspend_after_seconds: 600
+  wake_timeout_seconds: 30
+backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.SandboxLifecycle.IdleSuspendAfterSeconds, int64(600); got != want {
+		t.Fatalf("unexpected idle suspend timeout: got %d want %d", got, want)
+	}
+	if got, want := cfg.SandboxLifecycle.WakeTimeoutSeconds, int64(30); got != want {
+		t.Fatalf("unexpected wake timeout: got %d want %d", got, want)
+	}
+}
+
+func TestLoadDefaultsSandboxLifecycleToDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: firecracker
+backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got := cfg.SandboxLifecycle.IdleSuspendAfterSeconds; got != 0 {
+		t.Fatalf("expected idle suspend timeout to default to 0, got %d", got)
+	}
+	if got := cfg.SandboxLifecycle.WakeTimeoutSeconds; got != 0 {
+		t.Fatalf("expected wake timeout to default to 0, got %d", got)
+	}
+}
+
+func TestLoadRejectsInvalidSandboxLifecycleConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "negative idle suspend timeout",
+			content: `default_backend: firecracker
+sandbox_lifecycle:
+  idle_suspend_after_seconds: -1
+backends:
+  firecracker:
+    binary_path: firecracker
+`,
+			want: "sandbox_lifecycle.idle_suspend_after_seconds",
+		},
+		{
+			name: "negative wake timeout",
+			content: `default_backend: firecracker
+sandbox_lifecycle:
+  wake_timeout_seconds: -1
+backends:
+  firecracker:
+    binary_path: firecracker
+`,
+			want: "sandbox_lifecycle.wake_timeout_seconds",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", tmp)
+			configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+			if err := os.WriteFile(configPath, []byte(tc.content), 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			_, _, err := Load()
+			if err == nil {
+				t.Fatal("expected Load to reject invalid sandbox lifecycle config")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error to mention %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestLoadTrimsControlHost(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

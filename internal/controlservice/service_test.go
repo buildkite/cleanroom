@@ -877,6 +877,251 @@ func TestSuspendSandboxBackendIndeterminateFailureLeavesSuspended(t *testing.T) 
 	}
 }
 
+func TestIdleSuspendWorkerSuspendsIdleSandboxAndPublishesEvents(t *testing.T) {
+	base := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	adapter := &suspendableAdapter{}
+	svc := newTestService(adapter)
+	svc.Config.SandboxLifecycle.IdleSuspendAfterSeconds = 600
+	svc.runtime.clock = stubClock{now: base}
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	svc.runtime.clock = stubClock{now: base.Add(601 * time.Second)}
+	svc.runIdleSuspendOnce(context.Background(), 600*time.Second)
+
+	if got, want := adapter.suspendCalls, 1; got != want {
+		t.Fatalf("unexpected suspend call count: got %d want %d", got, want)
+	}
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+
+	history, _, _, unsubscribe, err := svc.SubscribeSandboxEvents(sandboxID)
+	if err != nil {
+		t.Fatalf("SubscribeSandboxEvents returned error: %v", err)
+	}
+	defer unsubscribe()
+	if len(history) < 3 {
+		t.Fatalf("expected create and idle suspend events, got %d", len(history))
+	}
+	if got, want := history[len(history)-2].GetMessage(), "sandbox idle suspend requested"; got != want {
+		t.Fatalf("unexpected idle suspend request event: got %q want %q", got, want)
+	}
+	if got, want := history[len(history)-1].GetMessage(), "sandbox suspended"; got != want {
+		t.Fatalf("unexpected idle suspend result event: got %q want %q", got, want)
+	}
+}
+
+func TestIdleSuspendRechecksThresholdBeforeSuspending(t *testing.T) {
+	base := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	adapter := &suspendableAdapter{}
+	svc := newTestService(adapter)
+	svc.runtime.clock = stubClock{now: base}
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	svc.runtime.clock = stubClock{now: base.Add(10 * time.Second)}
+	_, err = svc.suspendSandbox(context.Background(), sandboxID, suspendSandboxOptions{
+		requestedMessage: "sandbox idle suspend requested",
+		idleThreshold:    600 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected idle suspend to reject a recently active sandbox")
+	}
+	if !strings.Contains(err.Error(), "not idle long enough") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := adapter.suspendCalls; got != 0 {
+		t.Fatalf("expected backend suspend not to run, got %d calls", got)
+	}
+}
+
+func TestIdleSuspendWorkerSkipsBusySandboxes(t *testing.T) {
+	base := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		busy func(*Service, string)
+	}{
+		{
+			name: "file transfer",
+			busy: func(svc *Service, sandboxID string) {
+				svc.sandboxes[sandboxID].FileTransferInProgress = true
+			},
+		},
+		{
+			name: "repository",
+			busy: func(svc *Service, sandboxID string) {
+				svc.sandboxes[sandboxID].RepositoryBusy = true
+			},
+		},
+		{
+			name: "guest interaction",
+			busy: func(svc *Service, sandboxID string) {
+				svc.sandboxes[sandboxID].GuestInteractionCount = 1
+			},
+		},
+		{
+			name: "execution",
+			busy: func(svc *Service, sandboxID string) {
+				executionID := "exec_busy"
+				svc.sandboxes[sandboxID].ActiveExecutionID = executionID
+				svc.executions[executionKey(sandboxID, executionID)] = &executionState{
+					ID:        executionID,
+					SandboxID: sandboxID,
+					Status:    cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &suspendableAdapter{}
+			svc := newTestService(adapter)
+			svc.Config.SandboxLifecycle.IdleSuspendAfterSeconds = 600
+			svc.runtime.clock = stubClock{now: base}
+			createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+			if err != nil {
+				t.Fatalf("CreateSandbox returned error: %v", err)
+			}
+			sandboxID := createResp.GetSandbox().GetSandboxId()
+
+			svc.mu.Lock()
+			tc.busy(svc, sandboxID)
+			svc.sandboxes[sandboxID].UpdatedAt = base
+			svc.mu.Unlock()
+
+			svc.runtime.clock = stubClock{now: base.Add(601 * time.Second)}
+			svc.runIdleSuspendOnce(context.Background(), 600*time.Second)
+
+			if got := adapter.suspendCalls; got != 0 {
+				t.Fatalf("expected busy sandbox not to suspend, got %d suspend calls", got)
+			}
+			getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+			if err != nil {
+				t.Fatalf("GetSandbox returned error: %v", err)
+			}
+			if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+				t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestIdleSuspendWorkerSkipsUnsupportedBackends(t *testing.T) {
+	base := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(&stubAdapter{})
+	svc.Config.SandboxLifecycle.IdleSuspendAfterSeconds = 600
+	svc.runtime.clock = stubClock{now: base}
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	svc.runtime.clock = stubClock{now: base.Add(601 * time.Second)}
+	svc.runIdleSuspendOnce(context.Background(), 600*time.Second)
+
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+}
+
+func TestResumeSandboxUsesConfiguredWakeTimeout(t *testing.T) {
+	adapter := &suspendableAdapter{}
+	var sawDeadline bool
+	var deadlineErr error
+	adapter.resumeFn = func(ctx context.Context, _ string) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			deadlineErr = errors.New("expected resume context to have a deadline")
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > 6*time.Second {
+			deadlineErr = fmt.Errorf("unexpected resume deadline: %s", remaining)
+			return nil
+		}
+		sawDeadline = true
+		return nil
+	}
+	svc := newTestService(adapter)
+	svc.Config.SandboxLifecycle.WakeTimeoutSeconds = 5
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	if _, err := svc.ResumeSandbox(context.Background(), &cleanroomv1.ResumeSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("ResumeSandbox returned error: %v", err)
+	}
+	if deadlineErr != nil {
+		t.Fatal(deadlineErr)
+	}
+	if !sawDeadline {
+		t.Fatal("resume adapter was not called")
+	}
+}
+
+func TestResumeSandboxDefaultsWakeTimeoutToLaunchTimeout(t *testing.T) {
+	adapter := &suspendableAdapter{}
+	var sawDeadline bool
+	var deadlineErr error
+	adapter.resumeFn = func(ctx context.Context, _ string) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			deadlineErr = errors.New("expected resume context to have a deadline")
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > 8*time.Second {
+			deadlineErr = fmt.Errorf("unexpected resume deadline: %s", remaining)
+			return nil
+		}
+		sawDeadline = true
+		return nil
+	}
+	svc := newTestService(adapter)
+	svc.Config.Backends.Firecracker.LaunchSeconds = 7
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	if _, err := svc.ResumeSandbox(context.Background(), &cleanroomv1.ResumeSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("ResumeSandbox returned error: %v", err)
+	}
+	if deadlineErr != nil {
+		t.Fatal(deadlineErr)
+	}
+	if !sawDeadline {
+		t.Fatal("resume adapter was not called")
+	}
+}
+
 func TestResumeSandboxTransitionsSuspendedToReady(t *testing.T) {
 	adapter := &suspendableAdapter{}
 	svc := newTestService(adapter)
