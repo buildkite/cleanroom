@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/authz"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
@@ -21,7 +22,7 @@ func TestInteractiveSessionBrokerOpenConsumeSingleUse(t *testing.T) {
 		},
 	}
 
-	grant, err := broker.open(executions, now, 30*time.Second, "session-1", "token-1", "sb-1", "exec-1", 80, 24)
+	grant, err := broker.open(executions, now, 30*time.Second, "session-1", "token-1", "sb-1", "exec-1", authz.ResourceOwner{}, 80, 24)
 	if err != nil {
 		t.Fatalf("open returned error: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestInteractiveSessionBrokerPrunesExpiredSessions(t *testing.T) {
 		},
 	}
 
-	if _, err := broker.open(executions, now, time.Second, "session-1", "token-1", "sb-1", "exec-1", 80, 24); err != nil {
+	if _, err := broker.open(executions, now, time.Second, "session-1", "token-1", "sb-1", "exec-1", authz.ResourceOwner{}, 80, 24); err != nil {
 		t.Fatalf("open returned error: %v", err)
 	}
 	if _, err := broker.consume(executions, now.Add(2*time.Second), "session-1", "token-1"); err == nil {

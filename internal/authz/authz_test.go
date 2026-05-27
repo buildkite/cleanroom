@@ -535,6 +535,31 @@ func TestPolicyRejectsStructuredTemplateClaims(t *testing.T) {
 	}
 }
 
+func TestPolicyRejectsEmptyRenderedPrincipalID(t *testing.T) {
+	policy := compileTestPolicy(t, `bindings:
+  - name: empty-principal
+    when: 'token.issuer == "github-actions"'
+    principal:
+      id: '${claims.cleanroom_principal}'
+    grants:
+      - actions: [sandbox.create]
+        resources: [sandbox]
+`)
+	_, err := policy.Bind(ValidatedToken{
+		IssuerName: "github-actions",
+		Subject:    "repo:buildkite/cleanroom:ref:refs/heads/main",
+		Claims: map[string]any{
+			"cleanroom_principal": " ",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected empty principal id error")
+	}
+	if !strings.Contains(err.Error(), "principal.id rendered empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestPolicyReportsNoBinding(t *testing.T) {
 	policy := compileTestPolicy(t, testPolicyYAML())
 	_, err := policy.Bind(ValidatedToken{

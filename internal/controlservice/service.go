@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"charm.land/log/v2"
+	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/changesetstore"
@@ -116,6 +117,7 @@ type sandboxState struct {
 	SourceKind                          string
 	SourceID                            string
 	BackingSnapshotID                   string
+	Owner                               authz.ResourceOwner
 	RepositoryBusy                      bool
 	ActiveExecutionID                   string
 	FileTransferInProgress              bool
@@ -152,6 +154,7 @@ type executionState struct {
 	LaunchedVM        bool
 	PlanPath          string
 	RunDir            string
+	Owner             authz.ResourceOwner
 	PreRunActive      bool
 	CancelRequested   bool
 	CancelSignal      int32
@@ -170,6 +173,7 @@ type interactiveSessionState struct {
 	SandboxID   string
 	ExecutionID string
 	Token       string
+	Owner       authz.ResourceOwner
 	ExpiresAt   time.Time
 	InitialCols uint32
 	InitialRows uint32
@@ -484,12 +488,6 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := validateRepositoryCommitBundleForCheckout(repository, commitBundle); err != nil {
 		return nil, err
 	}
-	if changesetRecord, err := s.persistRepositoryChangeset(ctx, repository, changeset); err != nil {
-		return nil, err
-	} else if strings.TrimSpace(changesetRecord.ChangesetID) != "" {
-		span.SetAttributes(attribute.String(observability.AttrRepositoryChangesetID, changesetRecord.ChangesetID))
-	}
-
 	opts := req.GetOptions()
 	execOpts := executionOptions{}
 	if opts != nil {
@@ -501,6 +499,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 	span.SetAttributes(rootFSMinimumTraceAttributes(firecrackerCfg)...)
+	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, repository, changeset, "", effectiveAuthorizationResources(firecrackerCfg)))
+	if err != nil {
+		return nil, err
+	}
+	if changesetRecord, err := s.persistRepositoryChangeset(ctx, repository, changeset); err != nil {
+		return nil, err
+	} else if strings.TrimSpace(changesetRecord.ChangesetID) != "" {
+		span.SetAttributes(attribute.String(observability.AttrRepositoryChangesetID, changesetRecord.ChangesetID))
+	}
 
 	var replacedWorkspaceStageRecord *cachestore.Record
 	var replacedDependencyStageRecord *cachestore.Record
@@ -525,11 +532,12 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	var restoredDependencyResp *cleanroomv1.CreateSandboxResponse
 	snapshotAdapter, snapshotCapable := adapter.(backend.SnapshottingAdapter)
 	cacheOutputSnapshotAdapter, _ := adapter.(backend.CacheOutputVolumeSnapshottingAdapter)
+	_, authContext := authz.BoundPrincipalFromContext(ctx)
 	if repository != nil {
 		dependencyStagePlan, dependencyStageBootstrapEnabled = dependencyStagePlanForRepository(compiled, repository)
 		servicesStagePlan, servicesStageBootstrapEnabled = servicesStagePlanForRepository(compiled, repository)
 	}
-	if repository != nil && snapshotCapable && snapshotOperationsEnabledForBackend(backendName, s.Config) {
+	if repository != nil && !authContext && snapshotCapable && snapshotOperationsEnabledForBackend(backendName, s.Config) {
 		runtimeBaseKey, cacheable, err := s.workspaceStageRuntimeBaseKey(ctx, adapter, compiled, firecrackerCfg)
 		if err != nil {
 			s.logWorkspaceStageWarning("resolve workspace stage runtime base key", "", err)
@@ -718,6 +726,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		RepositoryCommitBundle:              cloneRepositoryCommitBundle(commitBundle),
 		RepositoryHasChangeset:              changeset != nil,
 		RepositoryChangesetPendingExecution: changeset != nil,
+		Owner:                               owner,
 		CreatedAt:                           now,
 		UpdatedAt:                           now,
 		Status:                              cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,
@@ -973,6 +982,28 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	if !ok {
 		return nil, fmt.Errorf("unknown snapshot %q", snapshotID)
 	}
+	compiled, err := policy.FromProto(record.Policy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid snapshot policy: %w", err)
+	}
+	repository := repositorycheckout.FromProto(record.Repository)
+	opts := req.GetOptions()
+	execOpts := executionOptions{}
+	if opts != nil {
+		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
+	}
+	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, record.Backend, execOpts.LaunchSeconds)
+	firecrackerCfg.RunDir = ""
+	firecrackerCfg = withPolicyResourceMinimums(firecrackerCfg, compiled.Resources)
+	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
+	firecrackerCfg = withSnapshotDriver(record.Backend, firecrackerCfg, record.StorageDriver)
+	request := createSandboxAuthorizationRequest(record.Backend, compiled, repository, nil, snapshotID, effectiveAuthorizationResources(firecrackerCfg))
+	if _, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", request); err != nil {
+		return nil, err
+	}
+	if err := s.authorizeOwnedResource(ctx, "snapshot.restore", "snapshot", snapshotID, ownerFromSnapshotRecord(record), request); err != nil {
+		return nil, err
+	}
 	return s.createSandboxFromSnapshotRecord(ctx, req, record, reporter)
 }
 
@@ -989,23 +1020,31 @@ func (s *Service) createSandboxFromSnapshotRecord(ctx context.Context, req *clea
 	return s.createSandboxFromStoredRootFS(ctx, req, source, nil, nil, reporter)
 }
 
-func (s *Service) GetSandbox(_ context.Context, req *cleanroomv1.GetSandboxRequest) (*cleanroomv1.GetSandboxResponse, error) {
+func (s *Service) GetSandbox(ctx context.Context, req *cleanroomv1.GetSandboxRequest) (*cleanroomv1.GetSandboxResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetSandboxId()) == "" {
 		return nil, errors.New("missing sandbox_id")
 	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
 
 	s.mu.RLock()
-	state, ok := s.sandboxes[strings.TrimSpace(req.GetSandboxId())]
+	state, ok := s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.RUnlock()
 		return nil, fmt.Errorf("unknown sandbox %q", req.GetSandboxId())
+	}
+	if err := s.authorizeOwnedResource(ctx, "sandbox.get", "sandbox", sandboxID, state.Owner, nil); err != nil {
+		s.mu.RUnlock()
+		return nil, err
 	}
 	resp := &cleanroomv1.GetSandboxResponse{Sandbox: cloneSandboxLocked(state)}
 	s.mu.RUnlock()
 	return resp, nil
 }
 
-func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesRequest) (*cleanroomv1.ListSandboxesResponse, error) {
+func (s *Service) ListSandboxes(ctx context.Context, _ *cleanroomv1.ListSandboxesRequest) (*cleanroomv1.ListSandboxesResponse, error) {
+	if _, err := s.authorizeCreate(ctx, "sandbox.list", "sandbox", nil); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	type sandboxListItem struct {
 		sandbox  *cleanroomv1.Sandbox
@@ -1013,6 +1052,9 @@ func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesR
 	}
 	items := make([]sandboxListItem, 0, len(s.sandboxes))
 	for _, sb := range s.sandboxes {
+		if !ownedByContext(ctx, sb.Owner) {
+			continue
+		}
 		items = append(items, sandboxListItem{
 			sandbox:  cloneSandboxLocked(sb),
 			sortTime: sandboxTerminalTime(sb),
@@ -1050,6 +1092,10 @@ func (s *Service) SuspendSandbox(ctx context.Context, req *cleanroomv1.SuspendSa
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := s.authorizeOwnedResource(ctx, "sandbox.suspend", "sandbox", sandboxID, state.Owner, nil); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED {
 		resp := &cleanroomv1.SuspendSandboxResponse{Sandbox: cloneSandboxLocked(state)}
@@ -1125,6 +1171,8 @@ func (s *Service) ensureSandboxReadyForGuestOperation(ctx context.Context, sandb
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")
 	}
+	// Guest operations authorize their requested action before calling this.
+	// Direct resume requests still require the explicit sandbox.resume action.
 	_, err := s.wakeSandbox(ctx, sandboxID, true)
 	return err
 }
@@ -1160,6 +1208,12 @@ func (s *Service) resumeSandbox(ctx context.Context, sandboxID string, guestOper
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if !guestOperation {
+		if err := s.authorizeOwnedResource(ctx, "sandbox.resume", "sandbox", sandboxID, state.Owner, nil); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
 	}
 	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
 		resp := cloneSandboxLocked(state)
@@ -1226,9 +1280,12 @@ func isIndeterminateSandboxLifecycleError(err error) bool {
 		errors.Is(err, backend.ErrSandboxLifecycleIndeterminate)
 }
 
-func (s *Service) ListExecutions(_ context.Context, req *cleanroomv1.ListExecutionsRequest) (*cleanroomv1.ListExecutionsResponse, error) {
+func (s *Service) ListExecutions(ctx context.Context, req *cleanroomv1.ListExecutionsRequest) (*cleanroomv1.ListExecutionsResponse, error) {
 	if req == nil {
 		req = &cleanroomv1.ListExecutionsRequest{}
+	}
+	if _, err := s.authorizeCreate(ctx, "execution.list", "execution", nil); err != nil {
+		return nil, err
 	}
 	sandboxID := strings.TrimSpace(req.GetSandboxId())
 	includeFinal := req.GetAll()
@@ -1245,6 +1302,9 @@ func (s *Service) ListExecutions(_ context.Context, req *cleanroomv1.ListExecuti
 			continue
 		}
 		if sandboxID != "" && ex.SandboxID != sandboxID {
+			continue
+		}
+		if !ownedByContext(ctx, ex.Owner) {
 			continue
 		}
 		if !includeFinal && isFinalExecutionStatus(ex.Status) {
@@ -1299,6 +1359,17 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		snapshotAdapter backend.SnapshottingAdapter
 	)
 
+	s.mu.RLock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	owner := state.Owner
+	s.mu.RUnlock()
+	if err := s.authorizeOwnedResource(ctx, "snapshot.create", "snapshot", snapshotID, owner, nil); err != nil {
+		return nil, err
+	}
 	if err := s.ensureSandboxSnapshotSupported(sandboxID); err != nil {
 		return nil, err
 	}
@@ -1308,10 +1379,14 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
-	state, ok := s.sandboxes[sandboxID]
+	state, ok = s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := s.authorizeOwnedResource(ctx, "snapshot.create", "snapshot", snapshotID, state.Owner, nil); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	if err := ensureSandboxIdleLocked(sandboxID, state, s.executions); err != nil {
 		s.mu.Unlock()
@@ -1346,6 +1421,8 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		Repository:             cloneRepositoryCheckout(state.Repository).ToProto(),
 		RepositoryHasChangeset: state.RepositoryHasChangeset,
 		StorageDriver:          snapshotCfg.Snapshots.Driver,
+		OwnerPrincipalID:       state.Owner.PrincipalID,
+		OwnerScope:             state.Owner.Scope,
 		CreatedAt:              now,
 	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("snapshot %s in progress", snapshotID))
@@ -1426,10 +1503,16 @@ func (s *Service) GetSnapshot(ctx context.Context, req *cleanroomv1.GetSnapshotR
 	if !ok {
 		return nil, fmt.Errorf("unknown snapshot %q", req.GetSnapshotId())
 	}
+	if err := s.authorizeOwnedResource(ctx, "snapshot.get", "snapshot", record.SnapshotID, ownerFromSnapshotRecord(record), nil); err != nil {
+		return nil, err
+	}
 	return &cleanroomv1.GetSnapshotResponse{Snapshot: cloneSnapshotRecord(record)}, nil
 }
 
 func (s *Service) ListSnapshots(ctx context.Context, _ *cleanroomv1.ListSnapshotsRequest) (*cleanroomv1.ListSnapshotsResponse, error) {
+	if _, err := s.authorizeCreate(ctx, "snapshot.list", "snapshot", nil); err != nil {
+		return nil, err
+	}
 	store, err := s.snapshotStoreOrErr()
 	if err != nil {
 		return nil, err
@@ -1441,6 +1524,9 @@ func (s *Service) ListSnapshots(ctx context.Context, _ *cleanroomv1.ListSnapshot
 
 	resp := &cleanroomv1.ListSnapshotsResponse{Snapshots: make([]*cleanroomv1.Snapshot, 0, len(records))}
 	for _, record := range records {
+		if !ownedByContext(ctx, ownerFromSnapshotRecord(record)) {
+			continue
+		}
 		resp.Snapshots = append(resp.Snapshots, cloneSnapshotRecord(record))
 	}
 	return resp, nil
@@ -1467,6 +1553,9 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 	}
 	if !ok {
 		return nil, fmt.Errorf("unknown snapshot %q", snapshotID)
+	}
+	if err := s.authorizeOwnedResource(ctx, "snapshot.delete", "snapshot", snapshotID, ownerFromSnapshotRecord(record), nil); err != nil {
+		return nil, err
 	}
 
 	adapter, ok := s.Backends[record.Backend]
@@ -1551,7 +1640,7 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 		maxBytes = s.downloadMaxBytesDefault()
 	}
 
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileDownloadSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.read", sandboxID, sandboxFileDownloadSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1596,7 +1685,7 @@ func (s *Service) UploadSandboxFile(ctx context.Context, req *cleanroomv1.Upload
 		return nil, fmt.Errorf("upload data exceeds max_bytes=%d", maxBytes)
 	}
 
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileUploadSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.write", sandboxID, sandboxFileUploadSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1625,7 +1714,7 @@ func (s *Service) StatSandboxPath(ctx context.Context, req *cleanroomv1.StatSand
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxPathStatSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.stat", sandboxID, sandboxPathStatSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1650,7 +1739,7 @@ func (s *Service) WalkSandboxTree(ctx context.Context, req *cleanroomv1.WalkSand
 	if err != nil {
 		return err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxTreeWalkSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.walk", sandboxID, sandboxTreeWalkSupport)
 	if err != nil {
 		return err
 	}
@@ -1683,7 +1772,7 @@ func (s *Service) ReadSandboxFile(ctx context.Context, req *cleanroomv1.ReadSand
 	if maxBytes <= 0 {
 		maxBytes = s.downloadMaxBytesDefault()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileReadSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.read", sandboxID, sandboxFileReadSupport)
 	if err != nil {
 		return err
 	}
@@ -1719,6 +1808,19 @@ func (s *Service) DialSandboxPort(ctx context.Context, req *cleanroomv1.SandboxP
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("invalid guest port %d", port)
 	}
+
+	s.mu.RLock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	owner := state.Owner
+	s.mu.RUnlock()
+
+	if err := s.authorizeOwnedResource(ctx, "sandbox.port.dial", "sandbox", sandboxID, owner, nil); err != nil {
+		return nil, err
+	}
 	if err := s.ensureSandboxPortDialSupported(sandboxID); err != nil {
 		return nil, err
 	}
@@ -1727,10 +1829,14 @@ func (s *Service) DialSandboxPort(ctx context.Context, req *cleanroomv1.SandboxP
 	}
 
 	s.mu.Lock()
-	state, ok := s.sandboxes[sandboxID]
+	state, ok = s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := s.authorizeOwnedResource(ctx, "sandbox.port.dial", "sandbox", sandboxID, state.Owner, nil); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
 		s.mu.Unlock()
@@ -1819,7 +1925,7 @@ func (s *Service) WriteSandboxFile(ctx context.Context, init *cleanroomv1.WriteS
 	if init.GetMtime() != nil {
 		mtime = init.GetMtime().AsTime()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxFileWriteSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.write", sandboxID, sandboxFileWriteSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1848,7 +1954,7 @@ func (s *Service) RemoveSandboxPath(ctx context.Context, req *cleanroomv1.Remove
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxPathRemoveSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.remove", sandboxID, sandboxPathRemoveSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1884,7 +1990,7 @@ func (s *Service) ArchiveSandboxPaths(ctx context.Context, req *cleanroomv1.Arch
 	if maxBytes <= 0 {
 		maxBytes = s.downloadMaxBytesDefault()
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxArchiveReadSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.archive", sandboxID, sandboxArchiveReadSupport)
 	if err != nil {
 		return err
 	}
@@ -1919,7 +2025,7 @@ func (s *Service) ExtractSandboxArchive(ctx context.Context, init *cleanroomv1.E
 	if err != nil {
 		return nil, err
 	}
-	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, sandboxID, sandboxArchiveWriteSupport)
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(ctx, "sandbox.file.extract", sandboxID, sandboxArchiveWriteSupport)
 	if err != nil {
 		return nil, err
 	}
@@ -1960,6 +2066,10 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := s.authorizeOwnedResource(ctx, "sandbox.terminate", "sandbox", sandboxID, state.Owner, nil); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	backendName = state.Backend
 
@@ -2131,6 +2241,21 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	now := s.clock().Now()
 	executionID := s.ids().NewExecutionID()
 
+	s.mu.RLock()
+	sandbox, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	executionOwner := sandbox.Owner
+	executionAuthRepository := repository
+	if executionAuthRepository == nil {
+		executionAuthRepository = cloneRepositoryCheckout(sandbox.Repository)
+	}
+	s.mu.RUnlock()
+	if err := s.authorizeOwnedResource(ctx, "execution.create", "execution", executionID, executionOwner, createExecutionAuthorizationRequest(executionAuthRepository)); err != nil {
+		return nil, err
+	}
 	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
 		return nil, err
 	}
@@ -2138,10 +2263,18 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	s.mu.Lock()
 	s.ensureMapsLocked()
 
-	sandbox, ok := s.sandboxes[sandboxID]
+	sandbox, ok = s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	executionAuthRepository = repository
+	if executionAuthRepository == nil {
+		executionAuthRepository = sandbox.Repository
+	}
+	if err := s.authorizeOwnedResource(ctx, "execution.create", "execution", executionID, sandbox.Owner, createExecutionAuthorizationRequest(executionAuthRepository)); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	span.SetAttributes(attribute.String(observability.AttrBackend, sandbox.Backend))
 	if sandbox.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
@@ -2244,6 +2377,7 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		TTY:               tty,
 		Kind:              kind,
 		Status:            cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
+		Owner:             sandbox.Owner,
 		PreRunActive:      len(preRunBefore) > 0,
 		ParentSpanContext: trace.SpanContextFromContext(ctx),
 		events:            newEventFeed[*cleanroomv1.ExecutionStreamEvent](s.retention().maxRetainedExecutionEvents),
@@ -2293,7 +2427,7 @@ func validateInternalExecutionOptions(opts executionOptions, internalWorkspaceCo
 	return nil
 }
 
-func (s *Service) AttachExecution(_ context.Context, req *cleanroomv1.AttachExecutionRequest) (*cleanroomv1.AttachExecutionResponse, error) {
+func (s *Service) AttachExecution(ctx context.Context, req *cleanroomv1.AttachExecutionRequest) (*cleanroomv1.AttachExecutionResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -2316,6 +2450,13 @@ func (s *Service) AttachExecution(_ context.Context, req *cleanroomv1.AttachExec
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	owner := authz.ResourceOwner{}
+	if ex, ok := s.executions[executionKey(sandboxID, executionID)]; ok && ex != nil {
+		owner = ex.Owner
+		if err := s.authorizeOwnedResource(ctx, "execution.attach", "execution", executionID, ex.Owner, nil); err != nil {
+			return nil, err
+		}
+	}
 	grant, err := s.interactive.open(
 		s.executions,
 		now,
@@ -2324,6 +2465,7 @@ func (s *Service) AttachExecution(_ context.Context, req *cleanroomv1.AttachExec
 		token,
 		sandboxID,
 		executionID,
+		owner,
 		req.GetInitialCols(),
 		req.GetInitialRows(),
 	)
@@ -2341,7 +2483,7 @@ func (s *Service) AttachExecution(_ context.Context, req *cleanroomv1.AttachExec
 	}, nil
 }
 
-func (s *Service) InspectExecution(_ context.Context, req *cleanroomv1.InspectExecutionRequest) (*cleanroomv1.InspectExecutionResponse, error) {
+func (s *Service) InspectExecution(ctx context.Context, req *cleanroomv1.InspectExecutionRequest) (*cleanroomv1.InspectExecutionResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -2350,6 +2492,17 @@ func (s *Service) InspectExecution(_ context.Context, req *cleanroomv1.InspectEx
 	if executionID == "" {
 		return nil, errors.New("missing execution_id")
 	}
+	s.mu.RLock()
+	ex, err := s.lookupExecutionLocked(sandboxID, executionID)
+	if err != nil {
+		s.mu.RUnlock()
+		return nil, err
+	}
+	if err := s.authorizeOwnedResource(ctx, "execution.inspect", "execution", ex.ID, ex.Owner, nil); err != nil {
+		s.mu.RUnlock()
+		return nil, err
+	}
+	s.mu.RUnlock()
 
 	snapshot, err := s.ExecutionSnapshot(sandboxID, executionID)
 	if err != nil {
@@ -2721,7 +2874,7 @@ func (s *Service) ReleaseInteractiveExecution(sandboxID, executionID string) {
 	s.interactive.release(sandboxID, executionID)
 }
 
-func (s *Service) GetExecution(_ context.Context, req *cleanroomv1.GetExecutionRequest) (*cleanroomv1.GetExecutionResponse, error) {
+func (s *Service) GetExecution(ctx context.Context, req *cleanroomv1.GetExecutionRequest) (*cleanroomv1.GetExecutionResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -2737,12 +2890,16 @@ func (s *Service) GetExecution(_ context.Context, req *cleanroomv1.GetExecutionR
 		s.mu.RUnlock()
 		return nil, err
 	}
+	if err := s.authorizeOwnedResource(ctx, "execution.get", "execution", ex.ID, ex.Owner, nil); err != nil {
+		s.mu.RUnlock()
+		return nil, err
+	}
 	resp := &cleanroomv1.GetExecutionResponse{Execution: cloneExecutionLocked(ex)}
 	s.mu.RUnlock()
 	return resp, nil
 }
 
-func (s *Service) CancelExecution(_ context.Context, req *cleanroomv1.CancelExecutionRequest) (*cleanroomv1.CancelExecutionResponse, error) {
+func (s *Service) CancelExecution(ctx context.Context, req *cleanroomv1.CancelExecutionRequest) (*cleanroomv1.CancelExecutionResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -2769,6 +2926,10 @@ func (s *Service) CancelExecution(_ context.Context, req *cleanroomv1.CancelExec
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+	}
+	if err := s.authorizeOwnedResource(ctx, "execution.cancel", "execution", executionID, ex.Owner, nil); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	status = ex.Status
 	if isFinalExecutionStatus(ex.Status) {
@@ -4218,19 +4379,34 @@ func (s *Service) ensureSandboxFileOperationSupported(sandboxID string, support 
 	return nil
 }
 
-func (s *Service) beginSandboxFileTransfer(ctx context.Context, sandboxID string, support sandboxFileOperationSupport) (backend.Adapter, string, func(), error) {
+func (s *Service) beginSandboxFileTransfer(ctx context.Context, action, sandboxID string, support sandboxFileOperationSupport) (backend.Adapter, string, func(), error) {
+	s.mu.RLock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, "", nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	owner := state.Owner
+	s.mu.RUnlock()
+
+	if err := s.authorizeOwnedResource(ctx, action, "sandbox", sandboxID, owner, nil); err != nil {
+		return nil, "", nil, err
+	}
 	if err := s.ensureSandboxFileOperationSupported(sandboxID, support); err != nil {
 		return nil, "", nil, err
 	}
 	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
 		return nil, "", nil, err
 	}
-
 	s.mu.Lock()
-	state, ok := s.sandboxes[sandboxID]
+	state, ok = s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.Unlock()
 		return nil, "", nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := s.authorizeOwnedResource(ctx, action, "sandbox", sandboxID, state.Owner, nil); err != nil {
+		s.mu.Unlock()
+		return nil, "", nil, err
 	}
 	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
 		s.mu.Unlock()
@@ -4240,6 +4416,14 @@ func (s *Service) beginSandboxFileTransfer(ctx context.Context, sandboxID string
 	if !ok {
 		s.mu.Unlock()
 		return nil, "", nil, fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[support.capability] || !support.implements(adapter) {
+		s.mu.Unlock()
+		return nil, "", nil, fmt.Errorf("backend %q does not support %s", state.Backend, support.description)
 	}
 	if state.FileTransferInProgress {
 		s.mu.Unlock()

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/authz"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
@@ -46,6 +47,7 @@ func (b *interactiveSessionBroker) open(
 	now time.Time,
 	ttl time.Duration,
 	sessionID, token, sandboxID, executionID string,
+	owner authz.ResourceOwner,
 	initialCols, initialRows uint32,
 ) (*interactiveSessionGrant, error) {
 	b.ensureMaps()
@@ -80,6 +82,7 @@ func (b *interactiveSessionBroker) open(
 		SandboxID:   sandboxID,
 		ExecutionID: executionID,
 		Token:       token,
+		Owner:       owner,
 		ExpiresAt:   expiresAt,
 		InitialCols: initialCols,
 		InitialRows: initialRows,

@@ -119,6 +119,7 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
+	owner, _ := ownerForContext(ctx)
 	provisionSnapshotID := strings.TrimSpace(record.SnapshotID)
 	if provisionSnapshotID == "" {
 		provisionSnapshotID = strings.TrimSpace(record.ID)
@@ -156,6 +157,7 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 		SourceKind:                          sourceKind,
 		SourceID:                            sourceID,
 		BackingSnapshotID:                   backingSnapshotID,
+		Owner:                               owner,
 		CreatedAt:                           now,
 		UpdatedAt:                           now,
 		Status:                              cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,

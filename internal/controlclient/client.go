@@ -30,6 +30,7 @@ type Option func(*options)
 type options struct {
 	tlsOpts             tlsconfig.Options
 	connectInterceptors []connect.Interceptor
+	bearerToken         string
 }
 
 // WithTLS configures TLS options for the client.
@@ -50,6 +51,12 @@ func WithConnectInterceptors(interceptors ...connect.Interceptor) Option {
 	}
 }
 
+func WithBearerToken(token string) Option {
+	return func(o *options) {
+		o.bearerToken = strings.TrimSpace(token)
+	}
+}
+
 func New(ep endpoint.Endpoint, opts ...Option) (*Client, error) {
 	var o options
 	for _, opt := range opts {
@@ -63,6 +70,9 @@ func New(ep endpoint.Endpoint, opts ...Option) (*Client, error) {
 	}
 	httpClient := &http.Client{Transport: transport}
 	clientOptions := make([]connect.ClientOption, 0, 1)
+	if o.bearerToken != "" {
+		clientOptions = append(clientOptions, connect.WithInterceptors(bearerTokenInterceptor(o.bearerToken)))
+	}
 	if len(o.connectInterceptors) > 0 {
 		clientOptions = append(clientOptions, connect.WithInterceptors(o.connectInterceptors...))
 	}
@@ -73,6 +83,34 @@ func New(ep endpoint.Endpoint, opts ...Option) (*Client, error) {
 		snapshotClient:  cleanroomv1connect.NewSnapshotServiceClient(httpClient, baseURL, clientOptions...),
 		executionClient: cleanroomv1connect.NewExecutionServiceClient(httpClient, baseURL, clientOptions...),
 	}, nil
+}
+
+func bearerTokenInterceptor(token string) connect.Interceptor {
+	headerValue := "Bearer " + strings.TrimSpace(token)
+	return bearerTokenClientInterceptor{headerValue: headerValue}
+}
+
+type bearerTokenClientInterceptor struct {
+	headerValue string
+}
+
+func (i bearerTokenClientInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		req.Header().Set("Authorization", i.headerValue)
+		return next(ctx, req)
+	}
+}
+
+func (i bearerTokenClientInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		conn := next(ctx, spec)
+		conn.RequestHeader().Set("Authorization", i.headerValue)
+		return conn
+	}
+}
+
+func (i bearerTokenClientInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
 }
 
 func buildTransport(ep endpoint.Endpoint, baseURL string, tlsOpts tlsconfig.Options) (http.RoundTripper, error) {

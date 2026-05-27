@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"charm.land/log/v2"
 	"connectrpc.com/connect"
+	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
@@ -198,6 +200,10 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 			KeyPath:  s.TLSKey,
 		}
 	}
+	authInterceptor, err := s.authInterceptor(ctx, ep)
+	if err != nil {
+		return err
+	}
 
 	service, err := newControlService(ctx, serviceLogger, gwMirrors)
 	if err != nil {
@@ -205,6 +211,9 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	}
 	service.ScheduleStartupStorageCleanup()
 	serverInterceptors := make([]connect.Interceptor, 0, 1)
+	if authInterceptor != nil {
+		serverInterceptors = append(serverInterceptors, authInterceptor)
+	}
 	if interceptor := ctx.Observability.ConnectInterceptor(); interceptor != nil {
 		serverInterceptors = append(serverInterceptors, interceptor)
 	}
@@ -238,6 +247,57 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	defer gwStopCancel()
 	_ = gwServer.Stop(gwStopCtx)
 	return runErr
+}
+
+func (s *ServeCommand) authInterceptor(ctx *runtimeContext, ep endpoint.Endpoint) (connect.Interceptor, error) {
+	if ctx == nil || !ctx.Config.Auth.Required || ep.Scheme == "unix" {
+		return nil, nil
+	}
+	if err := validateBearerAuthListenEndpoint(ep); err != nil {
+		return nil, err
+	}
+	policyPath, err := resolveAuthPolicyPath(ctx.CWD, ctx.ConfigPath, "", ctx.Config.Auth.PolicyFile)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := authz.LoadPolicyFile(policyPath)
+	if err != nil {
+		return nil, err
+	}
+	validator, err := authz.NewOIDCValidator(ctx.Config.Auth.OIDC.Issuers)
+	if err != nil {
+		return nil, err
+	}
+	return controlserver.BearerAuthenticator{
+		Validator: validator,
+		Policy:    policy,
+	}.Interceptor(), nil
+}
+
+func validateBearerAuthListenEndpoint(ep endpoint.Endpoint) error {
+	if ep.Scheme != "http" {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(ep.Address))
+	if err != nil {
+		return fmt.Errorf("validate auth listen endpoint: %w", err)
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return errors.New("auth.required cannot use bearer tokens on a non-loopback http listen endpoint; use https or a loopback http address")
+	}
+	if !isLoopbackListenHost(host) {
+		return errors.New("auth.required cannot use bearer tokens on a non-loopback http listen endpoint; use https or a loopback http address")
+	}
+	return nil
+}
+
+func isLoopbackListenHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {

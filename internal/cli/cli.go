@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,8 +87,10 @@ func (c *VersionCommand) Run() error {
 }
 
 type clientFlags struct {
-	Host  string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
-	TLSCA string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
+	Host          string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
+	TLSCA         string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
+	AuthTokenFile string `name:"auth-token-file" help:"Path to a bearer token file" env:"CLEANROOM_AUTH_TOKEN_FILE"`
+	AuthTokenEnv  string `name:"auth-token-env" help:"Environment variable containing a bearer token (default CLEANROOM_AUTH_TOKEN)"`
 }
 
 func (f *clientFlags) resolvedHost(cfg runtimeconfig.Config) string {
@@ -106,12 +109,64 @@ func (f *clientFlags) connect(ctx *runtimeContext) (*controlclient.Client, error
 	options := []controlclient.Option{controlclient.WithTLS(tlsconfig.Options{
 		CAPath: f.TLSCA,
 	})}
+	if token, err := f.resolveAuthToken(ctx); err != nil {
+		return nil, err
+	} else if token != "" {
+		if err := validateBearerAuthClientEndpoint(ep); err != nil {
+			return nil, err
+		}
+		options = append(options, controlclient.WithBearerToken(token))
+	}
 	if ctx != nil {
 		if interceptor := ctx.Observability.ConnectInterceptor(); interceptor != nil {
 			options = append(options, controlclient.WithConnectInterceptors(interceptor))
 		}
 	}
 	return controlclient.New(ep, options...)
+}
+
+func (f *clientFlags) resolveAuthToken(ctx *runtimeContext) (string, error) {
+	tokenFile := strings.TrimSpace(f.AuthTokenFile)
+	if tokenFile != "" {
+		if ctx != nil && !filepath.IsAbs(tokenFile) {
+			tokenFile = filepath.Join(ctx.CWD, tokenFile)
+		}
+		raw, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return "", fmt.Errorf("read auth token file %s: %w", tokenFile, err)
+		}
+		token := strings.TrimSpace(string(raw))
+		if token == "" {
+			return "", fmt.Errorf("auth token file %s is empty", tokenFile)
+		}
+		return token, nil
+	}
+
+	envName := strings.TrimSpace(f.AuthTokenEnv)
+	explicitEnv := envName != ""
+	if envName == "" {
+		envName = "CLEANROOM_AUTH_TOKEN"
+	}
+	token := strings.TrimSpace(os.Getenv(envName))
+	if token == "" && explicitEnv {
+		return "", fmt.Errorf("auth token env %s is empty", envName)
+	}
+	return token, nil
+}
+
+func validateBearerAuthClientEndpoint(ep endpoint.Endpoint) error {
+	if ep.Scheme != "http" {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(ep.Address))
+	if err != nil {
+		return fmt.Errorf("validate auth client endpoint: %w", err)
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" || !isLoopbackListenHost(host) {
+		return errors.New("auth token cannot be sent to a non-loopback http endpoint; use https or a loopback http address")
+	}
+	return nil
 }
 
 type exitCodeError struct {
