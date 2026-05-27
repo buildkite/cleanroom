@@ -166,6 +166,205 @@ func TestDNSInstallRefreshesExistingCertificateTrust(t *testing.T) {
 	}
 }
 
+func TestDNSInstallRejectsSymlinkedCertificateBeforeTrust(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	tlsDir := filepath.Join(home, ".config", "cleanroom", "tls")
+	if err := os.MkdirAll(tlsDir, 0o700); err != nil {
+		t.Fatalf("mkdir tls dir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.pem")
+	if err := os.WriteFile(outside, []byte("do not trust"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(tlsDir, exposure.LocalCertificateFilename)); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	err := cmd.Run(&runtimeContext{Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected symlinked certificate error")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for symlinked certificate, got %v", calls)
+	}
+}
+
+func TestDNSInstallRejectsSymlinkedKeyBeforeTrustRemoval(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	tlsDir := filepath.Join(home, ".config", "cleanroom", "tls")
+	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
+	if err != nil {
+		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
+	}
+	if err := os.Remove(cert.KeyPath); err != nil {
+		t.Fatalf("remove generated key: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.key")
+	if err := os.WriteFile(outside, []byte("do not read"), 0o600); err != nil {
+		t.Fatalf("write outside key: %v", err)
+	}
+	if err := os.Symlink(outside, cert.KeyPath); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	err = cmd.Run(&runtimeContext{Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected symlinked key error")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for symlinked key, got %v", calls)
+	}
+}
+
+func TestDNSInstallRejectsSymlinkedTLSParentBeforeWrite(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(home, ".config")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	err := cmd.Run(&runtimeContext{Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected symlinked TLS parent error")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for symlinked TLS parent, got %v", calls)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "cleanroom")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlink target not to receive certificate files, got err=%v", err)
+	}
+}
+
+func TestDNSInstallRejectsSymlinkedXDGConfigHomeBeforeWrite(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	outside := t.TempDir()
+	xdgConfigHome := filepath.Join(home, "xdg-config")
+	if err := os.Symlink(outside, xdgConfigHome); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	baseGetenv := dnsInstallGetenv
+	dnsInstallGetenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return xdgConfigHome
+		}
+		return baseGetenv(key)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	err := cmd.Run(&runtimeContext{Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected symlinked XDG config home error")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for symlinked XDG config home, got %v", calls)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "cleanroom")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlink target not to receive certificate files, got err=%v", err)
+	}
+}
+
+func TestDNSInstallRejectsXDGConfigHomeOutsideInvokingHome(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	outside := filepath.Join(t.TempDir(), "xdg-config")
+	baseGetenv := dnsInstallGetenv
+	dnsInstallGetenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return outside
+		}
+		return baseGetenv(key)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	err := cmd.Run(&runtimeContext{Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected XDG_CONFIG_HOME outside invoking home to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must be inside invoking user home") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for outside XDG config home, got %v", calls)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "cleanroom")); !os.IsNotExist(err) {
+		t.Fatalf("expected outside XDG config home not to receive certificate files, got err=%v", err)
+	}
+}
+
+func TestChownExposureTLSMaterialRejectsSymlinkedTarget(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(t.TempDir(), "parent-link")
+	if err := os.Symlink(t.TempDir(), parent); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	prevGetenv := dnsInstallGetenv
+	prevChown := dnsInstallChown
+	t.Cleanup(func() {
+		dnsInstallGetenv = prevGetenv
+		dnsInstallChown = prevChown
+	})
+	dnsInstallGetenv = func(key string) string {
+		switch key {
+		case "SUDO_UID":
+			return "501"
+		case "SUDO_GID":
+			return "20"
+		default:
+			return ""
+		}
+	}
+	var chownCalls int
+	dnsInstallChown = func(string, int, int) error {
+		chownCalls++
+		return nil
+	}
+
+	err := chownExposureTLSMaterial(dir, []string{parent})
+	if err == nil {
+		t.Fatal("expected symlinked chown target to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if chownCalls != 0 {
+		t.Fatalf("expected chown not to run after symlink detection, got %d calls", chownCalls)
+	}
+}
+
 func TestDNSInstallUsesXDGConfigHomeForExposureCertificate(t *testing.T) {
 	home := t.TempDir()
 	xdgConfigHome := filepath.Join(home, "xdg-config")
@@ -256,6 +455,35 @@ func TestDNSStatusReportsCertificateTrust(t *testing.T) {
 	}
 }
 
+func TestDNSStatusReportsInvalidXDGConfigHome(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	outside := filepath.Join(t.TempDir(), "xdg-config")
+	baseGetenv := dnsInstallGetenv
+	dnsInstallGetenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return outside
+		}
+		return baseGetenv(key)
+	}
+
+	status := (&DNSCommand{}).currentDNSStatus()
+	if !strings.Contains(status.Message, "must be inside invoking user home") {
+		t.Fatalf("expected invalid XDG_CONFIG_HOME message, got %+v", status)
+	}
+	if !strings.Contains(status.TrustMessage, "must be inside invoking user home") {
+		t.Fatalf("expected invalid XDG_CONFIG_HOME trust message, got %+v", status)
+	}
+	if status.CertificatePath != "" {
+		t.Fatalf("expected no certificate path for invalid config home, got %+v", status)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for invalid config home, got %v", calls)
+	}
+}
+
 func TestDNSUninstallRemovesCertificateTrustAndFiles(t *testing.T) {
 	home := t.TempDir()
 	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
@@ -341,6 +569,7 @@ func stubDNSInstallEnvironment(t *testing.T, home, resolverPath string, calls *[
 	prevEUID := dnsInstallEUID
 	prevRunCommand := dnsInstallRunCommand
 	prevLookupUser := dnsInstallLookupUser
+	prevLstat := dnsInstallLstat
 	prevChown := dnsInstallChown
 	prevGetenv := dnsInstallGetenv
 	prevUserHomeDir := dnsInstallUserHomeDir
@@ -378,6 +607,7 @@ func stubDNSInstallEnvironment(t *testing.T, home, resolverPath string, calls *[
 		dnsInstallEUID = prevEUID
 		dnsInstallRunCommand = prevRunCommand
 		dnsInstallLookupUser = prevLookupUser
+		dnsInstallLstat = prevLstat
 		dnsInstallChown = prevChown
 		dnsInstallGetenv = prevGetenv
 		dnsInstallUserHomeDir = prevUserHomeDir

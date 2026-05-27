@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 4a ready for review
+**Status:** Slice 4b ready for review
 **Last reviewed:** 2026-05-27
 
 ## Summary
@@ -102,8 +102,44 @@ TCP control-plane daemon listeners unless runtime `auth.required` is enabled.
 When auth is enabled, non-loopback plain HTTP is still rejected because bearer
 tokens are only allowed over HTTPS or loopback HTTP.
 
-The DNS resolver install and exposure certificate symlink hardening findings
-remain in Slice 4b.
+The DNS resolver install and exposure certificate symlink hardening findings are
+covered in Slice 4b.
+
+Focused validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise exec -- go test ./internal/cli
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Slice 4b is implemented and ready for review. Exposure certificate reads now
+reject symlinked certificate/key paths and symlinked TLS path ancestors, verify
+the opened file still matches the inspected regular file, and write refreshed
+certificate material through a same-directory temporary file before rename. The
+privileged DNS installer also refuses to trust, remove trust for, or chown
+certificate paths when the invoking user's TLS directory path contains symlink
+components from the user's home or configured XDG config root, and it validates
+the existing certificate/key pair before changing trust-store state. During
+sudo installs, `XDG_CONFIG_HOME` must stay inside the invoking user's home, and
+`dns status` reports that configuration error instead of hiding it. The
+ownership handoff uses `lchown`.
+
+Focused validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise exec -- go test ./internal/exposure
+```
+
+Result: passed.
 
 Focused validation run on 2026-05-27:
 

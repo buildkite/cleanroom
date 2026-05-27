@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -41,12 +42,13 @@ var (
 	dnsInstallGOOS         = runtime.GOOS
 	dnsInstallEUID         = os.Geteuid
 	dnsInstallMkdirAll     = os.MkdirAll
+	dnsInstallLstat        = os.Lstat
 	dnsInstallReadFile     = os.ReadFile
 	dnsInstallWriteFile    = os.WriteFile
 	dnsInstallRemoveFile   = os.Remove
 	dnsInstallRunCommand   = runDNSInstallCommand
 	dnsInstallLookupUser   = user.Lookup
-	dnsInstallChown        = os.Chown
+	dnsInstallChown        = os.Lchown
 	dnsInstallGetenv       = os.Getenv
 	dnsInstallUserHomeDir  = os.UserHomeDir
 	dnsResolverInstallPath = filepath.Join("/etc", "resolver", exposure.Domain)
@@ -96,12 +98,22 @@ func (c *DNSCommand) installDNS(ctx *runtimeContext) error {
 		return err
 	}
 	certPath := filepath.Join(tlsDir, exposure.LocalCertificateFilename)
-	if _, err := dnsInstallReadFile(certPath); err == nil {
+	certExists, err := dnsInstallRegularFileExists(certPath)
+	if err != nil {
+		return fmt.Errorf("read exposure certificate %s: %w", certPath, err)
+	}
+	if certExists {
+		keyPath := filepath.Join(tlsDir, exposure.LocalCertificateKeyFilename)
+		keyExists, err := dnsInstallRegularFileExists(keyPath)
+		if err != nil {
+			return fmt.Errorf("read exposure certificate key %s: %w", keyPath, err)
+		}
+		if !keyExists {
+			return fmt.Errorf("read exposure certificate key %s: %w", keyPath, fs.ErrNotExist)
+		}
 		if err := removeExposureCertificateTrust(certPath); err != nil {
 			return err
 		}
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("read exposure certificate %s: %w", certPath, err)
 	}
 	parentDirs := exposureTLSParentDirsToChown(tlsDir)
 	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
@@ -202,18 +214,20 @@ func (c *DNSCommand) currentDNSStatus() dnsStatusPayload {
 		Domain:    exposure.Domain,
 		Listen:    listen,
 	}
-	if tlsDir, err := dnsExposureTLSDir(); err == nil {
-		status.CertificatePath = filepath.Join(tlsDir, exposure.LocalCertificateFilename)
-	}
 	if !status.Supported {
 		status.Message = "dns resolver install is unsupported on this platform"
 		return status
 	}
-	if strings.TrimSpace(status.CertificatePath) != "" {
-		trusted, trustMessage := exposureCertificateTrustStatus(status.CertificatePath)
-		status.Trusted = trusted
-		status.TrustMessage = trustMessage
+	tlsDir, err := dnsExposureTLSDir()
+	if err != nil {
+		status.Message = err.Error()
+		status.TrustMessage = err.Error()
+		return status
 	}
+	status.CertificatePath = filepath.Join(tlsDir, exposure.LocalCertificateFilename)
+	trusted, trustMessage := exposureCertificateTrustStatus(status.CertificatePath)
+	status.Trusted = trusted
+	status.TrustMessage = trustMessage
 
 	data, err := dnsInstallReadFile(dnsResolverInstallPath)
 	switch {
@@ -310,6 +324,10 @@ func resolverFileListen(data []byte, fallback string) string {
 
 func dnsExposureTLSDir() (string, error) {
 	if configHome := strings.TrimSpace(dnsInstallGetenv("XDG_CONFIG_HOME")); configHome != "" {
+		configHome = filepath.Clean(configHome)
+		if home := dnsExposureInvokingHomeDir(); home != "" && !pathWithinDir(home, configHome) {
+			return "", fmt.Errorf("XDG_CONFIG_HOME %s must be inside invoking user home %s for dns install", configHome, home)
+		}
 		return filepath.Join(configHome, "cleanroom", "tls"), nil
 	}
 	if home := dnsExposureInvokingHomeDir(); home != "" {
@@ -392,7 +410,11 @@ func chownExposureTLSMaterial(dir string, parentDirs []string) error {
 		filepath.Join(dir, exposure.LocalCertificateFilename),
 		filepath.Join(dir, exposure.LocalCertificateKeyFilename),
 	)
+	symlinkRoot := dnsExposureTLSSymlinkRoot()
 	for _, path := range paths {
+		if err := rejectDNSInstallSymlinkPath(path, symlinkRoot); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
 		if err := dnsInstallChown(path, uid, gid); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("chown %s: %w", path, err)
 		}
@@ -431,7 +453,7 @@ func uninstallExposureCertificateTrustAndFiles() error {
 		return err
 	}
 	certPath := filepath.Join(tlsDir, exposure.LocalCertificateFilename)
-	if _, err := dnsInstallReadFile(certPath); err == nil {
+	if _, err := dnsInstallReadRegularFile(certPath); err == nil {
 		if err := removeExposureCertificateTrust(certPath); err != nil {
 			return err
 		}
@@ -442,7 +464,7 @@ func uninstallExposureCertificateTrustAndFiles() error {
 }
 
 func exposureCertificateTrustStatus(certPath string) (bool, string) {
-	if _, err := dnsInstallReadFile(certPath); err != nil {
+	if _, err := dnsInstallReadRegularFile(certPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, "certificate not found"
 		}
@@ -456,6 +478,103 @@ func exposureCertificateTrustStatus(certPath string) (bool, string) {
 		return false, err.Error()
 	}
 	return true, "trusted"
+}
+
+func dnsInstallReadRegularFile(path string) ([]byte, error) {
+	if err := rejectDNSInstallSymlinkPath(path, dnsExposureTLSSymlinkRoot()); err != nil {
+		return nil, err
+	}
+	info, err := dnsInstallLstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return dnsInstallReadRegularFileMatchingInfo(path, info)
+}
+
+func dnsInstallRegularFileExists(path string) (bool, error) {
+	if _, err := dnsInstallReadRegularFile(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func dnsInstallReadRegularFileMatchingInfo(path string, info os.FileInfo) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("%s changed while opening", path)
+	}
+	return io.ReadAll(f)
+}
+
+func dnsExposureTLSSymlinkRoot() string {
+	if configHome := strings.TrimSpace(dnsInstallGetenv("XDG_CONFIG_HOME")); configHome != "" {
+		configHome = filepath.Clean(configHome)
+		if home := dnsExposureInvokingHomeDir(); home != "" && pathWithinDir(home, configHome) {
+			return filepath.Clean(home)
+		}
+		return configHome
+	}
+	if home := dnsExposureInvokingHomeDir(); home != "" {
+		return filepath.Clean(home)
+	}
+	return ""
+}
+
+func rejectDNSInstallSymlinkPath(path, root string) error {
+	path = filepath.Clean(path)
+	root = filepath.Clean(strings.TrimSpace(root))
+	if path == "" || path == "." {
+		return nil
+	}
+	if root == "" || root == "." || !pathWithinDir(root, path) {
+		return rejectDNSInstallSymlinkLeaf(path)
+	}
+	if err := rejectDNSInstallSymlinkLeaf(root); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return nil
+	}
+	current := root
+	for _, elem := range strings.Split(rel, string(filepath.Separator)) {
+		if elem == "" || elem == "." {
+			continue
+		}
+		current = filepath.Join(current, elem)
+		if err := rejectDNSInstallSymlinkLeaf(current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectDNSInstallSymlinkLeaf(path string) error {
+	info, err := dnsInstallLstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symbolic link", path)
+	}
+	return nil
 }
 
 func exposureTrustKeychainPath() (string, error) {

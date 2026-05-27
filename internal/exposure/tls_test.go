@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,6 +128,102 @@ func TestGenerateServerCertificateDoesNotReplaceLegacyLeafCertificate(t *testing
 	}
 	if bytes.Equal(migrated.CertPEM, before) {
 		t.Fatal("expected dns install path to write a new certificate authority")
+	}
+}
+
+func TestEnsureLocalCertificateRejectsSymlinkedCertificatePath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.pem")
+	if err := os.WriteFile(outside, []byte("do not replace"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	certPath := filepath.Join(dir, LocalCertificateFilename)
+	if err := os.Symlink(outside, certPath); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	_, err := EnsureLocalCertificate(Domain, dir)
+	if err == nil {
+		t.Fatal("expected symlinked certificate path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside file: %v", err)
+	}
+	if got, want := string(data), "do not replace"; got != want {
+		t.Fatalf("outside file was changed: got %q want %q", got, want)
+	}
+}
+
+func TestEnsureLocalCertificateRejectsSymlinkedTLSDir(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	outside := t.TempDir()
+	dir := filepath.Join(parent, "tls")
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	_, err := EnsureLocalCertificate(Domain, dir)
+	if err == nil {
+		t.Fatal("expected symlinked TLS directory to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, LocalCertificateFilename)); !os.IsNotExist(err) {
+		t.Fatalf("expected symlink target not to receive certificate files, got err=%v", err)
+	}
+}
+
+func TestEnsureLocalCertificateRejectsSymlinkedTLSParent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(home, ".config")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	dir := filepath.Join(home, ".config", "cleanroom", "tls")
+
+	_, err := EnsureLocalCertificate(Domain, dir)
+	if err == nil {
+		t.Fatal("expected symlinked TLS parent to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "cleanroom")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlink target not to receive certificate files, got err=%v", err)
+	}
+}
+
+func TestEnsureLocalCertificateRejectsExistingCertificateUnderSymlinkedTLSParent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	outside := t.TempDir()
+	actualDir := filepath.Join(outside, "cleanroom", "tls")
+	if _, err := EnsureLocalCertificate(Domain, actualDir); err != nil {
+		t.Fatalf("seed outside certificate: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, ".config")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	dir := filepath.Join(home, ".config", "cleanroom", "tls")
+
+	_, err := EnsureLocalCertificate(Domain, dir)
+	if err == nil {
+		t.Fatal("expected existing certificate under symlinked TLS parent to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
