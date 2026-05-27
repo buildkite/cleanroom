@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 4b ready for review
+**Status:** Slice 6a ready for review
 **Last reviewed:** 2026-05-27
 
 ## Summary
@@ -145,6 +145,32 @@ Focused validation run on 2026-05-27:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise exec -- go test ./internal/cli
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Slice 6a is implemented and ready for review. Git credential fill lookup now
+rejects NUL, CR, and LF characters in line-based credential protocol fields
+before invoking the host `git credential fill` helper. This closes the remote
+URL path field injection finding without changing normal HTTPS repository
+credential lookup behavior.
+
+The remaining Slice 6 cache authorization findings for git pack responses,
+fetch cache hits, Go proxy cache hits, and OCI handler allocation remain follow-up
+work.
+
+Focused validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise exec -- go test ./internal/gateway
 ```
 
 Result: passed.
