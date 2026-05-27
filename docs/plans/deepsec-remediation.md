@@ -20,6 +20,8 @@ Slice 1 is implemented and ready for review. The darwin-vz file-handle gateway
 now blocks host-side TCP proxy dials to loopback, private, link-local,
 multicast, unspecified, documentation, benchmarking, reserved, NAT64, and other
 special-use addresses before DNS policy authorization and before the host dial.
+IPv6 destinations must also fall inside currently allocated global-unicast
+prefixes.
 
 Focused validation run on 2026-05-27:
 
@@ -91,8 +93,8 @@ authorization and before the host opens a TCP connection.
 
 The blocked set also needs to include non-obvious special-use ranges, not just
 RFC1918 and loopback. The Slice 1 test matrix includes CGNAT, documentation,
-benchmarking, reserved, NAT64, and IPv4-mapped private destinations to keep that
-boundary explicit.
+benchmarking, reserved, NAT64, AS112, AMT, ORCHIDv2, SRv6 SID, unallocated IPv6,
+and IPv4-mapped private destinations to keep that boundary explicit.
 
 ## Validation Standard
 
