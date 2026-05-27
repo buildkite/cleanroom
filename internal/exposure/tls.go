@@ -305,15 +305,52 @@ func rejectLocalCertificateReplacement(path string) error {
 }
 
 func rejectLocalCertificateSymlinkPath(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
+	path = filepath.Clean(path)
+	if path == "" || path == "." {
 		return nil
 	}
-	if err != nil {
-		return err
+	ancestor := path
+	for {
+		info, err := os.Lstat(ancestor)
+		switch {
+		case err == nil:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%s contains symbolic link component %s", path, ancestor)
+			}
+			return rejectLocalCertificateSymlinkPathFromAncestor(path, ancestor)
+		case errors.Is(err, os.ErrNotExist):
+			parent := filepath.Dir(ancestor)
+			if parent == ancestor {
+				return nil
+			}
+			ancestor = parent
+		default:
+			return err
+		}
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s is a symbolic link", path)
+}
+
+func rejectLocalCertificateSymlinkPathFromAncestor(path, ancestor string) error {
+	rel, err := filepath.Rel(ancestor, path)
+	if err != nil || rel == "." {
+		return nil
+	}
+	current := ancestor
+	for _, elem := range strings.Split(rel, string(filepath.Separator)) {
+		if elem == "" || elem == "." {
+			continue
+		}
+		current = filepath.Join(current, elem)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s contains symbolic link component %s", path, current)
+		}
 	}
 	return nil
 }

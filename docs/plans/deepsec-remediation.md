@@ -122,12 +122,13 @@ MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.to
 Result: passed.
 
 Slice 4b is implemented and ready for review. Exposure certificate reads now
-reject symlinked certificate/key paths, verify the opened file still matches the
-inspected regular file, and write refreshed certificate material through a
-same-directory temporary file before rename. The privileged DNS installer also
-refuses to trust, remove trust for, or chown certificate paths when the invoking
-user's TLS directory path contains symlink components from the user's home or
-configured XDG config root, and it uses `lchown` for the ownership handoff.
+reject symlinked certificate/key paths and symlinked TLS path ancestors, verify
+the opened file still matches the inspected regular file, and write refreshed
+certificate material through a same-directory temporary file before rename. The
+privileged DNS installer also refuses to trust, remove trust for, or chown
+certificate paths when the invoking user's TLS directory path contains symlink
+components from the user's home or configured XDG config root, and it uses
+`lchown` for the ownership handoff.
 
 Focused validation run on 2026-05-27:
 
