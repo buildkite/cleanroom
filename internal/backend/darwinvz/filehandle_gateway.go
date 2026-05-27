@@ -51,6 +51,93 @@ const (
 
 var fileHandleDNSClientConfigFromFile = mdns.ClientConfigFromFile
 
+// From the IANA special-purpose address registries, with multicast and reserved
+// ranges included so host dials fail closed before policy checks.
+var fileHandleGatewayBlockedHostDialDestinationPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.31.196.0/24"),
+	netip.MustParsePrefix("192.52.193.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("192.175.48.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("::/128"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("::ffff:0:0/96"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("100:0:0:1::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:2::/48"),
+	netip.MustParsePrefix("2001:3::/32"),
+	netip.MustParsePrefix("2001:4:112::/48"),
+	netip.MustParsePrefix("2001:10::/28"),
+	netip.MustParsePrefix("2001:20::/28"),
+	netip.MustParsePrefix("2001:30::/28"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("2620:4f:8000::/48"),
+	netip.MustParsePrefix("3fff::/20"),
+	netip.MustParsePrefix("5f00::/16"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
+
+// From the IANA IPv6 global-unicast assignments. IPv6 destinations outside
+// these prefixes are currently reserved or unallocated.
+var fileHandleGatewayAllowedIPv6GlobalUnicastPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:200::/23"),
+	netip.MustParsePrefix("2001:400::/23"),
+	netip.MustParsePrefix("2001:600::/23"),
+	netip.MustParsePrefix("2001:800::/22"),
+	netip.MustParsePrefix("2001:c00::/23"),
+	netip.MustParsePrefix("2001:e00::/23"),
+	netip.MustParsePrefix("2001:1200::/23"),
+	netip.MustParsePrefix("2001:1400::/22"),
+	netip.MustParsePrefix("2001:1800::/23"),
+	netip.MustParsePrefix("2001:1a00::/23"),
+	netip.MustParsePrefix("2001:1c00::/22"),
+	netip.MustParsePrefix("2001:2000::/19"),
+	netip.MustParsePrefix("2001:4000::/23"),
+	netip.MustParsePrefix("2001:4200::/23"),
+	netip.MustParsePrefix("2001:4400::/23"),
+	netip.MustParsePrefix("2001:4600::/23"),
+	netip.MustParsePrefix("2001:4800::/23"),
+	netip.MustParsePrefix("2001:4a00::/23"),
+	netip.MustParsePrefix("2001:4c00::/23"),
+	netip.MustParsePrefix("2001:5000::/20"),
+	netip.MustParsePrefix("2001:8000::/19"),
+	netip.MustParsePrefix("2001:a000::/20"),
+	netip.MustParsePrefix("2001:b000::/20"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("2003::/18"),
+	netip.MustParsePrefix("2400::/12"),
+	netip.MustParsePrefix("2410::/12"),
+	netip.MustParsePrefix("2600::/12"),
+	netip.MustParsePrefix("2610::/23"),
+	netip.MustParsePrefix("2620::/23"),
+	netip.MustParsePrefix("2630::/12"),
+	netip.MustParsePrefix("2800::/12"),
+	netip.MustParsePrefix("2a00::/12"),
+	netip.MustParsePrefix("2a10::/12"),
+	netip.MustParsePrefix("2c00::/12"),
+}
+
 type fileHandleGatewayConfig struct {
 	RunDir          string
 	SandboxID       string
@@ -453,6 +540,23 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			r.Complete(true)
 			return
 		}
+		if !fileHandleGatewayAllowsHostDialDestination(destIP) {
+			msg := fmt.Sprintf("network connection blocked: unsafe destination %s:%d", destIP.String(), r.ID().LocalPort)
+			network.warnings.Emit(msg)
+			logFn := log.Info
+			if network.warnings.HasHandler() {
+				logFn = log.Debug
+			}
+			logFn("filehandle network connection blocked",
+				"sandbox_id", cfg.SandboxID,
+				"dest_host", destIP.String(),
+				"dest_port", r.ID().LocalPort,
+				"source_ip", sourceIP.String(),
+				"reason", "unsafe host-dial destination",
+			)
+			r.Complete(true)
+			return
+		}
 		conn := dnsproxy.Connection{
 			SandboxID:  cfg.SandboxID,
 			SourceIP:   sourceIP,
@@ -487,7 +591,8 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 		dialCtx, cancelDial := context.WithCancel(context.Background())
 		tracked, untrack := network.trackTCPProxyConnLocked(cancelDial)
 		network.activeMu.Unlock()
-		outbound, err := new(net.Dialer).DialContext(dialCtx, "tcp", fmt.Sprintf("%s:%d", destIP.String(), r.ID().LocalPort))
+		outboundAddr := net.JoinHostPort(destIP.String(), fmt.Sprint(r.ID().LocalPort))
+		outbound, err := new(net.Dialer).DialContext(dialCtx, "tcp", outboundAddr)
 		if err != nil {
 			untrack()
 			if dnsRuntime != nil {
@@ -533,6 +638,31 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
 	return network, nil
+}
+
+func fileHandleGatewayAllowsHostDialDestination(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return false
+	}
+	for _, prefix := range fileHandleGatewayBlockedHostDialDestinationPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	if addr.Is6() && !fileHandleGatewayAllowsIPv6GlobalUnicastDestination(addr) {
+		return false
+	}
+	return true
+}
+
+func fileHandleGatewayAllowsIPv6GlobalUnicastDestination(addr netip.Addr) bool {
+	for _, prefix := range fileHandleGatewayAllowedIPv6GlobalUnicastPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *fileHandleVirtualNetwork) AcceptVfkit(ctx context.Context, conn net.Conn) error {
