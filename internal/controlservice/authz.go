@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/authz"
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
@@ -138,7 +139,7 @@ func authDenied(decision authz.Decision) error {
 	return fmt.Errorf("%w: %s for %s on %s %q", ErrAuthorizationDenied, reason, decision.Action, decision.Resource.Kind, decision.Resource.ID)
 }
 
-func createSandboxAuthorizationRequest(backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, snapshotID string) map[string]any {
+func createSandboxAuthorizationRequest(backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, snapshotID string, effectiveResources policy.Resources) map[string]any {
 	request := map[string]any{
 		"backend": strings.TrimSpace(backendName),
 		"repository": map[string]any{
@@ -187,18 +188,12 @@ func createSandboxAuthorizationRequest(backendName string, compiled *policy.Comp
 		"digest": strings.TrimSpace(compiled.ImageDigest),
 	}
 	hosts, ports := policyNetworkHostsAndPorts(compiled)
-	resources := map[string]any{
-		"vcpus":        int64(0),
-		"memory_bytes": int64(0),
-		"disk_bytes":   int64(0),
-	}
-	if compiled.Resources != nil {
-		resources["vcpus"] = compiled.Resources.VCPUs
-		resources["memory_bytes"] = compiled.Resources.MemoryBytes
-		resources["disk_bytes"] = compiled.Resources.DiskBytes
-	}
 	request["policy"] = map[string]any{
-		"resources": resources,
+		"resources": map[string]any{
+			"vcpus":        effectiveResources.VCPUs,
+			"memory_bytes": effectiveResources.MemoryBytes,
+			"disk_bytes":   effectiveResources.DiskBytes,
+		},
 		"docker": map[string]any{
 			"required": compiled.Docker.Required,
 		},
@@ -212,6 +207,14 @@ func createSandboxAuthorizationRequest(backendName string, compiled *policy.Comp
 		"reuse": strings.TrimSpace(compiled.Dependencies.Reuse),
 	}
 	return request
+}
+
+func effectiveAuthorizationResources(cfg backend.FirecrackerConfig) policy.Resources {
+	return policy.Resources{
+		VCPUs:       cfg.VCPUs,
+		MemoryBytes: cfg.MemoryMiB * mibBytes,
+		DiskBytes:   cfg.MinimumRootFSBytes,
+	}
 }
 
 func policyNetworkHostsAndPorts(compiled *policy.CompiledPolicy) ([]string, []int) {

@@ -488,16 +488,6 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := validateRepositoryCommitBundleForCheckout(repository, commitBundle); err != nil {
 		return nil, err
 	}
-	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, repository, ""))
-	if err != nil {
-		return nil, err
-	}
-	if changesetRecord, err := s.persistRepositoryChangeset(ctx, repository, changeset); err != nil {
-		return nil, err
-	} else if strings.TrimSpace(changesetRecord.ChangesetID) != "" {
-		span.SetAttributes(attribute.String(observability.AttrRepositoryChangesetID, changesetRecord.ChangesetID))
-	}
-
 	opts := req.GetOptions()
 	execOpts := executionOptions{}
 	if opts != nil {
@@ -509,6 +499,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 	span.SetAttributes(rootFSMinimumTraceAttributes(firecrackerCfg)...)
+	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, repository, "", effectiveAuthorizationResources(firecrackerCfg)))
+	if err != nil {
+		return nil, err
+	}
+	if changesetRecord, err := s.persistRepositoryChangeset(ctx, repository, changeset); err != nil {
+		return nil, err
+	} else if strings.TrimSpace(changesetRecord.ChangesetID) != "" {
+		span.SetAttributes(attribute.String(observability.AttrRepositoryChangesetID, changesetRecord.ChangesetID))
+	}
 
 	var replacedWorkspaceStageRecord *cachestore.Record
 	var replacedDependencyStageRecord *cachestore.Record
@@ -988,7 +987,17 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 		return nil, fmt.Errorf("invalid snapshot policy: %w", err)
 	}
 	repository := repositorycheckout.FromProto(record.Repository)
-	request := createSandboxAuthorizationRequest(record.Backend, compiled, repository, snapshotID)
+	opts := req.GetOptions()
+	execOpts := executionOptions{}
+	if opts != nil {
+		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
+	}
+	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, record.Backend, execOpts.LaunchSeconds)
+	firecrackerCfg.RunDir = ""
+	firecrackerCfg = withPolicyResourceMinimums(firecrackerCfg, compiled.Resources)
+	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
+	firecrackerCfg = withSnapshotDriver(record.Backend, firecrackerCfg, record.StorageDriver)
+	request := createSandboxAuthorizationRequest(record.Backend, compiled, repository, snapshotID, effectiveAuthorizationResources(firecrackerCfg))
 	if _, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", request); err != nil {
 		return nil, err
 	}

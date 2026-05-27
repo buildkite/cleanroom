@@ -180,6 +180,45 @@ func TestAuthzSnapshotRestoreEvaluatesSandboxCreateAgainstSnapshotBackend(t *tes
 	}
 }
 
+func TestAuthzCreateEvaluatesEffectiveRuntimeResources(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{Firecracker: runtimeconfig.FirecrackerConfig{
+				VCPUs: 8,
+			}},
+		},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+	}
+	ctx := testAuthContextWithPolicy(t, "alice", authz.Policy{Bindings: []authz.Binding{{
+		Name: "test",
+		Principal: authz.PrincipalTemplate{
+			ID:    "oidc:${token.issuer}:${token.subject}",
+			Scope: "scope:${token.subject}",
+		},
+		Grants: []authz.Grant{{
+			Name:      "small-sandboxes",
+			Actions:   []string{"sandbox.create"},
+			Resources: []string{"sandbox"},
+			Condition: `request.policy.resources.vcpus <= 4`,
+		}},
+	}}})
+
+	_, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("CreateSandbox error = %v, want authorization denied", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("ProvisionSandbox calls = %d, want 0", got)
+	}
+}
+
 func TestAuthzDeniesOwnerlessSnapshotWhenAuthenticated(t *testing.T) {
 	store := newMemorySnapshotStore()
 	if err := store.Create(context.Background(), snapshotstoreRecord("snap-ownerless")); err != nil {
