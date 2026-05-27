@@ -85,6 +85,13 @@ type portDialAdapter struct {
 	dialFn       func(context.Context, string, int) (net.Conn, error)
 }
 
+type suspendablePortDialAdapter struct {
+	suspendableAdapter
+	dialMu    sync.Mutex
+	dialFn    func(context.Context, string, int) (net.Conn, error)
+	dialCalls int
+}
+
 type suspendableAdapter struct {
 	stubAdapter
 	capabilities   map[string]bool
@@ -119,6 +126,16 @@ func (s *suspendableAdapter) Capabilities() map[string]bool {
 }
 
 func (s *portDialAdapter) DialSandboxPort(ctx context.Context, sandboxID string, port int) (net.Conn, error) {
+	if s.dialFn != nil {
+		return s.dialFn(ctx, sandboxID, port)
+	}
+	return nil, errors.New("dial not configured")
+}
+
+func (s *suspendablePortDialAdapter) DialSandboxPort(ctx context.Context, sandboxID string, port int) (net.Conn, error) {
+	s.dialMu.Lock()
+	s.dialCalls++
+	s.dialMu.Unlock()
 	if s.dialFn != nil {
 		return s.dialFn(ctx, sandboxID, port)
 	}
@@ -1006,6 +1023,316 @@ func TestResumeSandboxBackendIndeterminateFailureLeavesSuspended(t *testing.T) {
 	}
 	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
 		t.Fatalf("unexpected sandbox status after indeterminate resume: got %v want %v", got, want)
+	}
+}
+
+func TestCreateExecutionWakesSuspendedSandbox(t *testing.T) {
+	adapter := &suspendableAdapter{}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	execResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "awake"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	waitExecutionDone(t, svc, sandboxID, execResp.GetExecution().GetExecutionId())
+
+	if got, want := adapter.resumeCalls, 1; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 1; got != want {
+		t.Fatalf("unexpected run calls: got %d want %d", got, want)
+	}
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+		t.Fatalf("unexpected sandbox status after transparent wake: got %v want %v", got, want)
+	}
+}
+
+func TestReadSandboxFileWakesSuspendedSandbox(t *testing.T) {
+	adapter := &suspendableAdapter{
+		stubAdapter: stubAdapter{
+			readFn: func(_ context.Context, _ string, path string, _ int64, emit func([]byte) error) error {
+				if path != "/tmp/marker" {
+					t.Fatalf("unexpected read path: got %q want /tmp/marker", path)
+				}
+				return emit([]byte("awake"))
+			},
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	var chunks [][]byte
+	err = svc.ReadSandboxFile(context.Background(), &cleanroomv1.ReadSandboxFileRequest{
+		SandboxId: sandboxID,
+		Path:      "/tmp/marker",
+	}, func(resp *cleanroomv1.ReadSandboxFileResponse) error {
+		chunks = append(chunks, append([]byte(nil), resp.GetData()...))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ReadSandboxFile returned error: %v", err)
+	}
+	if got, want := adapter.resumeCalls, 1; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	if got, want := string(bytes.Join(chunks, nil)), "awake"; got != want {
+		t.Fatalf("unexpected read data: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSnapshotWakesSuspendedSandbox(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &suspendableAdapter{
+		stubAdapter: stubAdapter{
+			createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+				return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+			},
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sandboxID,
+		Name:      "after-wake",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	if snapshotResp.GetSnapshot() == nil {
+		t.Fatal("expected snapshot in response")
+	}
+	if got, want := adapter.resumeCalls, 1; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected snapshot calls: got %d want %d", got, want)
+	}
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+		t.Fatalf("unexpected sandbox status after snapshot: got %v want %v", got, want)
+	}
+}
+
+func TestDialSandboxPortWakesSuspendedSandbox(t *testing.T) {
+	adapter := &suspendablePortDialAdapter{
+		dialFn: func(context.Context, string, int) (net.Conn, error) {
+			serverConn, clientConn := net.Pipe()
+			_ = serverConn.Close()
+			return clientConn, nil
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	conn, err := svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+		SandboxId: sandboxID,
+		GuestPort: 3000,
+	})
+	if err != nil {
+		t.Fatalf("DialSandboxPort returned error: %v", err)
+	}
+	_ = conn.Close()
+	if got, want := adapter.resumeCalls, 1; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.dialCalls, 1; got != want {
+		t.Fatalf("unexpected dial calls: got %d want %d", got, want)
+	}
+}
+
+func TestDialSandboxPortHoldsGuestInteractionLease(t *testing.T) {
+	var serverConn net.Conn
+	adapter := &suspendablePortDialAdapter{
+		dialFn: func(context.Context, string, int) (net.Conn, error) {
+			server, client := net.Pipe()
+			serverConn = server
+			return client, nil
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	conn, err := svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+		SandboxId: sandboxID,
+		GuestPort: 3000,
+	})
+	if err != nil {
+		t.Fatalf("DialSandboxPort returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+		if serverConn != nil {
+			_ = serverConn.Close()
+		}
+	})
+
+	svc.mu.RLock()
+	activeInteractions := svc.sandboxes[sandboxID].GuestInteractionCount
+	svc.mu.RUnlock()
+	if got, want := activeInteractions, 1; got != want {
+		t.Fatalf("unexpected active guest interactions: got %d want %d", got, want)
+	}
+	_, err = svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID})
+	if err == nil {
+		t.Fatal("expected SuspendSandbox to reject active guest interaction")
+	}
+	if !strings.Contains(err.Error(), "active guest interactions") {
+		t.Fatalf("unexpected SuspendSandbox error: %v", err)
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("port connection close returned error: %v", err)
+	}
+	svc.mu.RLock()
+	activeInteractions = svc.sandboxes[sandboxID].GuestInteractionCount
+	svc.mu.RUnlock()
+	if got, want := activeInteractions, 0; got != want {
+		t.Fatalf("unexpected active guest interactions after close: got %d want %d", got, want)
+	}
+}
+
+func TestDialSandboxPortUnsupportedBackendDoesNotWakeSuspendedSandbox(t *testing.T) {
+	adapter := &suspendableAdapter{
+		resumeFn: func(context.Context, string) error {
+			return errors.New("unexpected wake")
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	_, err = svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+		SandboxId: sandboxID,
+		GuestPort: 3000,
+	})
+	if err == nil {
+		t.Fatal("expected DialSandboxPort to reject unsupported backend")
+	}
+	if !strings.Contains(err.Error(), "does not support sandbox port dialing") {
+		t.Fatalf("unexpected DialSandboxPort error: %v", err)
+	}
+	if got, want := adapter.resumeCalls, 0; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
+		t.Fatalf("unexpected sandbox status after rejected port dial: got %v want %v", got, want)
+	}
+}
+
+func TestConcurrentWakeAttemptsCoalesce(t *testing.T) {
+	resumeStarted := make(chan struct{})
+	releaseResume := make(chan struct{})
+	var resumeStartedOnce sync.Once
+	adapter := &suspendablePortDialAdapter{}
+	adapter.resumeFn = func(context.Context, string) error {
+		resumeStartedOnce.Do(func() { close(resumeStarted) })
+		<-releaseResume
+		return nil
+	}
+	adapter.dialFn = func(context.Context, string, int) (net.Conn, error) {
+		serverConn, clientConn := net.Pipe()
+		_ = serverConn.Close()
+		return clientConn, nil
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	const callers = 5
+	start := make(chan struct{})
+	errCh := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			conn, err := svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+				SandboxId: sandboxID,
+				GuestPort: 3000,
+			})
+			if conn != nil {
+				_ = conn.Close()
+			}
+			errCh <- err
+		}()
+	}
+	close(start)
+	select {
+	case <-resumeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for resume to start")
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(releaseResume)
+	for i := 0; i < callers; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("DialSandboxPort caller %d returned error: %v", i+1, err)
+		}
+	}
+	if got, want := adapter.resumeCalls, 1; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.dialCalls, callers; got != want {
+		t.Fatalf("unexpected dial calls: got %d want %d", got, want)
 	}
 }
 
@@ -10063,5 +10390,21 @@ func collectExecutionEvents(t *testing.T, history []*cleanroomv1.ExecutionStream
 		case <-timer.C:
 			t.Fatalf("timed out collecting execution events")
 		}
+	}
+}
+
+func waitExecutionDone(t *testing.T, svc *Service, sandboxID, executionID string) {
+	t.Helper()
+	key := executionKey(sandboxID, executionID)
+	svc.mu.RLock()
+	ex := svc.executions[key]
+	svc.mu.RUnlock()
+	if ex == nil {
+		t.Fatalf("unknown execution %s", executionID)
+	}
+	select {
+	case <-ex.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for execution %s", executionID)
 	}
 }

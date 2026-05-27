@@ -1,7 +1,7 @@
 # Transparent Sandbox Suspend And Wake Plan
 
 **Status:** Active
-**Last reviewed:** 2026-05-24
+**Last reviewed:** 2026-05-27
 **Spec references:** `docs/api.md`, `docs/snapshots.md`, `docs/backend/darwin-vz.md`
 **Related plans:** `docs/plans/system-storage-prune.md`, `docs/plans/layered-caching.md`
 
@@ -99,14 +99,20 @@ changing guest bootstrap, repository bootstrap, or snapshot storage.
 
 ## Current Progress
 
-Slice 1 has been implemented in this change: lifecycle statuses, backend
-capability inference, explicit suspend/resume RPCs, control-client and
-control-server plumbing, manual CLI commands, `darwin-vz` helper calls, and
-focused unit and integration tests.
+Slice 1 has landed: lifecycle statuses, backend capability inference, explicit
+suspend/resume RPCs, control-client and control-server plumbing, manual CLI
+commands, `darwin-vz` helper calls, and focused unit and integration tests.
 
-Transparent wake gates, the idle suspend scheduler, runtime config, metrics,
-real installed-daemon smoke tests, and Firecracker support remain follow-up
-slices.
+Slice 2 is implemented in this change: guest-touching operations now wake
+suspended sandboxes before execution, file transfer, snapshot creation, or
+sandbox port dialing. Client-side local exposure registration also accepts a
+suspended sandbox when the backend advertises suspend and port-dial support, so
+the incoming connection wakes through `DialSandboxPort`. Active port dials hold
+a guest-interaction lease so later idle-suspend work has a concrete busy marker
+for open tunnels.
+
+The idle suspend scheduler, runtime config, metrics, real installed-daemon
+smoke tests, and Firecracker support remain follow-up slices.
 
 ## Target Lifecycle Model
 
