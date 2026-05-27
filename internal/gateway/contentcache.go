@@ -212,7 +212,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	cache := &ContentCache{
 		closer:         db,
 		gitHandlers:    make(map[string]http.Handler),
-		ociHandlers:    make(map[string]ociHandlerEntry),
+		ociHandlers:    make(map[string]*ociHandlerEntry),
 		maxOCIHandlers: defaultMaxOCIHandlers,
 		ociMirrorHosts: ociMirrorHosts(cfg.OCIRegistries),
 	}

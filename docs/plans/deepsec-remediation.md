@@ -185,13 +185,21 @@ Result: passed.
 Slice 6b is implemented and ready for review. OCI registry handler creation is
 now bounded by a small LRU cache, so request-controlled registry prefixes cannot
 grow one handler per prefix for the lifetime of the daemon. Cache hits refresh
-recency, evicted handlers have their closers released outside the cache lock,
-and normal registry prefix reuse keeps the existing handler.
+recency, evicted handlers are removed from the cache immediately, and handler
+closers run only after outstanding requests release their leases.
 
 Focused validation run on 2026-05-27:
 
 ```text
-MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
 ```
 
 Result: passed.

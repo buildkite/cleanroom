@@ -281,7 +281,7 @@ func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {
 
 	var closed []string
 	cache := &ContentCache{
-		ociHandlers:    make(map[string]ociHandlerEntry),
+		ociHandlers:    make(map[string]*ociHandlerEntry),
 		maxOCIHandlers: 2,
 		buildOCIHandler: func(prefix string) (ociHandlerEntry, error) {
 			return ociHandlerEntry{
@@ -293,21 +293,23 @@ func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {
 		},
 	}
 
-	handlerA, err := cache.OCIHandlerForPrefix("registry-a.test")
+	handlerA, releaseA, err := cache.OCIHandlerForPrefix("registry-a.test")
 	if err != nil {
 		t.Fatalf("handler A: %v", err)
 	}
-	if _, err := cache.OCIHandlerForPrefix("registry-b.test"); err != nil {
+	_, releaseB, err := cache.OCIHandlerForPrefix("registry-b.test")
+	if err != nil {
 		t.Fatalf("handler B: %v", err)
 	}
-	reusedA, err := cache.OCIHandlerForPrefix("registry-a.test")
+	reusedA, releaseReusedA, err := cache.OCIHandlerForPrefix("registry-a.test")
 	if err != nil {
 		t.Fatalf("reused handler A: %v", err)
 	}
 	if reusedA != handlerA {
 		t.Fatal("expected registry-a handler to be reused before eviction")
 	}
-	if _, err := cache.OCIHandlerForPrefix("registry-c.test"); err != nil {
+	_, releaseC, err := cache.OCIHandlerForPrefix("registry-c.test")
+	if err != nil {
 		t.Fatalf("handler C: %v", err)
 	}
 
@@ -323,7 +325,14 @@ func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	if _, ok := cache.ociHandlers["registry-b.test"]; ok {
 		t.Fatal("expected registry-b to be evicted")
 	}
+	if len(closed) != 0 {
+		t.Fatalf("expected active registry-b handler to stay open until release, got %v", closed)
+	}
+	releaseB()
 	if !slices.Equal(closed, []string{"registry-b.test"}) {
 		t.Fatalf("expected registry-b closer to run, got %v", closed)
 	}
+	releaseA()
+	releaseReusedA()
+	releaseC()
 }
