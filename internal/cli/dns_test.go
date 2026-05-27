@@ -197,6 +197,41 @@ func TestDNSInstallRejectsSymlinkedCertificateBeforeTrust(t *testing.T) {
 	}
 }
 
+func TestDNSInstallRejectsSymlinkedKeyBeforeTrustRemoval(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	tlsDir := filepath.Join(home, ".config", "cleanroom", "tls")
+	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
+	if err != nil {
+		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
+	}
+	if err := os.Remove(cert.KeyPath); err != nil {
+		t.Fatalf("remove generated key: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.key")
+	if err := os.WriteFile(outside, []byte("do not read"), 0o600); err != nil {
+		t.Fatalf("write outside key: %v", err)
+	}
+	if err := os.Symlink(outside, cert.KeyPath); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	err = cmd.Run(&runtimeContext{Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected symlinked key error")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no trust commands for symlinked key, got %v", calls)
+	}
+}
+
 func TestDNSInstallRejectsSymlinkedTLSParentBeforeWrite(t *testing.T) {
 	home := t.TempDir()
 	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)

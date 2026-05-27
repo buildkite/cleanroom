@@ -98,12 +98,22 @@ func (c *DNSCommand) installDNS(ctx *runtimeContext) error {
 		return err
 	}
 	certPath := filepath.Join(tlsDir, exposure.LocalCertificateFilename)
-	if _, err := dnsInstallReadRegularFile(certPath); err == nil {
+	certExists, err := dnsInstallRegularFileExists(certPath)
+	if err != nil {
+		return fmt.Errorf("read exposure certificate %s: %w", certPath, err)
+	}
+	if certExists {
+		keyPath := filepath.Join(tlsDir, exposure.LocalCertificateKeyFilename)
+		keyExists, err := dnsInstallRegularFileExists(keyPath)
+		if err != nil {
+			return fmt.Errorf("read exposure certificate key %s: %w", keyPath, err)
+		}
+		if !keyExists {
+			return fmt.Errorf("read exposure certificate key %s: %w", keyPath, fs.ErrNotExist)
+		}
 		if err := removeExposureCertificateTrust(certPath); err != nil {
 			return err
 		}
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("read exposure certificate %s: %w", certPath, err)
 	}
 	parentDirs := exposureTLSParentDirsToChown(tlsDir)
 	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
@@ -480,6 +490,16 @@ func dnsInstallReadRegularFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
 	return dnsInstallReadRegularFileMatchingInfo(path, info)
+}
+
+func dnsInstallRegularFileExists(path string) (bool, error) {
+	if _, err := dnsInstallReadRegularFile(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func dnsInstallReadRegularFileMatchingInfo(path string, info os.FileInfo) ([]byte, error) {
