@@ -2723,6 +2723,84 @@ func TestCreateSnapshotRejectsDisabledSnapshots(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotUnsupportedBackendDoesNotWakeSuspendedSandbox(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &suspendOnlyAdapter{
+		resumeFn: func(context.Context, string) error {
+			return errors.New("unexpected wake")
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	_, err = svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{SandboxId: sandboxID})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to reject unsupported backend")
+	}
+	if !strings.Contains(err.Error(), "does not support snapshots") {
+		t.Fatalf("unexpected CreateSnapshot error: %v", err)
+	}
+	if got, want := adapter.resumeCalls, 0; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+}
+
+func TestCreateSnapshotDisabledBackendDoesNotWakeSuspendedSandbox(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &suspendableAdapter{
+		resumeFn: func(context.Context, string) error {
+			return errors.New("unexpected wake")
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.Config.Backends.Firecracker.Snapshots.Enabled = false
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+
+	_, err = svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{SandboxId: sandboxID})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to reject disabled snapshots")
+	}
+	if !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("unexpected CreateSnapshot error: %v", err)
+	}
+	if got, want := adapter.resumeCalls, 0; got != want {
+		t.Fatalf("unexpected resume calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 0; got != want {
+		t.Fatalf("unexpected snapshot calls: got %d want %d", got, want)
+	}
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+}
+
 func TestCreateSnapshotAllowsWorkspaceStageLikeNames(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{}

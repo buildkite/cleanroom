@@ -1299,6 +1299,9 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		snapshotAdapter backend.SnapshottingAdapter
 	)
 
+	if err := s.ensureSandboxSnapshotSupported(sandboxID); err != nil {
+		return nil, err
+	}
 	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
 		return nil, err
 	}
@@ -1490,6 +1493,41 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 		Deleted:    true,
 		Message:    "snapshot deleted",
 	}, nil
+}
+
+func (s *Service) ensureSandboxSnapshotSupported(sandboxID string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	switch state.Status {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDED,
+		cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING:
+	default:
+		return fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	capabilities := state.Capabilities
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[backend.CapabilitySandboxSnapshot] {
+		return fmt.Errorf("backend %q does not support snapshots", state.Backend)
+	}
+	if _, ok := adapter.(backend.SnapshottingAdapter); !ok {
+		return fmt.Errorf("backend %q does not support snapshots", state.Backend)
+	}
+	if !snapshotOperationsEnabledForBackend(state.Backend, s.Config) {
+		return fmt.Errorf("snapshots are not enabled for backend %q", state.Backend)
+	}
+	return nil
 }
 
 func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.DownloadSandboxFileRequest) (*cleanroomv1.DownloadSandboxFileResponse, error) {
