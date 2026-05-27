@@ -52,6 +52,7 @@ type runtimeContext struct {
 }
 
 type CLI struct {
+	Auth        AuthCommand        `cmd:"" help:"Authentication and authorization diagnostics"`
 	Policy      PolicyCommand      `cmd:"" help:"Policy commands"`
 	Config      ConfigCommand      `cmd:"" help:"Runtime config commands"`
 	Image       ImageCommand       `cmd:"" help:"Manage OCI image cache artifacts"`
@@ -202,7 +203,7 @@ func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
 
 	command := strings.TrimSpace(ctx.Command())
 	switch command {
-	case "config init", "config validate", "image resolve", "version":
+	case "auth check", "config init", "config validate", "image resolve", "version":
 		return true
 	default:
 		return strings.HasPrefix(command, "image resolve ")

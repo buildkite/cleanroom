@@ -12,6 +12,8 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/florianl/go-nflog/v2 v2.3.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/cel-go v0.28.1
 	github.com/google/go-containerregistry v0.21.6
 	github.com/inetaf/tcpproxy v0.0.0-20260515195445-c159a6051109
 	github.com/mdlayher/netlink v1.11.2
@@ -42,13 +44,15 @@ require (
 )
 
 require (
+	cel.dev/expr v0.25.1 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20251205161215-1948445e3318 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
+	go.yaml.in/yaml/v3 v3.0.4 // indirect
 )
 
 require (

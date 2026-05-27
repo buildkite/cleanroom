@@ -162,6 +162,33 @@ func TestConfigValidateParses(t *testing.T) {
 	}
 }
 
+func TestAuthCheckParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"auth", "check", "--config", "./config.yaml", "--policy-file", "./auth-policy.yaml", "--token-file", "./token.jwt", "--action", "sandbox.create", "--request", "./request.json", "--json"}); err != nil {
+		t.Fatalf("parse auth check returned error: %v", err)
+	}
+	if got, want := c.Auth.Check.Config, "./config.yaml"; got != want {
+		t.Fatalf("unexpected auth check config: got %q want %q", got, want)
+	}
+	if got, want := c.Auth.Check.PolicyFile, "./auth-policy.yaml"; got != want {
+		t.Fatalf("unexpected auth check policy file: got %q want %q", got, want)
+	}
+	if got, want := c.Auth.Check.TokenFile, "./token.jwt"; got != want {
+		t.Fatalf("unexpected auth check token file: got %q want %q", got, want)
+	}
+	if got, want := c.Auth.Check.Action, "sandbox.create"; got != want {
+		t.Fatalf("unexpected auth check action: got %q want %q", got, want)
+	}
+	if got, want := c.Auth.Check.Request, "./request.json"; got != want {
+		t.Fatalf("unexpected auth check request: got %q want %q", got, want)
+	}
+	if !c.Auth.Check.JSON {
+		t.Fatal("expected auth check --json flag to be set")
+	}
+}
+
 func TestSnapshotInspectParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
