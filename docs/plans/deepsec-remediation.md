@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 6a ready for review
+**Status:** Slice 6b ready for review
 **Last reviewed:** 2026-05-27
 
 ## Summary
@@ -164,8 +164,7 @@ URL path field injection finding without changing normal HTTPS repository
 credential lookup behavior.
 
 The remaining Slice 6 cache authorization findings for git pack responses,
-fetch cache hits, Go proxy cache hits, and OCI handler allocation remain follow-up
-work.
+fetch cache hits, and Go proxy cache hits remain follow-up work.
 
 Focused validation run on 2026-05-27:
 
@@ -179,6 +178,28 @@ Repository validation run on 2026-05-27:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Slice 6b is implemented and ready for review. OCI registry handler creation is
+now bounded by a small LRU cache, so request-controlled registry prefixes cannot
+grow one handler per prefix for the lifetime of the daemon. Cache hits refresh
+recency, evicted handlers are removed from the cache immediately, and handler
+closers run only after outstanding requests release their leases.
+
+Focused validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
 ```
 
 Result: passed.

@@ -78,7 +78,7 @@ func (h *dockerHubMirrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	cacheHandler, err := h.cache.OCIHandlerForPrefix(dockerHubMirrorPrefix)
+	cacheHandler, releaseHandler, err := h.cache.OCIHandlerForPrefix(dockerHubMirrorPrefix)
 	if err != nil {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUnknownRegistryPrefix)
 		span.RecordError(err)
@@ -92,6 +92,7 @@ func (h *dockerHubMirrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		writeReasonError(w, http.StatusNotFound, reasonUnknownRegistryPrefix, "docker hub mirror is not configured")
 		return
 	}
+	defer releaseHandler()
 
 	span.SetAttributes(
 		attribute.String(observability.AttrGatewayAction, gatewayActionAllow),

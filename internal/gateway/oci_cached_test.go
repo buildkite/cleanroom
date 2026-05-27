@@ -30,13 +30,13 @@ func (s *stubRegistryPrefixHandlerProvider) OCIUpstreamForPrefix(prefix string) 
 	return s.policyHost, s.policyPort, s.upstreamHost, s.upstreamPort, nil
 }
 
-func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, error) {
+func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, func(), error) {
 	s.prefix = prefix
 	s.handlerCalls++
 	if s.err != nil {
-		return nil, s.err
+		return nil, nil, s.err
 	}
-	return s.handler, nil
+	return s.handler, func() {}, nil
 }
 
 func registryTestScope(allowedHosts ...string) *SandboxScope {

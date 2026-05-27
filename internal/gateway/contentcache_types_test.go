@@ -275,3 +275,64 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 		t.Fatalf("expected policy-b closer to run, got %v", closed)
 	}
 }
+
+func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	cache := &ContentCache{
+		ociHandlers:    make(map[string]*ociHandlerEntry),
+		maxOCIHandlers: 2,
+		buildOCIHandler: func(prefix string) (ociHandlerEntry, error) {
+			return ociHandlerEntry{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, prefix)
+				}),
+			}, nil
+		},
+	}
+
+	handlerA, releaseA, err := cache.OCIHandlerForPrefix("registry-a.test")
+	if err != nil {
+		t.Fatalf("handler A: %v", err)
+	}
+	_, releaseB, err := cache.OCIHandlerForPrefix("registry-b.test")
+	if err != nil {
+		t.Fatalf("handler B: %v", err)
+	}
+	reusedA, releaseReusedA, err := cache.OCIHandlerForPrefix("registry-a.test")
+	if err != nil {
+		t.Fatalf("reused handler A: %v", err)
+	}
+	if reusedA != handlerA {
+		t.Fatal("expected registry-a handler to be reused before eviction")
+	}
+	_, releaseC, err := cache.OCIHandlerForPrefix("registry-c.test")
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+
+	if got, want := len(cache.ociHandlers), 2; got != want {
+		t.Fatalf("expected %d cached handlers, got %d", want, got)
+	}
+	if _, ok := cache.ociHandlers["registry-a.test"]; !ok {
+		t.Fatal("expected registry-a to remain cached after recent reuse")
+	}
+	if _, ok := cache.ociHandlers["registry-c.test"]; !ok {
+		t.Fatal("expected registry-c to be cached")
+	}
+	if _, ok := cache.ociHandlers["registry-b.test"]; ok {
+		t.Fatal("expected registry-b to be evicted")
+	}
+	if len(closed) != 0 {
+		t.Fatalf("expected active registry-b handler to stay open until release, got %v", closed)
+	}
+	releaseB()
+	if !slices.Equal(closed, []string{"registry-b.test"}) {
+		t.Fatalf("expected registry-b closer to run, got %v", closed)
+	}
+	releaseA()
+	releaseReusedA()
+	releaseC()
+}

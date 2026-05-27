@@ -16,7 +16,10 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
-const defaultMaxGoProxyScopedHandlers = 32
+const (
+	defaultMaxGoProxyScopedHandlers = 32
+	defaultMaxOCIHandlers           = 32
+)
 
 type gitHandlerFactory func(host string) (http.Handler, error)
 
@@ -31,6 +34,8 @@ type ociHandlerEntry struct {
 	upstreamHost string
 	upstreamPort int
 	closer       io.Closer
+	active       int
+	evicted      bool
 }
 
 type goProxyScopedHandler struct {
@@ -84,7 +89,9 @@ type ContentCache struct {
 	buildGitHandler gitHandlerFactory
 
 	ociMu           sync.Mutex
-	ociHandlers     map[string]ociHandlerEntry
+	ociHandlers     map[string]*ociHandlerEntry
+	ociOrder        []string
+	maxOCIHandlers  int
 	buildOCIHandler ociHandlerFactory
 	resolveOCIRoute ociRouteResolver
 	ociMirrorHosts  []string
@@ -370,29 +377,100 @@ func (c *ContentCache) OCIUpstreamForPrefix(prefix string) (string, int, string,
 
 // OCIHandlerForPrefix returns an OCI cache handler for the requested registry
 // prefix, creating and caching it on first use.
-func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, error) {
+func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, func(), error) {
 	if c == nil || c.buildOCIHandler == nil {
-		return nil, errors.New("oci cache not configured")
+		return nil, nil, errors.New("oci cache not configured")
 	}
 
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	if prefix == "" {
-		return nil, errors.New("empty registry prefix")
+		return nil, nil, errors.New("empty registry prefix")
 	}
 
 	c.ociMu.Lock()
-	defer c.ociMu.Unlock()
-
 	if entry, ok := c.ociHandlers[prefix]; ok {
-		return entry.handler, nil
+		entry.active++
+		c.touchOCIHandlerLocked(prefix)
+		release := c.releaseOCIHandler(entry)
+		c.ociMu.Unlock()
+		return entry.handler, release, nil
 	}
 
-	entry, err := c.buildOCIHandler(prefix)
+	entryValue, err := c.buildOCIHandler(prefix)
 	if err != nil {
-		return nil, err
+		c.ociMu.Unlock()
+		return nil, nil, err
 	}
+	if c.ociHandlers == nil {
+		c.ociHandlers = make(map[string]*ociHandlerEntry)
+	}
+	entry := &entryValue
+	entry.active = 1
 	c.ociHandlers[prefix] = entry
-	return entry.handler, nil
+	c.touchOCIHandlerLocked(prefix)
+	evicted := c.evictOCIHandlerLocked()
+	release := c.releaseOCIHandler(entry)
+	c.ociMu.Unlock()
+	if evicted != nil {
+		_ = evicted.Close()
+	}
+	return entry.handler, release, nil
+}
+
+func (c *ContentCache) touchOCIHandlerLocked(prefix string) {
+	for i, existing := range c.ociOrder {
+		if existing != prefix {
+			continue
+		}
+		copy(c.ociOrder[i:], c.ociOrder[i+1:])
+		c.ociOrder = c.ociOrder[:len(c.ociOrder)-1]
+		break
+	}
+	c.ociOrder = append(c.ociOrder, prefix)
+}
+
+func (c *ContentCache) evictOCIHandlerLocked() io.Closer {
+	maxHandlers := c.maxOCIHandlers
+	if maxHandlers <= 0 {
+		maxHandlers = defaultMaxOCIHandlers
+	}
+	if len(c.ociOrder) <= maxHandlers {
+		return nil
+	}
+
+	evictedPrefix := c.ociOrder[0]
+	c.ociOrder = c.ociOrder[1:]
+	entry, ok := c.ociHandlers[evictedPrefix]
+	if !ok {
+		return nil
+	}
+	delete(c.ociHandlers, evictedPrefix)
+	if entry.active > 0 {
+		entry.evicted = true
+		return nil
+	}
+	return entry.closer
+}
+
+func (c *ContentCache) releaseOCIHandler(entry *ociHandlerEntry) func() {
+	var once sync.Once
+	return func() {
+		var closer io.Closer
+		once.Do(func() {
+			c.ociMu.Lock()
+			if entry.active > 0 {
+				entry.active--
+			}
+			if entry.active == 0 && entry.evicted {
+				closer = entry.closer
+				entry.closer = nil
+			}
+			c.ociMu.Unlock()
+		})
+		if closer != nil {
+			_ = closer.Close()
+		}
+	}
 }
 
 // registryHostname extracts the hostname from a registry URL for policy checks.
