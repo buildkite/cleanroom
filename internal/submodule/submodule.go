@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
 type WorktreeSubmodule struct {
@@ -134,9 +136,9 @@ func ListMirrorSubmodulesAtCommit(ctx context.Context, parentMirrorDir, parentRe
 			return nil, err
 		}
 
-		resolvedURL, err := ResolveSubmoduleURL(parentRemoteURL, entry.URL)
+		resolvedURL, err := ResolveMirrorSubmoduleURL(parentRemoteURL, entry.URL)
 		if err != nil {
-			return nil, fmt.Errorf("resolve submodule URL for %q: %w", entry.Path, err)
+			return nil, fmt.Errorf("validate mirror submodule URL for %q: %w", entry.Path, err)
 		}
 
 		mirrorDir, err := ensureMirror(ctx, resolvedURL, gitlinkSHA)
@@ -194,9 +196,9 @@ func ListMirrorSubmodulesAtIndex(ctx context.Context, repoRoot string, env []str
 			return nil, err
 		}
 
-		resolvedURL, err := ResolveSubmoduleURL(parentRemoteURL, entry.URL)
+		resolvedURL, err := ResolveMirrorSubmoduleURL(parentRemoteURL, entry.URL)
 		if err != nil {
-			return nil, fmt.Errorf("resolve submodule URL for %q: %w", entry.Path, err)
+			return nil, fmt.Errorf("validate mirror submodule URL for %q: %w", entry.Path, err)
 		}
 
 		mirrorDir, err := ensureMirror(ctx, resolvedURL, gitlinkSHA)
@@ -334,6 +336,25 @@ func ResolveSubmoduleURL(parentRemoteURL, submoduleURL string) (string, error) {
 			return scheme + base + string(sep) + submoduleURL, nil
 		}
 	}
+}
+
+func ResolveMirrorSubmoduleURL(parentRemoteURL, submoduleURL string) (string, error) {
+	resolved, err := ResolveSubmoduleURL(parentRemoteURL, submoduleURL)
+	if err != nil {
+		return "", err
+	}
+	_, parentHost, err := repositorycheckout.CanonicalizeRemoteURL(parentRemoteURL)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize parent remote: %w", err)
+	}
+	canonicalSubmoduleURL, submoduleHost, err := repositorycheckout.CanonicalizeRemoteURL(resolved)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize submodule remote: %w", err)
+	}
+	if submoduleHost != parentHost {
+		return "", fmt.Errorf("submodule remote host %q does not match parent repository host %q", submoduleHost, parentHost)
+	}
+	return canonicalSubmoduleURL, nil
 }
 
 func splitNullTerminated(data []byte) []string {

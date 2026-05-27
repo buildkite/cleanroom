@@ -35,7 +35,8 @@ func headCommit(t *testing.T, dir string) string {
 func TestListMirrorSubmodulesAtCommit(t *testing.T) {
 	subDir := initSubmoduleRepo(t)
 	subMirrorDir := initBareMirror(t, subDir)
-	subURL := "https://example.com/sub.git"
+	parentURL := "https://example.com/org/super.git"
+	subURL := "https://example.com/org/sub.git"
 
 	superDir := t.TempDir()
 	runGit(t, superDir, "init")
@@ -56,7 +57,7 @@ func TestListMirrorSubmodulesAtCommit(t *testing.T) {
 		return subMirrorDir, nil
 	}
 
-	subs, err := ListMirrorSubmodulesAtCommit(context.Background(), superMirrorDir, "", commitSHA, ensureMirror)
+	subs, err := ListMirrorSubmodulesAtCommit(context.Background(), superMirrorDir, parentURL, commitSHA, ensureMirror)
 	if err != nil {
 		t.Fatalf("ListMirrorSubmodulesAtCommit returned error: %v", err)
 	}

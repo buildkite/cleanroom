@@ -727,6 +727,52 @@ func sha256Hex(data []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+func TestResolveSubmoduleDigestsSeparatesMirrorCommits(t *testing.T) {
+	repoDir := initGitRepository(t)
+
+	firstContent := []byte("first\n")
+	if err := os.WriteFile(filepath.Join(repoDir, "shared.txt"), firstContent, 0o644); err != nil {
+		t.Fatalf("write first shared.txt: %v", err)
+	}
+	runGit(t, repoDir, "add", "shared.txt")
+	runGit(t, repoDir, "commit", "-m", "first shared")
+	firstSHA := headCommit(t, repoDir)
+
+	secondContent := []byte("second\n")
+	if err := os.WriteFile(filepath.Join(repoDir, "shared.txt"), secondContent, 0o644); err != nil {
+		t.Fatalf("write second shared.txt: %v", err)
+	}
+	runGit(t, repoDir, "add", "shared.txt")
+	runGit(t, repoDir, "commit", "-m", "second shared")
+	secondSHA := headCommit(t, repoDir)
+
+	subs := submoduleSet{
+		{Path: "vendor/first", SourceDir: repoDir, GitlinkSHA: firstSHA},
+		{Path: "vendor/second", SourceDir: repoDir, GitlinkSHA: secondSHA},
+	}
+	subFiles, _, subDigests, err := resolveSubmoduleDigests(subs, []string{
+		"vendor/first/shared.txt",
+		"vendor/second/shared.txt",
+	})
+	if err != nil {
+		t.Fatalf("resolveSubmoduleDigests: %v", err)
+	}
+
+	for path, wantDigest := range map[string]string{
+		"vendor/first/shared.txt":  sha256Hex(firstContent),
+		"vendor/second/shared.txt": sha256Hex(secondContent),
+	} {
+		key, ok := subFiles[path]
+		if !ok {
+			t.Fatalf("missing submodule resolution key for %q", path)
+		}
+		got := subDigests[key.source][key.strippedPath]
+		if got != wantDigest {
+			t.Fatalf("wrong digest for %q: got %q want %q", path, got, wantDigest)
+		}
+	}
+}
+
 func TestDigestRegularFilesFromBaseExpandsSubmoduleGlob(t *testing.T) {
 	superDir, subDir := initGitRepositoryWithSubmodule(t)
 
@@ -772,7 +818,7 @@ func TestDigestRegularFilesFromBaseExpandsSubmoduleGlob(t *testing.T) {
 	}
 
 	wantFiles := map[string][]byte{
-		"vendor/emojis/README.md":  []byte("submodule\n"),
+		"vendor/emojis/README.md":   []byte("submodule\n"),
 		"vendor/emojis/emoji1.json": subContents["emoji1.json"],
 		"vendor/emojis/emoji2.json": subContents["emoji2.json"],
 		"vendor/emojis/emoji3.json": subContents["emoji3.json"],

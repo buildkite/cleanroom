@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 1 ready for review
+**Status:** Slice 2 ready for review
 **Last reviewed:** 2026-05-27
 
 ## Summary
@@ -27,6 +27,32 @@ Focused validation run on 2026-05-27:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz
+```
+
+Result: passed.
+
+Slice 2 is implemented and ready for review. It rejects file/local submodule
+mirror remotes, canonicalizes mirror submodule remotes with the same repository
+remote rules used for parent checkouts, and allows repository-controlled
+submodule mirroring only when the resolved submodule host matches the already
+validated parent repository host. This intentionally rejects cross-host
+submodules until Cleanroom has an explicit submodule allowlist or host-side
+policy contract for them. Slice 2 also keys mirror-backed submodule digests by
+submodule path, mirror path, and gitlink SHA so two submodules that share a
+remote cannot reuse the wrong commit's digest data.
+
+Focused validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/controlservice ./internal/submodule ./internal/repositorystore ./internal/repositorychangeset
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
 ```
 
 Result: passed.
@@ -95,6 +121,11 @@ The blocked set also needs to include non-obvious special-use ranges, not just
 RFC1918 and loopback. The Slice 1 test matrix includes CGNAT, documentation,
 benchmarking, reserved, NAT64, AS112, AMT, ORCHIDv2, SRv6 SID, unallocated IPv6,
 and IPv4-mapped private destinations to keep that boundary explicit.
+
+For Slice 2, same-host-only submodule mirroring is the narrow fix. It is stricter
+than allowing any host listed in the workspace egress policy, but it avoids
+turning repository content into a host-side network selector before a dedicated
+submodule mirror policy exists.
 
 ## Validation Standard
 
