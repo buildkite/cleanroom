@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -53,8 +54,8 @@ func EnsureLocalCertificate(domain, dir string) (*LocalCertificate, error) {
 	certPath := filepath.Join(dir, LocalCertificateFilename)
 	keyPath := filepath.Join(dir, LocalCertificateKeyFilename)
 
-	certPEM, certErr := os.ReadFile(certPath)
-	keyPEM, keyErr := os.ReadFile(keyPath)
+	certPEM, certErr := readLocalCertificateFile(certPath)
+	keyPEM, keyErr := readLocalCertificateFile(keyPath)
 	switch {
 	case certErr == nil && keyErr == nil:
 		cert, err := parseLocalCertificate(certPEM, keyPEM)
@@ -71,18 +72,18 @@ func EnsureLocalCertificate(domain, dir string) (*LocalCertificate, error) {
 		return nil, fmt.Errorf("load exposure certificate from %s: cert error=%v key error=%v", dir, certErr, keyErr)
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create exposure TLS directory %s: %w", dir, err)
+	if err := ensureLocalCertificateDir(dir); err != nil {
+		return nil, err
 	}
 	cert, err := generateLocalCertificateAuthority(domain)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(certPath, cert.CertPEM, 0o644); err != nil {
+	if err := writeLocalCertificateFile(certPath, cert.CertPEM, 0o644); err != nil {
 		return nil, fmt.Errorf("write exposure certificate: %w", err)
 	}
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(cert.Key)})
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := writeLocalCertificateFile(keyPath, keyPEM, 0o600); err != nil {
 		return nil, fmt.Errorf("write exposure certificate key: %w", err)
 	}
 	cert.CertPath = certPath
@@ -177,8 +178,8 @@ func EnsureRuntimeCertificateAuthority(domain, dir string) (*LocalCertificate, e
 	certPath := filepath.Join(dir, LocalCertificateFilename)
 	keyPath := filepath.Join(dir, LocalCertificateKeyFilename)
 
-	certPEM, certErr := os.ReadFile(certPath)
-	keyPEM, keyErr := os.ReadFile(keyPath)
+	certPEM, certErr := readLocalCertificateFile(certPath)
+	keyPEM, keyErr := readLocalCertificateFile(keyPath)
 	switch {
 	case certErr == nil && keyErr == nil:
 		cert, err := parseLocalCertificate(certPEM, keyPEM)
@@ -196,6 +197,125 @@ func EnsureRuntimeCertificateAuthority(domain, dir string) (*LocalCertificate, e
 	default:
 		return nil, fmt.Errorf("load exposure certificate from %s: cert error=%v key error=%v", dir, certErr, keyErr)
 	}
+}
+
+func readLocalCertificateFile(path string) ([]byte, error) {
+	if err := rejectLocalCertificateSymlinkPath(path); err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return readLocalCertificateFileMatchingInfo(path, info)
+}
+
+func readLocalCertificateFileMatchingInfo(path string, info os.FileInfo) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("%s changed while opening", path)
+	}
+	return io.ReadAll(f)
+}
+
+func writeLocalCertificateFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := ensureLocalCertificateDir(dir); err != nil {
+		return err
+	}
+	if err := rejectLocalCertificateReplacement(path); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	keepTemp := false
+	defer func() {
+		if !keepTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	keepTemp = true
+	return nil
+}
+
+func ensureLocalCertificateDir(dir string) error {
+	if err := rejectLocalCertificateSymlinkPath(dir); err != nil {
+		return fmt.Errorf("create exposure TLS directory %s: %w", dir, err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create exposure TLS directory %s: %w", dir, err)
+	}
+	if err := rejectLocalCertificateSymlinkPath(dir); err != nil {
+		return fmt.Errorf("create exposure TLS directory %s: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("create exposure TLS directory %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("create exposure TLS directory %s: not a directory", dir)
+	}
+	return nil
+}
+
+func rejectLocalCertificateReplacement(path string) error {
+	if err := rejectLocalCertificateSymlinkPath(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	return nil
+}
+
+func rejectLocalCertificateSymlinkPath(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symbolic link", path)
+	}
+	return nil
 }
 
 func parseLocalCertificate(certPEM, keyPEM []byte) (*LocalCertificate, error) {
