@@ -200,38 +200,38 @@ func listSubmoduleFiles(sub submoduleSource) ([]string, error) {
 }
 
 type submoduleResolutionKey struct {
-	sourceDir    string
+	source       submoduleDigestSourceKey
 	strippedPath string
 }
 
-func resolveSubmoduleDigests(subs submoduleSet, expandedPaths []string) (map[string]submoduleResolutionKey, map[string]map[string]gitbatch.TreeEntry, map[string]map[string]string, error) {
+type submoduleDigestSourceKey struct {
+	path       string
+	sourceDir  string
+	gitlinkSHA string
+}
+
+func resolveSubmoduleDigests(subs submoduleSet, expandedPaths []string) (map[string]submoduleResolutionKey, map[submoduleDigestSourceKey]map[string]gitbatch.TreeEntry, map[submoduleDigestSourceKey]map[string]string, error) {
 	subFiles := make(map[string]submoduleResolutionKey)
-	type sourceInfo struct {
-		dir        string
-		gitlinkSHA string
-	}
-	pathsBySource := make(map[string]sourceInfo)
-	stripped := make(map[string][]string)
+	stripped := make(map[submoduleDigestSourceKey][]string)
 	for _, normalizedPath := range expandedPaths {
 		sub, ok := subs.FindForPath(normalizedPath)
 		if !ok {
 			continue
 		}
 		strippedPath := strings.TrimPrefix(normalizedPath, sub.Path+"/")
-		subFiles[normalizedPath] = submoduleResolutionKey{sourceDir: sub.SourceDir, strippedPath: strippedPath}
-		pathsBySource[sub.SourceDir] = sourceInfo{dir: sub.SourceDir, gitlinkSHA: sub.GitlinkSHA}
-		stripped[sub.SourceDir] = append(stripped[sub.SourceDir], strippedPath)
+		source := submoduleDigestSourceKey{path: sub.Path, sourceDir: sub.SourceDir, gitlinkSHA: sub.GitlinkSHA}
+		subFiles[normalizedPath] = submoduleResolutionKey{source: source, strippedPath: strippedPath}
+		stripped[source] = append(stripped[source], strippedPath)
 	}
 
-	subEntries := make(map[string]map[string]gitbatch.TreeEntry)
-	subDigests := make(map[string]map[string]string)
-	for sourceDir, strippedPaths := range stripped {
-		info := pathsBySource[sourceDir]
-		entries, err := readSubmoduleTreeEntries(info.dir, info.gitlinkSHA, strippedPaths)
+	subEntries := make(map[submoduleDigestSourceKey]map[string]gitbatch.TreeEntry)
+	subDigests := make(map[submoduleDigestSourceKey]map[string]string)
+	for source, strippedPaths := range stripped {
+		entries, err := readSubmoduleTreeEntries(source.sourceDir, source.gitlinkSHA, strippedPaths)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("read submodule index at %q: %w", sourceDir, err)
+			return nil, nil, nil, fmt.Errorf("read submodule index at %q: %w", source.sourceDir, err)
 		}
-		subEntries[sourceDir] = entries
+		subEntries[source] = entries
 
 		var regularPaths []string
 		for _, sp := range strippedPaths {
@@ -240,11 +240,11 @@ func resolveSubmoduleDigests(subs submoduleSet, expandedPaths []string) (map[str
 			}
 		}
 		if len(regularPaths) > 0 {
-			digests, err := readSubmoduleFileDigests(info.dir, info.gitlinkSHA, regularPaths)
+			digests, err := readSubmoduleFileDigests(source.sourceDir, source.gitlinkSHA, regularPaths)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("read submodule file digests at %q: %w", sourceDir, err)
+				return nil, nil, nil, fmt.Errorf("read submodule file digests at %q: %w", source.sourceDir, err)
 			}
-			subDigests[sourceDir] = digests
+			subDigests[source] = digests
 		}
 	}
 	return subFiles, subEntries, subDigests, nil
@@ -358,7 +358,7 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 		file := File{Path: normalizedPath}
 
 		if key, inSub := subFiles[normalizedPath]; inSub {
-			entries := subEntries[key.sourceDir]
+			entries := subEntries[key.source]
 			entry, exists := entries[key.strippedPath]
 			if !exists {
 				if regularFilesOnly {
@@ -372,7 +372,7 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 			if regularFilesOnly && !isRegularGitFileMode(entry.Mode) {
 				return nil, fmt.Errorf("repository changeset input path %q is %s; inputs.files must name regular files", normalizedPath, gitModeKind(entry.Mode))
 			}
-			digest, ok := subDigests[key.sourceDir][key.strippedPath]
+			digest, ok := subDigests[key.source][key.strippedPath]
 			if !ok {
 				return nil, fmt.Errorf("read repository changeset path %q from submodule: missing digest", normalizedPath)
 			}

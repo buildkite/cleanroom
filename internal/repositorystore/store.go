@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
 type FetchHints struct {
@@ -97,10 +99,14 @@ func (s *mirrorBackedRepositoryStore) EnsureSubmoduleMirror(ctx context.Context,
 	if s == nil || s.mirrors == nil {
 		return "", fmt.Errorf("repository store is nil")
 	}
-	if err := s.mirrors.EnsureMirrorContains(ctx, submoduleRemoteURL, gitlinkSHA); err != nil {
+	canonicalRemoteURL, _, err := repositorycheckout.CanonicalizeRemoteURL(submoduleRemoteURL)
+	if err != nil {
+		return "", fmt.Errorf("validate submodule remote URL: %w", err)
+	}
+	if err := s.mirrors.EnsureMirrorContains(ctx, canonicalRemoteURL, gitlinkSHA); err != nil {
 		return "", err
 	}
-	return s.mirrors.MirrorPath(submoduleRemoteURL)
+	return s.mirrors.MirrorPath(canonicalRemoteURL)
 }
 
 func (s *mirrorBackedRepositoryStore) repositoryPath(ctx context.Context, remoteURL string) (string, error) {

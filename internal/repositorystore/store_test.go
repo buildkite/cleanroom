@@ -115,6 +115,20 @@ func TestEnsureSubmoduleMirror(t *testing.T) {
 	}
 }
 
+func TestEnsureSubmoduleMirrorRejectsLocalRemote(t *testing.T) {
+	t.Parallel()
+
+	store := NewMirrorBacked(&mockMirrorSource{mirrorPath: "/mirrors/submodule"})
+
+	_, err := store.EnsureSubmoduleMirror(context.Background(), "file:///private/repo.git", "abc1234abc1234abc1234abc1234abc1234abc12")
+	if err == nil {
+		t.Fatal("expected file remote to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must use https") {
+		t.Fatalf("expected canonicalization error, got %v", err)
+	}
+}
+
 type mockMirrorSource struct {
 	mirrorPath              string
 	ensureMirrorContainsURL string

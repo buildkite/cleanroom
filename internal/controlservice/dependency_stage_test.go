@@ -13,6 +13,11 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorystore"
 )
 
+const (
+	testParentRemoteURL    = "https://github.com/buildkite/cleanroom.git"
+	testSubmoduleRemoteURL = "https://github.com/buildkite/emojis.git"
+)
+
 func TestExpandStageKeyFilesAtCommitDoublestarGlob(t *testing.T) {
 	repoDir := initControlServiceGitRepo(t)
 	if err := os.MkdirAll(filepath.Join(repoDir, "vendor", "lib"), 0o755); err != nil {
@@ -121,6 +126,8 @@ func initControlServiceGitRepoWithSubmodule(t *testing.T) (superDir, subDir, sup
 	runControlServiceGit(t, superDir, "add", "README.md")
 	runControlServiceGit(t, superDir, "commit", "-m", "initial")
 	runControlServiceGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "add", subDir, "vendor/emojis")
+	runControlServiceGit(t, superDir, "config", "-f", ".gitmodules", "submodule.vendor/emojis.url", testSubmoduleRemoteURL)
+	runControlServiceGit(t, superDir, "add", ".gitmodules")
 	runControlServiceGit(t, superDir, "commit", "-m", "add submodule")
 
 	subMirror = t.TempDir()
@@ -184,7 +191,7 @@ func TestStageInputFilesDigestAtCommitDigestsSubmoduleFiles(t *testing.T) {
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	digest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, []string{"vendor/emojis/**"}, "test", true, store)
+	digest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, testParentRemoteURL, commitSHA, []string{"vendor/emojis/**"}, "test", true, store)
 	if err != nil {
 		t.Fatalf("stageInputFilesDigestAtCommit: %v", err)
 	}
@@ -217,7 +224,7 @@ func TestStageInputFilesDigestAtCommitMatchesChangesetPath(t *testing.T) {
 	}
 
 	checkout := &repositorycheckout.Checkout{
-		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		RemoteURL:      testParentRemoteURL,
 		CommitSHA:      commitSHA,
 		DestinationDir: "/workspace",
 		Submodules:     true,
@@ -251,7 +258,7 @@ func TestStageInputFilesDigestAtCommitMatchesChangesetPath(t *testing.T) {
 	}
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
-	atCommitDigest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, pattern, "test", true, store)
+	atCommitDigest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, testParentRemoteURL, commitSHA, pattern, "test", true, store)
 	if err != nil {
 		t.Fatalf("stageInputFilesDigestAtCommit: %v", err)
 	}
@@ -287,7 +294,7 @@ func TestStageInputFilesDigestWithChangesetResolvesSubmoduleViaMirror(t *testing
 	}
 
 	checkout := &repositorycheckout.Checkout{
-		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		RemoteURL:      testParentRemoteURL,
 		CommitSHA:      commitSHA,
 		DestinationDir: "/workspace",
 		Submodules:     true,
@@ -302,7 +309,7 @@ func TestStageInputFilesDigestWithChangesetResolvesSubmoduleViaMirror(t *testing
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	digest, err := stageInputFilesDigestWithChangeset(context.Background(), superMirror, changeset, []string{"vendor/emojis/**"}, "test", "", true, store)
+	digest, err := stageInputFilesDigestWithChangeset(context.Background(), superMirror, changeset, []string{"vendor/emojis/**"}, "test", testParentRemoteURL, true, store)
 	if err != nil {
 		t.Fatalf("stageInputFilesDigestWithChangeset (submodules on, mirror): %v", err)
 	}
@@ -340,7 +347,7 @@ func TestStageKeyFilesDigestWithChangesetResolvesGitlinkLiteralViaMirror(t *test
 	}
 
 	checkout := &repositorycheckout.Checkout{
-		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		RemoteURL:      testParentRemoteURL,
 		CommitSHA:      commitSHA,
 		DestinationDir: "/workspace",
 		Submodules:     true,
@@ -355,7 +362,7 @@ func TestStageKeyFilesDigestWithChangesetResolvesGitlinkLiteralViaMirror(t *test
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	digest, err := stageKeyFilesDigestWithChangeset(context.Background(), superMirror, changeset, []string{"vendor/emojis/**"}, "dependency", "", true, store)
+	digest, err := stageKeyFilesDigestWithChangeset(context.Background(), superMirror, changeset, []string{"vendor/emojis/**"}, "dependency", testParentRemoteURL, true, store)
 	if err != nil {
 		t.Fatalf("stageKeyFilesDigestWithChangeset (mirror, glob): %v", err)
 	}
@@ -398,7 +405,7 @@ func TestStageInputFilesDigestAtCommitRejectsGitlinkLiteral(t *testing.T) {
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	_, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, []string{"vendor/emojis"}, "test", true, store)
+	_, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, testParentRemoteURL, commitSHA, []string{"vendor/emojis"}, "test", true, store)
 	if err == nil {
 		t.Fatal("expected error for gitlink literal")
 	}
@@ -415,7 +422,7 @@ func TestStageKeyFilesDigestAtCommitRejectsGitlinkLiteral(t *testing.T) {
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, []string{"vendor/emojis"}, "dependency", true, store)
+	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, testParentRemoteURL, commitSHA, []string{"vendor/emojis"}, "dependency", true, store)
 	if err == nil {
 		t.Fatal("expected error for gitlink literal")
 	}

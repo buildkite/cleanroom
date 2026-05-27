@@ -296,3 +296,65 @@ func TestResolveSubmoduleURL(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveMirrorSubmoduleURL(t *testing.T) {
+	cases := []struct {
+		name      string
+		parent    string
+		submodule string
+		want      string
+		wantErr   string
+	}{
+		{
+			name:      "relative same host",
+			parent:    "https://github.com/buildkite/cleanroom.git",
+			submodule: "../tooling.git",
+			want:      "https://github.com/buildkite/tooling.git",
+		},
+		{
+			name:      "ssh form same host",
+			parent:    "https://github.com/buildkite/cleanroom.git",
+			submodule: "git@github.com:buildkite/tooling.git",
+			want:      "https://github.com/buildkite/tooling.git",
+		},
+		{
+			name:      "file rejected",
+			parent:    "https://github.com/buildkite/cleanroom.git",
+			submodule: "file:///private/repo.git",
+			wantErr:   "must use https",
+		},
+		{
+			name:      "http rejected",
+			parent:    "https://github.com/buildkite/cleanroom.git",
+			submodule: "http://github.com/buildkite/tooling.git",
+			wantErr:   "must use https",
+		},
+		{
+			name:      "different host rejected",
+			parent:    "https://github.com/buildkite/cleanroom.git",
+			submodule: "https://example.com/buildkite/tooling.git",
+			wantErr:   "does not match parent",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveMirrorSubmoduleURL(tc.parent, tc.submodule)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error, got %q", got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveMirrorSubmoduleURL: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
