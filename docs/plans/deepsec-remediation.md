@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 2 ready for review
+**Status:** Slice 3 ready for review
 **Last reviewed:** 2026-05-27
 
 ## Summary
@@ -65,6 +65,36 @@ MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.to
 
 Result: passed.
 
+Slice 3 is implemented and ready for review. It wires configured OIDC bearer
+authentication into HTTP(S) control servers, refuses bearer auth on non-loopback
+plain HTTP listeners, prevents clients from sending bearer tokens to non-loopback
+plain HTTP endpoints, stamps server-derived owners onto sandboxes, executions,
+snapshots, and interactive sessions, filters list APIs by owner, and checks
+ownership on sandbox, execution, snapshot, file, port-dial, and repository
+operations. Automatic guest-operation wakeups are authorized by the requested
+operation before the wake starts; direct `ResumeSandbox` still requires
+`sandbox.resume`.
+
+This slice preserves existing local and unauthenticated default behavior unless
+`auth.required` is enabled. Daemon install guardrails for TCP listeners remain
+in the privileged installer hardening slice.
+
+Focused validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise exec -- go test ./internal/authz ./internal/controlserver ./internal/controlclient ./internal/controlservice ./internal/cli ./internal/snapshotstore
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-27:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -76,7 +106,7 @@ Result: passed.
 | Remote control-plane RPCs are exposed without authentication | High | Needs fix | Slice 3: multi-principal control-server enforcement |
 | Sandbox port dial RPC lacks caller authentication and authorization | High | Needs fix | Slice 3: multi-principal control-server enforcement |
 | Network control-plane listeners do not enforce configured caller authentication | High | Needs fix | Slice 3: multi-principal control-server enforcement |
-| Daemon install can expose the unauthenticated control plane on TCP | High | Needs fix | Slice 3: multi-principal control-server enforcement, plus daemon install guardrails |
+| Daemon install can expose the unauthenticated control plane on TCP | High | Needs fix | Slice 4: privileged installer argument and path hardening, plus TCP auth guardrails |
 | Newlines in daemon arguments can inject systemd unit directives | High | Needs fix | Slice 4: privileged installer argument and path hardening |
 | Privileged DNS install writes and chowns certificate paths in a user-controlled directory without symlink checks | High | Needs fix | Slice 4: privileged installer argument and path hardening |
 | Privileged certificate writes follow user-controlled symlinks | High | Needs fix | Slice 4: privileged installer argument and path hardening |
@@ -100,8 +130,8 @@ Result: passed.
 
 1. Block unsafe darwin-vz file-handle gateway host dials.
 2. Enforce repository mirror policy for submodules, including `file://` and host-local targets, and repair submodule cache keys.
-3. Land multi-principal control-server enforcement using the existing auth plan.
-4. Harden privileged installer argument handling, certificate writes, and symlink behavior.
+3. Land configured multi-principal control-server enforcement using the existing auth plan.
+4. Harden privileged installer argument handling, certificate writes, symlink behavior, and daemon TCP auth guardrails.
 5. Bind gateway credentials and cache hits to the current authorization and effective policy.
 6. Reject unsafe policy protobufs before backend execution.
 7. Bound image/rootfs extraction and sanitize boot asset cache path components.

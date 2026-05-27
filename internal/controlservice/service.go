@@ -1171,6 +1171,8 @@ func (s *Service) ensureSandboxReadyForGuestOperation(ctx context.Context, sandb
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")
 	}
+	// Guest operations authorize their requested action before calling this.
+	// Direct resume requests still require the explicit sandbox.resume action.
 	_, err := s.wakeSandbox(ctx, sandboxID, true)
 	return err
 }
@@ -1207,9 +1209,11 @@ func (s *Service) resumeSandbox(ctx context.Context, sandboxID string, guestOper
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
-	if err := s.authorizeOwnedResource(ctx, "sandbox.resume", "sandbox", sandboxID, state.Owner, nil); err != nil {
-		s.mu.Unlock()
-		return nil, err
+	if !guestOperation {
+		if err := s.authorizeOwnedResource(ctx, "sandbox.resume", "sandbox", sandboxID, state.Owner, nil); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
 	}
 	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
 		resp := cloneSandboxLocked(state)
@@ -1355,6 +1359,17 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		snapshotAdapter backend.SnapshottingAdapter
 	)
 
+	s.mu.RLock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	owner := state.Owner
+	s.mu.RUnlock()
+	if err := s.authorizeOwnedResource(ctx, "snapshot.create", "snapshot", snapshotID, owner, nil); err != nil {
+		return nil, err
+	}
 	if err := s.ensureSandboxSnapshotSupported(sandboxID); err != nil {
 		return nil, err
 	}
@@ -1364,7 +1379,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
-	state, ok := s.sandboxes[sandboxID]
+	state, ok = s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
@@ -2226,6 +2241,21 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	now := s.clock().Now()
 	executionID := s.ids().NewExecutionID()
 
+	s.mu.RLock()
+	sandbox, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	executionOwner := sandbox.Owner
+	executionAuthRepository := repository
+	if executionAuthRepository == nil {
+		executionAuthRepository = cloneRepositoryCheckout(sandbox.Repository)
+	}
+	s.mu.RUnlock()
+	if err := s.authorizeOwnedResource(ctx, "execution.create", "execution", executionID, executionOwner, createExecutionAuthorizationRequest(executionAuthRepository)); err != nil {
+		return nil, err
+	}
 	if err := s.ensureSandboxReadyForGuestOperation(ctx, sandboxID); err != nil {
 		return nil, err
 	}
@@ -2233,12 +2263,12 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	s.mu.Lock()
 	s.ensureMapsLocked()
 
-	sandbox, ok := s.sandboxes[sandboxID]
+	sandbox, ok = s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
-	executionAuthRepository := repository
+	executionAuthRepository = repository
 	if executionAuthRepository == nil {
 		executionAuthRepository = sandbox.Repository
 	}
