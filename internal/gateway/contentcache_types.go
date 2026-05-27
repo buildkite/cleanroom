@@ -16,7 +16,10 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
-const defaultMaxGoProxyScopedHandlers = 32
+const (
+	defaultMaxGoProxyScopedHandlers = 32
+	defaultMaxOCIHandlers           = 32
+)
 
 type gitHandlerFactory func(host string) (http.Handler, error)
 
@@ -85,6 +88,8 @@ type ContentCache struct {
 
 	ociMu           sync.Mutex
 	ociHandlers     map[string]ociHandlerEntry
+	ociOrder        []string
+	maxOCIHandlers  int
 	buildOCIHandler ociHandlerFactory
 	resolveOCIRoute ociRouteResolver
 	ociMirrorHosts  []string
@@ -381,18 +386,59 @@ func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, error) 
 	}
 
 	c.ociMu.Lock()
-	defer c.ociMu.Unlock()
-
 	if entry, ok := c.ociHandlers[prefix]; ok {
+		c.touchOCIHandlerLocked(prefix)
+		c.ociMu.Unlock()
 		return entry.handler, nil
 	}
 
 	entry, err := c.buildOCIHandler(prefix)
 	if err != nil {
+		c.ociMu.Unlock()
 		return nil, err
 	}
+	if c.ociHandlers == nil {
+		c.ociHandlers = make(map[string]ociHandlerEntry)
+	}
 	c.ociHandlers[prefix] = entry
+	c.touchOCIHandlerLocked(prefix)
+	evicted := c.evictOCIHandlerLocked()
+	c.ociMu.Unlock()
+	if evicted != nil {
+		_ = evicted.Close()
+	}
 	return entry.handler, nil
+}
+
+func (c *ContentCache) touchOCIHandlerLocked(prefix string) {
+	for i, existing := range c.ociOrder {
+		if existing != prefix {
+			continue
+		}
+		copy(c.ociOrder[i:], c.ociOrder[i+1:])
+		c.ociOrder = c.ociOrder[:len(c.ociOrder)-1]
+		break
+	}
+	c.ociOrder = append(c.ociOrder, prefix)
+}
+
+func (c *ContentCache) evictOCIHandlerLocked() io.Closer {
+	maxHandlers := c.maxOCIHandlers
+	if maxHandlers <= 0 {
+		maxHandlers = defaultMaxOCIHandlers
+	}
+	if len(c.ociOrder) <= maxHandlers {
+		return nil
+	}
+
+	evictedPrefix := c.ociOrder[0]
+	c.ociOrder = c.ociOrder[1:]
+	entry, ok := c.ociHandlers[evictedPrefix]
+	if !ok {
+		return nil
+	}
+	delete(c.ociHandlers, evictedPrefix)
+	return entry.closer
 }
 
 // registryHostname extracts the hostname from a registry URL for policy checks.

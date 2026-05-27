@@ -213,6 +213,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		closer:         db,
 		gitHandlers:    make(map[string]http.Handler),
 		ociHandlers:    make(map[string]ociHandlerEntry),
+		maxOCIHandlers: defaultMaxOCIHandlers,
 		ociMirrorHosts: ociMirrorHosts(cfg.OCIRegistries),
 	}
 	goProxyUpstreamURL := strings.TrimSpace(ccgoproxy.DefaultUpstreamURL)
