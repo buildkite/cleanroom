@@ -127,3 +127,65 @@ func TestValidateBearerAuthListenEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateBearerAuthClientEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ep      endpoint.Endpoint
+		wantErr bool
+	}{
+		{
+			name: "unix",
+			ep:   endpoint.Endpoint{Scheme: "unix", Address: "/tmp/cleanroom.sock"},
+		},
+		{
+			name: "loopback http",
+			ep:   endpoint.Endpoint{Scheme: "http", Address: "http://127.0.0.1:7777"},
+		},
+		{
+			name: "localhost http",
+			ep:   endpoint.Endpoint{Scheme: "http", Address: "http://localhost:7777"},
+		},
+		{
+			name: "remote https",
+			ep:   endpoint.Endpoint{Scheme: "https", Address: "https://cleanroom.example.com:7777"},
+		},
+		{
+			name:    "public http",
+			ep:      endpoint.Endpoint{Scheme: "http", Address: "http://0.0.0.0:7777"},
+			wantErr: true,
+		},
+		{
+			name:    "remote http",
+			ep:      endpoint.Endpoint{Scheme: "http", Address: "http://cleanroom.example.com:7777"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateBearerAuthClientEndpoint(tt.ep)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected endpoint validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateBearerAuthClientEndpoint returned error: %v", err)
+			}
+		})
+	}
+}
+
+func TestClientFlagsConnectRejectsBearerTokenForRemoteHTTP(t *testing.T) {
+	t.Setenv("CLEANROOM_AUTH_TOKEN", "secret-token")
+
+	_, err := (&clientFlags{Host: "http://cleanroom.example.com:7777"}).connect(&runtimeContext{})
+	if err == nil {
+		t.Fatal("expected connect to reject bearer token on remote http")
+	}
+	if !strings.Contains(err.Error(), "non-loopback http endpoint") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

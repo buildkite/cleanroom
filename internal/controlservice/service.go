@@ -499,7 +499,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 	span.SetAttributes(rootFSMinimumTraceAttributes(firecrackerCfg)...)
-	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, repository, "", effectiveAuthorizationResources(firecrackerCfg)))
+	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, repository, changeset, "", effectiveAuthorizationResources(firecrackerCfg)))
 	if err != nil {
 		return nil, err
 	}
@@ -997,7 +997,7 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	firecrackerCfg = withPolicyResourceMinimums(firecrackerCfg, compiled.Resources)
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withSnapshotDriver(record.Backend, firecrackerCfg, record.StorageDriver)
-	request := createSandboxAuthorizationRequest(record.Backend, compiled, repository, snapshotID, effectiveAuthorizationResources(firecrackerCfg))
+	request := createSandboxAuthorizationRequest(record.Backend, compiled, repository, nil, snapshotID, effectiveAuthorizationResources(firecrackerCfg))
 	if _, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", request); err != nil {
 		return nil, err
 	}
@@ -2238,7 +2238,11 @@ func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
-	if err := s.authorizeOwnedResource(ctx, "execution.create", "execution", executionID, sandbox.Owner, nil); err != nil {
+	executionAuthRepository := repository
+	if executionAuthRepository == nil {
+		executionAuthRepository = sandbox.Repository
+	}
+	if err := s.authorizeOwnedResource(ctx, "execution.create", "execution", executionID, sandbox.Owner, createExecutionAuthorizationRequest(executionAuthRepository)); err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}

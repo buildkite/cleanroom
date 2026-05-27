@@ -10,6 +10,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 )
@@ -139,14 +140,10 @@ func authDenied(decision authz.Decision) error {
 	return fmt.Errorf("%w: %s for %s on %s %q", ErrAuthorizationDenied, reason, decision.Action, decision.Resource.Kind, decision.Resource.ID)
 }
 
-func createSandboxAuthorizationRequest(backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, snapshotID string, effectiveResources policy.Resources) map[string]any {
+func createSandboxAuthorizationRequest(backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, snapshotID string, effectiveResources policy.Resources) map[string]any {
 	request := map[string]any{
-		"backend": strings.TrimSpace(backendName),
-		"repository": map[string]any{
-			"remote_url": "",
-			"commit":     "",
-			"branch":     "",
-		},
+		"backend":    strings.TrimSpace(backendName),
+		"repository": repositoryAuthorizationRequest(repository, changeset),
 		"image": map[string]any{
 			"ref":    "",
 			"digest": "",
@@ -173,13 +170,6 @@ func createSandboxAuthorizationRequest(backendName string, compiled *policy.Comp
 			"reuse": "",
 		},
 	}
-	if repository != nil {
-		request["repository"] = map[string]any{
-			"remote_url": strings.TrimSpace(repository.RemoteURL),
-			"commit":     strings.TrimSpace(repository.CommitSHA),
-			"branch":     strings.TrimSpace(repository.Branch),
-		}
-	}
 	if compiled == nil {
 		return request
 	}
@@ -205,6 +195,38 @@ func createSandboxAuthorizationRequest(backendName string, compiled *policy.Comp
 	}
 	request["cache"] = map[string]any{
 		"reuse": strings.TrimSpace(compiled.Dependencies.Reuse),
+	}
+	return request
+}
+
+func createExecutionAuthorizationRequest(repository *repositorycheckout.Checkout) map[string]any {
+	return map[string]any{
+		"repository": repositoryAuthorizationRequest(repository, nil),
+	}
+}
+
+func repositoryAuthorizationRequest(repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) map[string]any {
+	request := map[string]any{
+		"remote_url": "",
+		"commit":     "",
+		"branch":     "",
+		"changeset": map[string]any{
+			"present":     false,
+			"digest":      "",
+			"tree_digest": "",
+		},
+	}
+	if repository != nil {
+		request["remote_url"] = strings.TrimSpace(repository.RemoteURL)
+		request["commit"] = strings.TrimSpace(repository.CommitSHA)
+		request["branch"] = strings.TrimSpace(repository.Branch)
+	}
+	if changeset != nil {
+		request["changeset"] = map[string]any{
+			"present":     true,
+			"digest":      strings.TrimSpace(changeset.Digest),
+			"tree_digest": strings.TrimSpace(changeset.TreeDigest),
+		}
 	}
 	return request
 }

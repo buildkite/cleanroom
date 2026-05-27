@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,9 @@ func (f *clientFlags) connect(ctx *runtimeContext) (*controlclient.Client, error
 	if token, err := f.resolveAuthToken(ctx); err != nil {
 		return nil, err
 	} else if token != "" {
+		if err := validateBearerAuthClientEndpoint(ep); err != nil {
+			return nil, err
+		}
 		options = append(options, controlclient.WithBearerToken(token))
 	}
 	if ctx != nil {
@@ -148,6 +152,21 @@ func (f *clientFlags) resolveAuthToken(ctx *runtimeContext) (string, error) {
 		return "", fmt.Errorf("auth token env %s is empty", envName)
 	}
 	return token, nil
+}
+
+func validateBearerAuthClientEndpoint(ep endpoint.Endpoint) error {
+	if ep.Scheme != "http" {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(ep.Address))
+	if err != nil {
+		return fmt.Errorf("validate auth client endpoint: %w", err)
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" || !isLoopbackListenHost(host) {
+		return errors.New("auth token cannot be sent to a non-loopback http endpoint; use https or a loopback http address")
+	}
+	return nil
 }
 
 type exitCodeError struct {

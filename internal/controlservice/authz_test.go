@@ -3,12 +3,16 @@ package controlservice
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 )
@@ -216,6 +220,103 @@ func TestAuthzCreateEvaluatesEffectiveRuntimeResources(t *testing.T) {
 	}
 	if got := adapter.provisionCalls; got != 0 {
 		t.Fatalf("ProvisionSandbox calls = %d, want 0", got)
+	}
+}
+
+func TestAuthzCreateExposesRepositoryChangeset(t *testing.T) {
+	repoDir := initControlServiceGitRepo(t)
+	baseCommit := headControlServiceCommit(t, repoDir)
+	repository := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      baseCommit,
+		DestinationDir: "/workspace",
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(repoDir, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+	ctx := testAuthContextWithPolicy(t, "alice", authz.Policy{Bindings: []authz.Binding{{
+		Name: "test",
+		Principal: authz.PrincipalTemplate{
+			ID:    "oidc:${token.issuer}:${token.subject}",
+			Scope: "scope:${token.subject}",
+		},
+		Grants: []authz.Grant{{
+			Name:      "clean-checkouts-only",
+			Actions:   []string{"sandbox.create"},
+			Resources: []string{"sandbox"},
+			Condition: `request.repository.changeset.present == false`,
+		}},
+	}}})
+
+	_, err = svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		Backend:             "firecracker",
+		Policy:              testRepositoryPolicy(),
+		RepositoryCheckout:  repository.ToProto(),
+		RepositoryChangeset: changeset.ToProto(),
+	})
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("CreateSandbox error = %v, want authorization denied", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("ProvisionSandbox calls = %d, want 0", got)
+	}
+}
+
+func TestAuthzCreateExecutionExposesRequestedRepository(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	ctx := testAuthContextWithPolicy(t, "alice", authz.Policy{Bindings: []authz.Binding{{
+		Name: "test",
+		Principal: authz.PrincipalTemplate{
+			ID:    "oidc:${token.issuer}:${token.subject}",
+			Scope: "scope:${token.subject}",
+		},
+		Grants: []authz.Grant{
+			{
+				Name:      "sandbox-create",
+				Actions:   []string{"sandbox.create"},
+				Resources: []string{"sandbox"},
+			},
+			{
+				Name:      "known-execution-repo",
+				Actions:   []string{"execution.create"},
+				Resources: []string{"execution"},
+				Condition: `request.repository.remote_url == "https://github.com/buildkite/cleanroom.git"`,
+			},
+		},
+	}}})
+
+	createResp, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	repository := testRepositoryCheckoutProto()
+	repository.RemoteUrl = "https://github.com/buildkite/private.git"
+	_, err = svc.CreateExecution(ctx, &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          createResp.GetSandbox().GetSandboxId(),
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: repository,
+	})
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("CreateExecution error = %v, want authorization denied", err)
+	}
+	if got := mirrors.calls; got != 0 {
+		t.Fatalf("repository mirror calls = %d, want 0", got)
 	}
 }
 
