@@ -13,6 +13,8 @@ import (
 
 type ServiceMetrics struct {
 	sandboxCreateDuration     metric.Float64Histogram
+	sandboxSuspendDuration    metric.Float64Histogram
+	sandboxWakeDuration       metric.Float64Histogram
 	executionTotal            metric.Int64Counter
 	executionDuration         metric.Float64Histogram
 	sandboxEffectiveMemory    metric.Int64ObservableGauge
@@ -46,6 +48,22 @@ func NewServiceMetrics(provider metric.MeterProvider, resourceObserver SandboxRe
 	sandboxCreateDuration, err := meter.Float64Histogram(
 		MetricSandboxCreateDurationSeconds,
 		metric.WithDescription("Time spent creating a sandbox"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	sandboxSuspendDuration, err := meter.Float64Histogram(
+		MetricSandboxSuspendDurationSeconds,
+		metric.WithDescription("Time spent suspending a sandbox by backend and outcome"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	sandboxWakeDuration, err := meter.Float64Histogram(
+		MetricSandboxWakeDurationSeconds,
+		metric.WithDescription("Time spent waking a sandbox by backend and outcome"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
@@ -155,6 +173,8 @@ func NewServiceMetrics(provider metric.MeterProvider, resourceObserver SandboxRe
 	}
 	return &ServiceMetrics{
 		sandboxCreateDuration:     sandboxCreateDuration,
+		sandboxSuspendDuration:    sandboxSuspendDuration,
+		sandboxWakeDuration:       sandboxWakeDuration,
 		executionTotal:            executionTotal,
 		executionDuration:         executionDuration,
 		sandboxEffectiveMemory:    sandboxEffectiveMemory,
@@ -176,6 +196,26 @@ func (m *ServiceMetrics) RecordSandboxCreate(ctx context.Context, backendName, s
 	m.sandboxCreateDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
 		attribute.String(MetricLabelBackend, normalizeMetricValue(backendName, "unknown")),
 		attribute.String(MetricLabelSource, normalizeMetricValue(source, "unknown")),
+		attribute.String(MetricLabelOutcome, normalizeMetricValue(outcome, "unknown")),
+	))
+}
+
+func (m *ServiceMetrics) RecordSandboxSuspend(ctx context.Context, backendName, outcome string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.sandboxSuspendDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
+		attribute.String(MetricLabelBackend, normalizeMetricValue(backendName, "unknown")),
+		attribute.String(MetricLabelOutcome, normalizeMetricValue(outcome, "unknown")),
+	))
+}
+
+func (m *ServiceMetrics) RecordSandboxWake(ctx context.Context, backendName, outcome string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.sandboxWakeDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
+		attribute.String(MetricLabelBackend, normalizeMetricValue(backendName, "unknown")),
 		attribute.String(MetricLabelOutcome, normalizeMetricValue(outcome, "unknown")),
 	))
 }

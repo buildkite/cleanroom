@@ -379,6 +379,21 @@ func executionOutcomeMetricValue(status cleanroomv1.ExecutionStatus) string {
 	return observability.ExecutionOutcome(status)
 }
 
+func sandboxLifecycleOutcomeMetricValue(err error) string {
+	switch {
+	case err == nil:
+		return observability.OutcomeSucceeded
+	case errors.Is(err, context.Canceled):
+		return observability.OutcomeCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return observability.OutcomeTimedOut
+	case errors.Is(err, backend.ErrSandboxLifecycleIndeterminate):
+		return observability.OutcomeIndeterminate
+	default:
+		return observability.OutcomeFailed
+	}
+}
+
 var (
 	ErrExecutionStdinUnsupported  = errors.New("execution stdin attach is not supported by the current backend")
 	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
@@ -1156,10 +1171,33 @@ func (s *Service) suspendSandbox(ctx context.Context, sandboxID string, opts sus
 		s.mu.Unlock()
 		return nil, fmt.Errorf("backend_capability_mismatch: backend %q reports sandbox suspend but does not implement it", state.Backend)
 	}
+	backendName := state.Backend
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_SUSPENDING, requestedMessage)
 	s.mu.Unlock()
 
+	started := s.clock().Now()
 	err := suspendable.SuspendSandbox(ctx, sandboxID)
+	duration := s.clock().Now().Sub(started)
+	if metrics := s.serviceMetrics(); metrics != nil {
+		metrics.RecordSandboxSuspend(ctx, backendName, sandboxLifecycleOutcomeMetricValue(err), duration)
+	}
+	logger := observability.WithTraceContext(s.Logger, ctx)
+	if logger != nil {
+		if err != nil {
+			logger.Warn("sandbox suspend failed",
+				observability.LogFieldSandboxID, sandboxID,
+				observability.LogFieldBackend, backendName,
+				"duration_ms", duration.Milliseconds(),
+				"error", err,
+			)
+		} else {
+			logger.Info("sandbox suspended",
+				observability.LogFieldSandboxID, sandboxID,
+				observability.LogFieldBackend, backendName,
+				"duration_ms", duration.Milliseconds(),
+			)
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1295,10 +1333,33 @@ func (s *Service) resumeSandbox(ctx context.Context, sandboxID string, guestOper
 		s.mu.Unlock()
 		return nil, fmt.Errorf("backend_capability_mismatch: backend %q reports sandbox suspend but does not implement it", state.Backend)
 	}
+	backendName := state.Backend
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_WAKING, "sandbox wake requested")
 	s.mu.Unlock()
 
+	started := s.clock().Now()
 	err := resumable.ResumeSandbox(ctx, sandboxID)
+	duration := s.clock().Now().Sub(started)
+	if metrics := s.serviceMetrics(); metrics != nil {
+		metrics.RecordSandboxWake(ctx, backendName, sandboxLifecycleOutcomeMetricValue(err), duration)
+	}
+	logger := observability.WithTraceContext(s.Logger, ctx)
+	if logger != nil {
+		if err != nil {
+			logger.Warn("sandbox wake failed",
+				observability.LogFieldSandboxID, sandboxID,
+				observability.LogFieldBackend, backendName,
+				"duration_ms", duration.Milliseconds(),
+				"error", err,
+			)
+		} else {
+			logger.Info("sandbox wake completed",
+				observability.LogFieldSandboxID, sandboxID,
+				observability.LogFieldBackend, backendName,
+				"duration_ms", duration.Milliseconds(),
+			)
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -110,13 +110,17 @@ the backend advertises suspend and port-dial support, so the incoming connection
 wakes through `DialSandboxPort`. Active port dials hold a guest-interaction
 lease so idle-suspend work has a concrete busy marker for open tunnels.
 
-Slice 3 is implemented in this change: `sandbox_lifecycle` is runtime config,
-the daemon starts an idle suspend worker when
-`idle_suspend_after_seconds` is positive, and transparent wake is bounded by
-`wake_timeout_seconds` or the sandbox launch timeout when unset.
+Slice 3 has landed: `sandbox_lifecycle` is runtime config, the daemon starts an
+idle suspend worker when `idle_suspend_after_seconds` is positive, and
+transparent wake is bounded by `wake_timeout_seconds` or the sandbox launch
+timeout when unset.
 
-Metrics, real installed-daemon smoke tests, and Firecracker support remain
-follow-up slices.
+Slice 4 is implemented in this change: service metrics and logs cover backend
+suspend and wake duration and outcome, and the `darwin-vz` E2E path now smokes
+manual suspend, transparent wake through command execution, file read, and local
+port exposure before terminating the sandbox.
+
+Firecracker support remains a follow-up slice.
 
 ## Target Lifecycle Model
 
@@ -510,6 +514,7 @@ Runtime smoke:
 ```bash
 mise run build
 CLEANROOM_DARWIN_VZ_E2E=1 mise exec -- go test ./internal/backend/darwinvz -run TestPersistentSandboxSuspendWakeE2E -v
+scripts/ci-darwin-vz-e2e.sh
 ```
 
 Manual installed-daemon proof before enabling automatic idle suspend:
