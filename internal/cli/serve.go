@@ -258,11 +258,7 @@ func (s *ServeCommand) authInterceptor(ctx *runtimeContext, ep endpoint.Endpoint
 	if err := validateBearerAuthListenEndpoint(ep); err != nil {
 		return nil, err
 	}
-	policyPath, err := resolveAuthPolicyPath(ctx.CWD, ctx.ConfigPath, "", ctx.Config.Auth.PolicyFile)
-	if err != nil {
-		return nil, err
-	}
-	policy, err := authz.LoadPolicyFile(policyPath)
+	policy, err := loadAuthPolicy(ctx.CWD, ctx.ConfigPath, "", ctx.Config.Auth)
 	if err != nil {
 		return nil, err
 	}

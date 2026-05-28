@@ -21,7 +21,7 @@ type AuthCommand struct {
 
 type AuthCheckCommand struct {
 	Config           string `help:"Runtime config path (default: $XDG_CONFIG_HOME/cleanroom/config.yaml)"`
-	PolicyFile       string `name:"policy-file" help:"Auth policy path (default: auth.policy_file from runtime config)"`
+	PolicyFile       string `name:"policy-file" help:"Auth policy path (default: inline auth.policy or auth.policy_file from runtime config)"`
 	TokenFile        string `name:"token-file" required:"" help:"Path to OIDC JWT token file, or '-' for stdin"`
 	Action           string `required:"" help:"Cleanroom action to check, for example sandbox.create"`
 	Resource         string `help:"Resource kind (default: derived from action prefix)"`
@@ -53,11 +53,7 @@ func (c *AuthCheckCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	policyPath, err := resolveAuthPolicyPath(ctx.CWD, resolvedConfigPath, c.PolicyFile, cfg.Auth.PolicyFile)
-	if err != nil {
-		return err
-	}
-	policy, err := authz.LoadPolicyFile(policyPath)
+	policy, err := loadAuthPolicy(ctx.CWD, resolvedConfigPath, c.PolicyFile, cfg.Auth)
 	if err != nil {
 		return err
 	}
@@ -110,6 +106,20 @@ func (c *AuthCheckCommand) Run(ctx *runtimeContext) error {
 		Request: request,
 	})
 	return writeAuthCheckDecision(ctx, decision, c.JSON)
+}
+
+func loadAuthPolicy(cwd, configPath, explicitPolicyFile string, cfg runtimeconfig.AuthConfig) (*authz.CompiledPolicy, error) {
+	if strings.TrimSpace(explicitPolicyFile) != "" || strings.TrimSpace(cfg.PolicyFile) != "" {
+		policyPath, err := resolveAuthPolicyPath(cwd, configPath, explicitPolicyFile, cfg.PolicyFile)
+		if err != nil {
+			return nil, err
+		}
+		return authz.LoadPolicyFile(policyPath)
+	}
+	if cfg.Policy.Configured() {
+		return authz.CompileRuntimePolicy(cfg.Policy)
+	}
+	return nil, errors.New("auth policy is required (set auth.policy, auth.policy_file, or --policy-file)")
 }
 
 func completeAuthCheckDecision(decision authz.Decision, c *AuthCheckCommand) authz.Decision {

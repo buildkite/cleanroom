@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/authconfig"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -32,6 +32,7 @@ type trustedOIDCIssuer struct {
 	Issuer           string
 	Audiences        []string
 	JWKSURL          string
+	RequiredClaims   map[string]string
 	AllowedAlgs      []string
 	ClockSkew        time.Duration
 	MaxTokenLifetime time.Duration
@@ -56,7 +57,7 @@ func WithNow(now func() time.Time) OIDCValidatorOption {
 	}
 }
 
-func NewOIDCValidator(issuers []runtimeconfig.AuthOIDCIssuerConfig, opts ...OIDCValidatorOption) (*OIDCValidator, error) {
+func NewOIDCValidator(issuers []authconfig.OIDCIssuerConfig, opts ...OIDCValidatorOption) (*OIDCValidator, error) {
 	v := &OIDCValidator{
 		issuersByURL: map[string]*trustedOIDCIssuer{},
 		httpClient: &http.Client{
@@ -93,25 +94,30 @@ func NewOIDCValidator(issuers []runtimeconfig.AuthOIDCIssuerConfig, opts ...OIDC
 		if len(audiences) == 0 {
 			return nil, fmt.Errorf("issuer[%d].audiences must contain at least one audience", i)
 		}
+		requiredClaims, err := normalizeRequiredClaims(cfg.RequiredClaims, fmt.Sprintf("issuer[%d].required_claims", i))
+		if err != nil {
+			return nil, err
+		}
 		clockSkew := time.Duration(cfg.ClockSkewSeconds) * time.Second
 		if clockSkew < 0 {
 			return nil, fmt.Errorf("issuer[%d].clock_skew_seconds must be non-negative", i)
 		}
 		if clockSkew == 0 {
-			clockSkew = time.Duration(runtimeconfig.DefaultAuthOIDCClockSkewSeconds) * time.Second
+			clockSkew = time.Duration(authconfig.DefaultOIDCClockSkewSeconds) * time.Second
 		}
 		maxLifetime := time.Duration(cfg.MaxTokenLifetimeSeconds) * time.Second
 		if maxLifetime < 0 {
 			return nil, fmt.Errorf("issuer[%d].max_token_lifetime_seconds must be non-negative", i)
 		}
 		if maxLifetime == 0 {
-			maxLifetime = time.Duration(runtimeconfig.DefaultAuthOIDCMaxTokenLifetimeSeconds) * time.Second
+			maxLifetime = time.Duration(authconfig.DefaultOIDCMaxTokenLifetimeSeconds) * time.Second
 		}
 		trusted := &trustedOIDCIssuer{
 			Name:             name,
 			Issuer:           issuer,
 			Audiences:        audiences,
 			JWKSURL:          strings.TrimSpace(cfg.JWKSURL),
+			RequiredClaims:   requiredClaims,
 			AllowedAlgs:      allowedAlgs,
 			ClockSkew:        clockSkew,
 			MaxTokenLifetime: maxLifetime,
@@ -178,6 +184,9 @@ func (v *OIDCValidator) Validate(ctx context.Context, tokenString string) (Valid
 	if exp.Time.Sub(iat.Time) > trusted.MaxTokenLifetime {
 		return ValidatedToken{}, fmt.Errorf("token lifetime %s exceeds maximum %s", exp.Time.Sub(iat.Time), trusted.MaxTokenLifetime)
 	}
+	if err := validateRequiredClaims(claims, trusted.RequiredClaims); err != nil {
+		return ValidatedToken{}, err
+	}
 
 	return ValidatedToken{
 		IssuerName: trusted.Name,
@@ -209,6 +218,20 @@ func (v *OIDCValidator) parseToken(ctx context.Context, tokenString string, trus
 		return trusted.keys.key(ctx, kid)
 	})
 	return parsedToken, claims, err
+}
+
+func validateRequiredClaims(claims jwt.MapClaims, required map[string]string) error {
+	for name, want := range required {
+		got, ok := claims[name]
+		if !ok {
+			return fmt.Errorf("required claim %q is missing", name)
+		}
+		gotString, ok := got.(string)
+		if !ok || gotString != want {
+			return fmt.Errorf("required claim %q does not match", name)
+		}
+	}
+	return nil
 }
 
 type jwksCache struct {
@@ -344,6 +367,31 @@ func trimStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeRequiredClaims(values map[string]string, label string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, fmt.Errorf("%s contains an empty claim name", label)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("%s[%q] must not be empty", label, key)
+		}
+		if _, ok := out[key]; ok {
+			return nil, fmt.Errorf("%s contains duplicate claim name %q after trimming whitespace", label, key)
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func copyMapStringAny(in map[string]any) map[string]any {

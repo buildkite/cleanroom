@@ -158,6 +158,8 @@ auth:
         audiences:
           - " cleanroom "
         jwks_url: " https://token.actions.githubusercontent.com/.well-known/jwks "
+        required_claims:
+          repository_owner_id: " 123456 "
   policy_file: " ~/.config/cleanroom/auth-policy.yaml "
 `)
 	if err != nil {
@@ -182,6 +184,9 @@ auth:
 	if got, want := issuer.Audiences, []string{"cleanroom"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected audiences: got %v want %v", got, want)
 	}
+	if got, want := issuer.RequiredClaims, map[string]string{"repository_owner_id": "123456"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected required claims: got %v want %v", got, want)
+	}
 	if got, want := issuer.AllowedAlgorithms, []string{"RS256"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected allowed algorithms: got %v want %v", got, want)
 	}
@@ -190,6 +195,47 @@ auth:
 	}
 	if got, want := issuer.MaxTokenLifetimeSeconds, DefaultAuthOIDCMaxTokenLifetimeSeconds; got != want {
 		t.Fatalf("unexpected max token lifetime: got %d want %d", got, want)
+	}
+}
+
+func TestLoadParsesInlineAuthPolicy(t *testing.T) {
+	cfg, err := loadConfigFromContent(t, `default_backend: firecracker
+auth:
+  required: true
+  oidc:
+    issuers:
+      - name: buildkite-prod
+        issuer: https://issuer.example
+        audiences: [cleanroom]
+        jwks_url: https://issuer.example/jwks
+        required_claims:
+          organization_id: org_123
+  policy:
+    bindings:
+      - name: pipeline-bots
+        when: claims.pipeline_id == "pipe_456"
+        principal:
+          id: 'oidc:${token.issuer}:org:${claims.organization_id}:pipeline:${claims.pipeline_id}'
+          scope: 'org:${claims.organization_id}'
+        grants:
+          - actions: [sandbox.create]
+            resources: [sandbox]
+`)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Auth.PolicyFile != "" {
+		t.Fatalf("expected inline policy without policy file, got %q", cfg.Auth.PolicyFile)
+	}
+	if !cfg.Auth.Policy.Configured() {
+		t.Fatal("expected inline auth policy to be configured")
+	}
+	binding := cfg.Auth.Policy.Bindings[0]
+	if got, want := binding.Name, "pipeline-bots"; got != want {
+		t.Fatalf("unexpected binding name: got %q want %q", got, want)
+	}
+	if got, want := binding.Principal.ID, "oidc:${token.issuer}:org:${claims.organization_id}:pipeline:${claims.pipeline_id}"; got != want {
+		t.Fatalf("unexpected principal template: got %q want %q", got, want)
 	}
 }
 
@@ -208,7 +254,7 @@ func TestLoadRejectsInvalidAuthOIDCConfig(t *testing.T) {
 			wantErr: "auth.oidc.issuers must contain at least one issuer",
 		},
 		{
-			name: "missing policy file",
+			name: "missing policy",
 			auth: `auth:
   required: true
   oidc:
@@ -218,7 +264,114 @@ func TestLoadRejectsInvalidAuthOIDCConfig(t *testing.T) {
         audiences: [cleanroom]
         jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
 `,
-			wantErr: "auth.policy_file is required",
+			wantErr: "auth.policy or auth.policy_file is required",
+		},
+		{
+			name: "inline policy and policy file",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+  policy_file: ./auth-policy.yaml
+  policy:
+    bindings:
+      - name: bad
+        principal:
+          id: 'oidc:${token.issuer}:${token.subject}'
+        grants:
+          - actions: [sandbox.create]
+            resources: [sandbox]`,
+			wantErr: "auth.policy and auth.policy_file are mutually exclusive",
+		},
+		{
+			name: "inline policy invalid binding cel",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+  policy:
+    bindings:
+      - name: bad
+        when: request.backend == "darwin-vz"
+        principal:
+          id: 'oidc:${token.issuer}:${token.subject}'
+        grants:
+          - actions: [sandbox.create]
+            resources: [sandbox]`,
+			wantErr: `auth.policy: bindings[0].when: unknown CEL field "request.backend"`,
+		},
+		{
+			name: "inline policy missing principal id",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+  policy:
+    bindings:
+      - name: bad
+        grants:
+          - actions: [sandbox.create]
+            resources: [sandbox]`,
+			wantErr: "auth.policy: bindings[0].principal.id is required",
+		},
+		{
+			name: "empty required claim",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+        required_claims:
+          repository_owner_id: " "
+  policy_file: ./auth-policy.yaml
+`,
+			wantErr: `auth.oidc.issuers[0].required_claims["repository_owner_id"] must not be empty`,
+		},
+		{
+			name: "empty required claim name",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+        required_claims:
+          " ": "123456"
+  policy_file: ./auth-policy.yaml`,
+			wantErr: "auth.oidc.issuers[0].required_claims contains an empty claim name",
+		},
+		{
+			name: "duplicate required claim after trimming",
+			auth: `auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+        required_claims:
+          repository_owner_id: "123456"
+          " repository_owner_id ": "654321"
+  policy_file: ./auth-policy.yaml`,
+			wantErr: `auth.oidc.issuers[0].required_claims contains duplicate claim name "repository_owner_id" after trimming whitespace`,
 		},
 		{
 			name: "missing audience",
