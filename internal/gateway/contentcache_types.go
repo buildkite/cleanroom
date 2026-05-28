@@ -328,19 +328,22 @@ func (e *goProxyHandlerEntry) releaseHandler(key string, entry *goProxyScopedHan
 func (e *goProxyHandlerEntry) closeEvictedHandler(key string, entry *goProxyScopedHandler) io.Closer {
 	return closeFunc(func() {
 		var handlerCloser io.Closer
+		var cleaner io.Closer
 		e.mu.Lock()
 		handlerCloser = entry.closer
 		entry.closer = nil
-		cleaner := entry.evictCleaner
+		cleaner = entry.evictCleaner
 		entry.evictCleaner = nil
-		if cleaner != nil {
-			if replacement, ok := e.handlers[key]; !ok || replacement == entry {
-				_ = cleaner.Close()
-			}
-		}
 		e.mu.Unlock()
 		if handlerCloser != nil {
 			_ = handlerCloser.Close()
+		}
+		if cleaner != nil {
+			e.mu.Lock()
+			if replacement, ok := e.handlers[key]; !ok || replacement == entry {
+				_ = cleaner.Close()
+			}
+			e.mu.Unlock()
 		}
 	})
 }
@@ -508,19 +511,22 @@ func (e *fetchHandlerEntry) releaseHandler(key string, entry *fetchScopedHandler
 func (e *fetchHandlerEntry) closeEvictedHandler(key string, entry *fetchScopedHandler) io.Closer {
 	return closeFunc(func() {
 		var handlerCloser io.Closer
+		var cleaner io.Closer
 		e.mu.Lock()
 		handlerCloser = entry.closer
 		entry.closer = nil
-		cleaner := entry.evictCleaner
+		cleaner = entry.evictCleaner
 		entry.evictCleaner = nil
-		if cleaner != nil {
-			if replacement, ok := e.handlers[key]; !ok || replacement == entry {
-				_ = cleaner.Close()
-			}
-		}
 		e.mu.Unlock()
 		if handlerCloser != nil {
 			_ = handlerCloser.Close()
+		}
+		if cleaner != nil {
+			e.mu.Lock()
+			if replacement, ok := e.handlers[key]; !ok || replacement == entry {
+				_ = cleaner.Close()
+			}
+			e.mu.Unlock()
 		}
 	})
 }

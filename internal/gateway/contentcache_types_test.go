@@ -226,6 +226,7 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	t.Parallel()
 
 	var closed []string
+	var events []string
 	cache := &ContentCache{}
 	cache.goProxy = goProxyHandlerEntry{
 		handlers:    make(map[string]*goProxyScopedHandler),
@@ -236,6 +237,10 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 				handler: &comparableHandler{},
 				closer: closeFunc(func() {
 					closed = append(closed, key)
+					events = append(events, "close:"+key)
+				}),
+				evictCleaner: closeFunc(func() {
+					events = append(events, "clean:"+key)
 				}),
 			}, nil
 		},
@@ -283,6 +288,9 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	releaseB()
 	if !slices.Equal(closed, []string{"policy-b"}) {
 		t.Fatalf("expected policy-b closer to run, got %v", closed)
+	}
+	if !slices.Equal(events, []string{"close:policy-b", "clean:policy-b"}) {
+		t.Fatalf("expected policy-b cleanup after close, got %v", events)
 	}
 	releaseA()
 	releaseReusedA()
@@ -357,6 +365,7 @@ func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	t.Parallel()
 
 	var closed []string
+	var events []string
 	cache := &ContentCache{}
 	cache.fetch = fetchHandlerEntry{
 		handlers:    make(map[string]*fetchScopedHandler),
@@ -367,6 +376,10 @@ func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 				handler: &comparableHandler{},
 				closer: closeFunc(func() {
 					closed = append(closed, key)
+					events = append(events, "close:"+key)
+				}),
+				evictCleaner: closeFunc(func() {
+					events = append(events, "clean:"+key)
 				}),
 			}, nil
 		},
@@ -414,6 +427,9 @@ func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	releaseB()
 	if !slices.Equal(closed, []string{"policy-b"}) {
 		t.Fatalf("expected policy-b closer to run, got %v", closed)
+	}
+	if !slices.Equal(events, []string{"close:policy-b", "clean:policy-b"}) {
+		t.Fatalf("expected policy-b cleanup after close, got %v", events)
 	}
 	releaseA()
 	releaseReusedA()
