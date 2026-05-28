@@ -85,6 +85,7 @@ type gatewayRegistry interface {
 	Register(guestIP, sandboxID string, p *policy.CompiledPolicy, metadata ...gatewayauth.ScopeMetadata) error
 	Release(guestIP string)
 	SetActiveExecutionTrace(sandboxID, executionID string, spanContext trace.SpanContext)
+	SetActiveExecutionScope(sandboxID, executionID string, spanContext trace.SpanContext, metadata gatewayauth.ScopeMetadata)
 	ClearActiveExecutionTrace(sandboxID, executionID string)
 }
 
@@ -453,7 +454,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		defer instance.warnings.SetHandler(nil)
 	}
 	if a.GatewayRegistry != nil {
-		a.GatewayRegistry.SetActiveExecutionTrace(sandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx))
+		a.GatewayRegistry.SetActiveExecutionScope(sandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx), req.GatewayScope)
 		defer a.GatewayRegistry.ClearActiveExecutionTrace(sandboxID, req.ExecutionID)
 	}
 

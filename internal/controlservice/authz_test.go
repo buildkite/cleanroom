@@ -117,6 +117,58 @@ func TestAuthzPropagatesGatewayScopeToBackendRequests(t *testing.T) {
 	}
 }
 
+func TestAuthzPropagatesRequestedRepositoryToBootstrapGatewayScope(t *testing.T) {
+	var requests []backend.ExecutionRequest
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			requests = append(requests, req)
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  true,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
+			}, nil
+		},
+	}
+	svc := &Service{
+		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+	}
+	ctx := testAuthContext(t, "alice")
+
+	createResp, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  testRepositoryPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	execResp, err := svc.CreateExecution(ctx, &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          createResp.GetSandbox().GetSandboxId(),
+		Command:            []string{"true"},
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	waitExecutionDone(t, svc, createResp.GetSandbox().GetSandboxId(), execResp.GetExecution().GetExecutionId())
+
+	if got := len(requests); got < 2 {
+		t.Fatalf("expected bootstrap and execution requests, got %d", got)
+	}
+	bootstrapReq := requests[0]
+	if got, want := bootstrapReq.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("bootstrap owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := bootstrapReq.GatewayScope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
+		t.Fatalf("bootstrap git auth mismatch: got %v want %v", got, want)
+	}
+}
+
 func TestAuthzStampsAndEnforcesSnapshotOwnership(t *testing.T) {
 	store := newMemorySnapshotStore()
 	svc := &Service{

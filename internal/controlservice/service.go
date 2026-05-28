@@ -3962,7 +3962,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		}
 	}
 
-	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommand(
+	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommandWithOptions(
 		ctx,
 		adapter,
 		sandboxID,
@@ -3971,7 +3971,9 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY,
 		policy.NetworkStageWorkspace,
 		command,
+		nil,
 		stdin,
+		persistentSandboxCommandOptions{GatewayScope: s.gatewayScopeForSandboxRepository(sandboxID, repository)},
 		reporter,
 	)
 	if s.Logger != nil {

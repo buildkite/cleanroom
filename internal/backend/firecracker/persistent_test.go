@@ -632,7 +632,64 @@ func (testGatewayRegistry) Register(string, string, *policy.CompiledPolicy, ...g
 func (testGatewayRegistry) Release(string) {}
 func (testGatewayRegistry) SetActiveExecutionTrace(string, string, trace.SpanContext) {
 }
+func (testGatewayRegistry) SetActiveExecutionScope(string, string, trace.SpanContext, gatewayauth.ScopeMetadata) {
+}
 func (testGatewayRegistry) ClearActiveExecutionTrace(string, string) {}
+
+type capturingGatewayRegistry struct {
+	testGatewayRegistry
+	scope gatewayauth.ScopeMetadata
+}
+
+func (r *capturingGatewayRegistry) SetActiveExecutionScope(_ string, _ string, _ trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+	r.scope = metadata.Clone()
+}
+
+func TestRunInSandboxUpdatesGatewayScope(t *testing.T) {
+	t.Parallel()
+
+	registry := &capturingGatewayRegistry{}
+	adapter := &Adapter{
+		GatewayRegistry: registry,
+		GatewayPort:     8170,
+	}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, _ vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			HostIP:    "192.168.127.1",
+			Policy: &policy.CompiledPolicy{
+				Version:        1,
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-gateway-scope",
+		Command:     []string{"true"},
+		GatewayScope: gatewayauth.ScopeMetadata{
+			Owner: gatewayauth.Owner{PrincipalID: "oidc:test:alice"},
+			Authorization: gatewayauth.Authorization{
+				GitRepoPrefixes: []string{"github.com/buildkite/cleanroom"},
+			},
+		},
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if got, want := registry.scope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("gateway scope owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := registry.scope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
+		t.Fatalf("gateway scope git prefixes mismatch: got %v want %v", got, want)
+	}
+}
 
 func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 	t.Parallel()

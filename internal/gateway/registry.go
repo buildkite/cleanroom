@@ -125,6 +125,22 @@ func (r *Registry) SetActiveExecutionTrace(sandboxID, executionID string, spanCo
 	}
 }
 
+func (r *Registry) SetActiveExecutionScope(sandboxID, executionID string, spanContext trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return
+	}
+	executionID = strings.TrimSpace(executionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.byGuestIP {
+		setActiveExecutionScopeForScope(scope, sandboxID, executionID, spanContext, metadata)
+	}
+	for _, scope := range r.byScopeToken {
+		setActiveExecutionScopeForScope(scope, sandboxID, executionID, spanContext, metadata)
+	}
+}
+
 func (r *Registry) ClearActiveExecutionTrace(sandboxID, executionID string) {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
@@ -156,6 +172,15 @@ func setActiveExecutionTraceForScope(scope *SandboxScope, sandboxID, executionID
 	}
 	scope.ExecutionID = executionID
 	scope.TraceContext = spanContext
+}
+
+func setActiveExecutionScopeForScope(scope *SandboxScope, sandboxID, executionID string, spanContext trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+	if scope == nil || scope.SandboxID != sandboxID {
+		return
+	}
+	scope.ExecutionID = executionID
+	scope.TraceContext = spanContext
+	scope.GatewayScope = metadata.Clone()
 }
 
 func clearActiveExecutionTraceForScope(scope *SandboxScope, sandboxID, executionID string) {

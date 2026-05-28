@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
@@ -32,6 +33,7 @@ type persistentSandboxCommandOptions struct {
 	InputProjection         *backend.InputProjection
 	CacheOutputFileCaptures []backend.CacheOutputFileCapture
 	OverlayCapture          *backend.OverlayCapture
+	GatewayScope            gatewayauth.ScopeMetadata
 }
 
 func (s *Service) runPersistentSandboxCommandWithOptions(
@@ -47,6 +49,10 @@ func (s *Service) runPersistentSandboxCommandWithOptions(
 	opts persistentSandboxCommandOptions,
 	stream backend.OutputStream,
 ) (*backend.ExecutionResult, error) {
+	gatewayScope := opts.GatewayScope
+	if !gatewayScope.HasOwner() {
+		gatewayScope = s.gatewayScopeForSandbox(sandboxID)
+	}
 	return adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 		SandboxID:               sandboxID,
 		ExecutionID:             executionID,
@@ -58,7 +64,7 @@ func (s *Service) runPersistentSandboxCommandWithOptions(
 		CacheOutputFileCaptures: cloneCacheOutputFileCaptures(opts.CacheOutputFileCaptures),
 		OverlayCapture:          cloneOverlayCapture(opts.OverlayCapture),
 		Policy:                  compiled,
-		GatewayScope:            s.gatewayScopeForSandbox(sandboxID),
+		GatewayScope:            gatewayScope,
 		NetworkStage:            networkStage,
 		FirecrackerConfig:       withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
 	}, stream)

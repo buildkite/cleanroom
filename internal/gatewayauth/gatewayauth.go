@@ -156,9 +156,11 @@ func NormalizeOCIRepoPrefix(value string) string {
 	}
 	if first == "index.docker.io" || first == "registry-1.docker.io" {
 		parts[0] = "docker.io"
-		return strings.Join(parts, "/")
 	}
-	return repo
+	if parts[0] == "docker.io" && len(parts) == 2 {
+		return "docker.io/library/" + parts[1]
+	}
+	return strings.Join(parts, "/")
 }
 
 // AllowsOCIRepo reports whether an OCI repo key is covered by the authorization

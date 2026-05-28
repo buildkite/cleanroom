@@ -42,8 +42,11 @@ func TestOCIRepoPrefixFromImageRefCanonicalizesDockerHubAliases(t *testing.T) {
 	t.Parallel()
 
 	for _, imageRef := range []string{
+		"docker.io/docker:latest",
 		"index.docker.io/library/docker:latest",
+		"index.docker.io/docker:latest",
 		"registry-1.docker.io/library/docker@sha256:0123456789abcdef",
+		"registry-1.docker.io/docker@sha256:0123456789abcdef",
 	} {
 		got, err := OCIRepoPrefixFromImageRef(imageRef)
 		if err != nil {

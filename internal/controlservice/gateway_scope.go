@@ -33,6 +33,10 @@ func gatewayScopeMetadata(owner authz.ResourceOwner, repository *repositorycheck
 }
 
 func (s *Service) gatewayScopeForSandbox(sandboxID string) gatewayauth.ScopeMetadata {
+	return s.gatewayScopeForSandboxRepository(sandboxID, nil)
+}
+
+func (s *Service) gatewayScopeForSandboxRepository(sandboxID string, repository *repositorycheckout.Checkout) gatewayauth.ScopeMetadata {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
 		return gatewayauth.ScopeMetadata{}
@@ -43,5 +47,9 @@ func (s *Service) gatewayScopeForSandbox(sandboxID string) gatewayauth.ScopeMeta
 	if !ok {
 		return gatewayauth.ScopeMetadata{}
 	}
-	return gatewayScopeMetadata(sb.Owner, sb.Repository, sb.Policy)
+	scopeRepository := sb.Repository
+	if repository != nil {
+		scopeRepository = repository
+	}
+	return gatewayScopeMetadata(sb.Owner, scopeRepository, sb.Policy)
 }
