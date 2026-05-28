@@ -212,7 +212,20 @@ if ! grep -q '^after-wake$' "$tmpdir/wake-file.txt"; then
   exit 1
 fi
 
-./dist/cleanroom exec --host "$listen_endpoint" --in "$suspend_sandbox_id" -- sh -lc 'mkdir -p /tmp/cleanroom-www; printf "wake-exposure\n" >/tmp/cleanroom-www/index.html; nohup busybox httpd -f -p 18080 -h /tmp/cleanroom-www >/tmp/cleanroom-httpd.log 2>&1 &'
+./dist/cleanroom exec --host "$listen_endpoint" --in "$suspend_sandbox_id" -- sh -lc "cat > /tmp/cleanroom-http-responder <<'EOF'
+#!/bin/sh
+printf 'HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nwake-exposure\n' | nc -l -p 18080
+EOF
+chmod +x /tmp/cleanroom-http-responder
+/tmp/cleanroom-http-responder >/tmp/cleanroom-nc-check.log 2>&1 &
+sleep 0.2
+wget -q -O - http://127.0.0.1:18080/
+/tmp/cleanroom-http-responder >/tmp/cleanroom-nc.log 2>&1 &" | tee "$tmpdir/exposure-guest.out"
+if ! grep -q '^wake-exposure$' "$tmpdir/exposure-guest.out"; then
+  echo "expected in-guest exposure response missing before suspend" >&2
+  cat "$tmpdir/exposure-guest.out" >&2 || true
+  exit 1
+fi
 ./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$suspend_sandbox_id"
 exposure_port="$(choose_local_tcp_port)"
 ./dist/cleanroom port-forward --host "$listen_endpoint" --in "$suspend_sandbox_id" "$exposure_port:18080" >"$tmpdir/exposure.out" 2>"$tmpdir/exposure.err" &
@@ -236,7 +249,19 @@ if ! grep -q "tcp://127.0.0.1:$exposure_port" "$tmpdir/exposure.out"; then
   exit 1
 fi
 
+set +e
 curl --fail --max-time 20 --silent --show-error "http://127.0.0.1:$exposure_port/" | tee "$tmpdir/exposure-http.out"
+curl_status=${PIPESTATUS[0]}
+set -e
+if [[ "$curl_status" -ne 0 ]]; then
+  echo "local exposure request failed with status $curl_status" >&2
+  echo "port-forward stdout:" >&2
+  cat "$tmpdir/exposure.out" >&2 || true
+  echo "port-forward stderr:" >&2
+  cat "$tmpdir/exposure.err" >&2 || true
+  ./dist/cleanroom exec --host "$listen_endpoint" --in "$suspend_sandbox_id" -- sh -lc 'ps; wget -S -O - http://127.0.0.1:18080/ || true' >&2 || true
+  exit 1
+fi
 if ! grep -q '^wake-exposure$' "$tmpdir/exposure-http.out"; then
   echo "expected local exposure response missing" >&2
   cat "$tmpdir/exposure-http.out" >&2 || true

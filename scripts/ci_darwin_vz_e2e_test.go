@@ -56,8 +56,10 @@ func TestCiDarwinVZE2EUsesFileHandleNetworkMode(t *testing.T) {
 		`./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$suspend_sandbox_id"`,
 		`./dist/cleanroom exec --host "$listen_endpoint" --in "$suspend_sandbox_id" -- sh -lc 'printf after-wake >/tmp/cleanroom-suspend-wake.txt; echo command-after-wake'`,
 		`./dist/cleanroom cp --host "$listen_endpoint" "$suspend_sandbox_id:/tmp/cleanroom-suspend-wake.txt" "$tmpdir/wake-file.txt"`,
+		`printf 'HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nwake-exposure\n' | nc -l -p 18080`,
 		`./dist/cleanroom port-forward --host "$listen_endpoint" --in "$suspend_sandbox_id" "$exposure_port:18080"`,
 		`curl --fail --max-time 20 --silent --show-error "http://127.0.0.1:$exposure_port/"`,
+		`curl_status=${PIPESTATUS[0]}`,
 		`./dist/cleanroom sandbox rm --host "$listen_endpoint" "$suspend_sandbox_id"`,
 	} {
 		if !strings.Contains(string(content), needle) {
