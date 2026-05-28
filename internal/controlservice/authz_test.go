@@ -1,11 +1,14 @@
 package controlservice
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +76,47 @@ func TestAuthzEnforcesExactSandboxAndExecutionOwnership(t *testing.T) {
 	}
 }
 
+func TestAuthzAuditLogIncludesStableReason(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := observability.NewLogger(&logs, "info", runtimeconfig.ObservabilityConfig{
+		Logs: runtimeconfig.LogConfig{Format: "json"},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	svc := &Service{
+		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
+		Backends: map[string]backend.Adapter{
+			"firecracker": &stubAdapter{},
+		},
+		Logger: logger,
+	}
+	aliceCtx := testAuthContext(t, "alice")
+	bobCtx := testAuthContext(t, "bob")
+
+	createResp, err := svc.CreateSandbox(aliceCtx, &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if _, err := svc.GetSandbox(bobCtx, &cleanroomv1.GetSandboxRequest{SandboxId: createResp.GetSandbox().GetSandboxId()}); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("GetSandbox as different principal error = %v, want authorization denied", err)
+	}
+
+	payload := findAuthorizationDeniedLog(t, logs.String())
+	if got, want := payload[observability.LogFieldReasonCode], authz.ReasonOwnerMismatch; got != want {
+		t.Fatalf("unexpected reason code: got %#v want %#v", got, want)
+	}
+	if got, want := payload["principal_id"], "oidc:test:bob"; got != want {
+		t.Fatalf("unexpected principal_id: got %#v want %#v", got, want)
+	}
+	if _, ok := payload["token"]; ok {
+		t.Fatalf("authorization audit log must not include token material: %#v", payload)
+	}
+}
+
 func TestAuthzPropagatesGatewayScopeToBackendRequests(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := &Service{
@@ -115,6 +159,24 @@ func TestAuthzPropagatesGatewayScopeToBackendRequests(t *testing.T) {
 	if got, want := adapter.req.GatewayScope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
 		t.Fatalf("execution git auth mismatch: got %v want %v", got, want)
 	}
+}
+
+func findAuthorizationDeniedLog(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatalf("decode authorization log %q: %v", line, err)
+		}
+		if payload["msg"] == "authorization denied" {
+			return payload
+		}
+	}
+	t.Fatalf("authorization denied log not found in:\n%s", raw)
+	return nil
 }
 
 func TestAuthzPropagatesRequestedRepositoryToBootstrapGatewayScope(t *testing.T) {

@@ -1,8 +1,8 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Slice 2B-2 implemented; runtime hardening and sharing follow-ups next
-**Last reviewed:** 2026-05-27
+**Status:** Slice 3 implemented; controlled sharing follow-ups next
+**Last reviewed:** 2026-05-28
 
 ## Summary
 
@@ -55,6 +55,12 @@ Slice 2 is split into PR-sized enforcement work:
   or host-side Git credentials can serve bytes. The first envelope is exact:
   Git is limited to the sandbox checkout repository, and OCI is limited to the
   sandbox image repository.
+- Slice 3 now makes policy-runtime failures and auth failures explainable with
+  stable reason codes: binding-level CEL runtime errors fail closed instead of
+  falling through to later bindings, `cleanroom auth check` renders those
+  structured denials, server bearer-token failures emit redacted audit logs, and
+  control-service authorization denials emit audit logs with reason, action,
+  resource, principal, binding, and grant fields.
 
 Focused validation run on 2026-05-25:
 
@@ -99,6 +105,22 @@ mise exec -- go test ./internal/gatewayauth ./internal/gateway ./internal/contro
 Result: passed.
 
 Slice 2B-2 repository validation run on 2026-05-27:
+
+```text
+mise run check
+```
+
+Result: passed.
+
+Slice 3 focused validation run on 2026-05-28:
+
+```text
+mise exec -- go test ./internal/authz ./internal/cli ./internal/controlserver ./internal/controlservice
+```
+
+Result: passed.
+
+Slice 3 repository validation run on 2026-05-28:
 
 ```text
 mise run check
@@ -711,6 +733,21 @@ Scope:
 - Add audit events and denial reason codes.
 - Reject bearer tokens over insecure non-loopback HTTP when auth is required.
 - Add transport and token redaction tests.
+
+Progress:
+
+- Binding-level CEL runtime errors now fail closed with
+  `auth_condition_error`, rather than being treated as a skipped binding.
+- Structured authorization decision errors carry stable reason codes into
+  `cleanroom auth check`, ConnectRPC auth errors, and control-service
+  authorization-denied errors.
+- Invalid bearer-token responses and audit logs report `auth_invalid_token`
+  without wrapping validator errors that may contain token material.
+- Control-service authorization denials emit audit logs with stable reason
+  codes and resource/principal context, without token fields.
+- Insecure non-loopback HTTP rejection for bearer tokens was already enforced
+  on client and server configuration surfaces and remains covered by existing
+  transport tests.
 
 Definition of done: auth failures are observable without leaking token material,
 transport behavior is fail-closed for bearer tokens, and every deny path returns

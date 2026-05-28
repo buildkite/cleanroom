@@ -1,10 +1,13 @@
 package controlserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
@@ -38,6 +42,85 @@ func TestBearerAuthenticatorRejectsMissingToken(t *testing.T) {
 
 	if _, err := auth.Authenticate(context.Background(), ""); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("Authenticate missing token code = %v, want unauthenticated (err=%v)", connect.CodeOf(err), err)
+	}
+}
+
+func TestBearerAuthenticatorRedactsInvalidToken(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := observability.NewLogger(&logs, "info", runtimeconfig.ObservabilityConfig{
+		Logs: runtimeconfig.LogConfig{Format: "json"},
+	})
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+	policy := testServerAuthPolicy(t)
+	auth := BearerAuthenticator{
+		Validator: leakingTokenValidator{},
+		Policy:    policy,
+		Logger:    logger,
+	}
+
+	secret := "super-secret-token"
+	_, err = auth.Authenticate(context.Background(), "Bearer "+secret)
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("Authenticate invalid token code = %v, want unauthenticated (err=%v)", connect.CodeOf(err), err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("invalid token error leaked token: %v", err)
+	}
+	if !strings.Contains(err.Error(), authz.ReasonInvalidToken) {
+		t.Fatalf("invalid token error missing reason code %q: %v", authz.ReasonInvalidToken, err)
+	}
+	if strings.Contains(logs.String(), secret) {
+		t.Fatalf("invalid token audit log leaked token: %s", logs.String())
+	}
+	payload := findControlServerAuthDeniedLog(t, logs.String())
+	if got, want := payload[observability.LogFieldReasonCode], authz.ReasonInvalidToken; got != want {
+		t.Fatalf("unexpected auth log reason code: got %#v want %#v", got, want)
+	}
+}
+
+func TestBearerAuthenticatorReportsBindingConditionError(t *testing.T) {
+	policy, err := authz.CompilePolicy(authz.Policy{Bindings: []authz.Binding{
+		{
+			Name: "broken-binding",
+			When: `claims.repository.owner == "buildkite"`,
+			Principal: authz.PrincipalTemplate{
+				ID: "oidc:${token.issuer}:${token.subject}",
+			},
+			Grants: []authz.Grant{{
+				Actions:   []string{"sandbox.create"},
+				Resources: []string{"sandbox"},
+			}},
+		},
+		{
+			Name: "fallback",
+			When: `token.issuer == "test"`,
+			Principal: authz.PrincipalTemplate{
+				ID: "oidc:${token.issuer}:${token.subject}",
+			},
+			Grants: []authz.Grant{{
+				Actions:   []string{"sandbox.create"},
+				Resources: []string{"sandbox"},
+			}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("CompilePolicy returned error: %v", err)
+	}
+	auth := BearerAuthenticator{
+		Validator: fakeTokenValidator{tokens: map[string]authz.ValidatedToken{
+			"alice-token": testValidatedToken("alice"),
+		}},
+		Policy: policy,
+	}
+
+	_, err = auth.Authenticate(context.Background(), "Bearer alice-token")
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("Authenticate code = %v, want permission denied (err=%v)", connect.CodeOf(err), err)
+	}
+	if !strings.Contains(err.Error(), authz.ReasonConditionError) {
+		t.Fatalf("binding condition error missing reason code %q: %v", authz.ReasonConditionError, err)
 	}
 }
 
@@ -73,6 +156,30 @@ func TestBearerAuthenticatorBindsPrincipalIntoHandlers(t *testing.T) {
 	if resp.Msg.GetSandbox().GetSandboxId() == "" {
 		t.Fatal("expected created sandbox id")
 	}
+}
+
+type leakingTokenValidator struct{}
+
+func (leakingTokenValidator) Validate(_ context.Context, token string) (authz.ValidatedToken, error) {
+	return authz.ValidatedToken{}, errors.New("token rejected: " + token)
+}
+
+func findControlServerAuthDeniedLog(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatalf("decode auth log %q: %v", line, err)
+		}
+		if payload["msg"] == "control server auth denied" {
+			return payload
+		}
+	}
+	t.Fatalf("control server auth denied log not found in:\n%s", raw)
+	return nil
 }
 
 func testServerAuthPolicy(t *testing.T) *authz.CompiledPolicy {

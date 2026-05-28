@@ -9,6 +9,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
@@ -43,7 +44,7 @@ func (s *Service) authorizeCreate(ctx context.Context, action, resourceKind stri
 		Request:  request,
 	})
 	if !decision.Allowed {
-		return owner, authDenied(decision)
+		return owner, s.denyAuthorization(ctx, decision)
 	}
 	return owner, nil
 }
@@ -59,7 +60,7 @@ func (s *Service) authorizeOwnedResource(ctx context.Context, action, resourceKi
 		Owner: owner,
 	}
 	if strings.TrimSpace(owner.PrincipalID) == "" {
-		return authDenied(authz.Decision{
+		return s.denyAuthorization(ctx, authz.Decision{
 			Allowed:   false,
 			Principal: bound.Principal,
 			Action:    action,
@@ -69,7 +70,7 @@ func (s *Service) authorizeOwnedResource(ctx context.Context, action, resourceKi
 		})
 	}
 	if owner.PrincipalID != bound.Principal.ID {
-		return authDenied(authz.Decision{
+		return s.denyAuthorization(ctx, authz.Decision{
 			Allowed:   false,
 			Principal: bound.Principal,
 			Action:    action,
@@ -84,7 +85,7 @@ func (s *Service) authorizeOwnedResource(ctx context.Context, action, resourceKi
 		Request:  request,
 	})
 	if !decision.Allowed {
-		return authDenied(decision)
+		return s.denyAuthorization(ctx, decision)
 	}
 	return nil
 }
@@ -137,7 +138,43 @@ func authDenied(decision authz.Decision) error {
 	if reason == "" {
 		reason = authz.ReasonNoGrant
 	}
-	return fmt.Errorf("%w: %s for %s on %s %q", ErrAuthorizationDenied, reason, decision.Action, decision.Resource.Kind, decision.Resource.ID)
+	decision.Reason = reason
+	return authz.NewDecisionError(decision, ErrAuthorizationDenied)
+}
+
+func (s *Service) denyAuthorization(ctx context.Context, decision authz.Decision) error {
+	s.logAuthorizationDeny(ctx, decision)
+	return authDenied(decision)
+}
+
+func (s *Service) logAuthorizationDeny(ctx context.Context, decision authz.Decision) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = authz.ReasonNoGrant
+	}
+	fields := []any{
+		observability.LogFieldComponent, "authz",
+		observability.LogFieldSubsystem, "controlservice",
+		observability.LogFieldReasonCode, reason,
+		"action", strings.TrimSpace(decision.Action),
+		"resource_kind", strings.TrimSpace(decision.Resource.Kind),
+	}
+	if id := strings.TrimSpace(decision.Resource.ID); id != "" {
+		fields = append(fields, "resource_id", id)
+	}
+	if principalID := strings.TrimSpace(decision.Principal.ID); principalID != "" {
+		fields = append(fields, "principal_id", principalID)
+	}
+	if binding := strings.TrimSpace(decision.Binding); binding != "" {
+		fields = append(fields, "binding", binding)
+	}
+	if grant := strings.TrimSpace(decision.Grant); grant != "" {
+		fields = append(fields, "grant", grant)
+	}
+	observability.WithTraceContext(s.Logger, ctx).Warn("authorization denied", fields...)
 }
 
 func createSandboxAuthorizationRequest(backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, snapshotID string, effectiveResources policy.Resources) map[string]any {

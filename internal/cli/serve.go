@@ -201,7 +201,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 			KeyPath:  s.TLSKey,
 		}
 	}
-	authInterceptor, err := s.authInterceptor(ctx, ep)
+	authInterceptor, err := s.authInterceptor(ctx, ep, httpLogger)
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	return runErr
 }
 
-func (s *ServeCommand) authInterceptor(ctx *runtimeContext, ep endpoint.Endpoint) (connect.Interceptor, error) {
+func (s *ServeCommand) authInterceptor(ctx *runtimeContext, ep endpoint.Endpoint, logger *log.Logger) (connect.Interceptor, error) {
 	if ctx == nil || !ctx.Config.Auth.Required || ep.Scheme == "unix" {
 		return nil, nil
 	}
@@ -273,6 +273,7 @@ func (s *ServeCommand) authInterceptor(ctx *runtimeContext, ep endpoint.Endpoint
 	return controlserver.BearerAuthenticator{
 		Validator: validator,
 		Policy:    policy,
+		Logger:    logger,
 	}.Interceptor(), nil
 }
 
