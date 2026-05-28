@@ -89,6 +89,58 @@ func TestAuthCheckCommandReportsDeniedDecision(t *testing.T) {
 	}
 }
 
+func TestAuthCheckCommandReportsBindingConditionError(t *testing.T) {
+	fixture := newAuthCheckFixture(t)
+	if err := os.WriteFile(fixture.policyPath, []byte(`bindings:
+  - name: broken-binding
+    when: 'claims.repository.owner == "buildkite"'
+    principal:
+      id: 'oidc:${token.issuer}:${claims.sub}'
+    grants:
+      - actions: [sandbox.create]
+        resources: [sandbox]
+  - name: fallback
+    when: 'token.issuer == "github-actions"'
+    principal:
+      id: 'oidc:${token.issuer}:${claims.sub}'
+    grants:
+      - actions: [sandbox.create]
+        resources: [sandbox]
+`), 0o644); err != nil {
+		t.Fatalf("write auth policy: %v", err)
+	}
+
+	stdout, readStdout := makeStdoutCapture(t)
+	err := (&AuthCheckCommand{
+		Config:    fixture.configPath,
+		TokenFile: fixture.tokenPath,
+		Action:    "sandbox.create",
+		Request:   fixture.requestPath,
+		JSON:      true,
+	}).Run(&runtimeContext{CWD: fixture.dir, Stdout: stdout})
+	var exitErr hasExitCode
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("expected denied exit code 1, got %v", err)
+	}
+
+	var decision authz.Decision
+	if err := json.Unmarshal([]byte(readStdout()), &decision); err != nil {
+		t.Fatalf("decode auth check json: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("expected denied decision, got %#v", decision)
+	}
+	if got, want := decision.Reason, authz.ReasonConditionError; got != want {
+		t.Fatalf("unexpected deny reason: got %q want %q", got, want)
+	}
+	if got, want := decision.Binding, "broken-binding"; got != want {
+		t.Fatalf("unexpected binding: got %q want %q", got, want)
+	}
+	if got, want := decision.Resource.Kind, "sandbox"; got != want {
+		t.Fatalf("unexpected resource kind: got %q want %q", got, want)
+	}
+}
+
 func TestRunAuthCheckBypassesBrokenDefaultRuntimeConfig(t *testing.T) {
 	fixture := newAuthCheckFixture(t)
 	xdgConfigHome := filepath.Join(fixture.dir, "xdg")

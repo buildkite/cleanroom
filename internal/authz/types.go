@@ -64,4 +64,6 @@ const (
 	ReasonConditionError = "auth_condition_error"
 	ReasonOwnerMismatch  = "auth_owner_mismatch"
 	ReasonMissingOwner   = "auth_resource_missing_owner"
+	ReasonInvalidToken   = "auth_invalid_token"
+	ReasonPolicyError    = "auth_policy_error"
 )

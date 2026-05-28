@@ -176,7 +176,11 @@ func (p *CompiledPolicy) Bind(token ValidatedToken) (BoundPrincipal, error) {
 		binding := &p.bindings[i]
 		matched, err := binding.when.eval(activation)
 		if err != nil {
-			continue
+			return BoundPrincipal{}, NewDecisionError(Decision{
+				Allowed: false,
+				Binding: binding.name,
+				Reason:  ReasonConditionError,
+			}, err)
 		}
 		if !matched {
 			continue

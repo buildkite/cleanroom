@@ -76,6 +76,9 @@ func (c *AuthCheckCommand) Run(ctx *runtimeContext) error {
 	}
 	bound, err := policy.Bind(token)
 	if err != nil {
+		if decision, ok := authz.DecisionFromError(err); ok {
+			return writeAuthCheckDecision(ctx, completeAuthCheckDecision(decision, c), c.JSON)
+		}
 		if errors.Is(err, authz.ErrNoBinding) {
 			decision := authz.Decision{
 				Allowed: false,
@@ -107,6 +110,26 @@ func (c *AuthCheckCommand) Run(ctx *runtimeContext) error {
 		Request: request,
 	})
 	return writeAuthCheckDecision(ctx, decision, c.JSON)
+}
+
+func completeAuthCheckDecision(decision authz.Decision, c *AuthCheckCommand) authz.Decision {
+	decision.Allowed = false
+	if strings.TrimSpace(decision.Action) == "" {
+		decision.Action = strings.TrimSpace(c.Action)
+	}
+	if strings.TrimSpace(decision.Resource.Kind) == "" {
+		decision.Resource.Kind = resourceKindForAction(c.Action, c.Resource)
+	}
+	if strings.TrimSpace(decision.Resource.ID) == "" {
+		decision.Resource.ID = strings.TrimSpace(c.ResourceID)
+	}
+	if strings.TrimSpace(decision.Resource.Owner.PrincipalID) == "" {
+		decision.Resource.Owner.PrincipalID = strings.TrimSpace(c.OwnerPrincipalID)
+	}
+	if strings.TrimSpace(decision.Resource.Owner.Scope) == "" {
+		decision.Resource.Owner.Scope = strings.TrimSpace(c.OwnerScope)
+	}
+	return decision
 }
 
 func writeAuthCheckDecision(ctx *runtimeContext, decision authz.Decision, asJSON bool) error {

@@ -293,7 +293,7 @@ func TestPolicyBindsPrincipalAndAuthorizesGrant(t *testing.T) {
 	}
 }
 
-func TestPolicyContinuesBindingEvaluationAfterWhenError(t *testing.T) {
+func TestPolicyFailsClosedBindingEvaluationAfterWhenError(t *testing.T) {
 	policy := compileTestPolicy(t, `bindings:
   - name: missing-claim
     when: 'claims.repository.owner == "buildkite"'
@@ -317,10 +317,20 @@ func TestPolicyContinuesBindingEvaluationAfterWhenError(t *testing.T) {
 			"sub": "repo:buildkite/cleanroom:ref:refs/heads/main",
 		},
 	})
-	if err != nil {
-		t.Fatalf("Bind returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected binding condition error")
 	}
-	if got, want := bound.Binding, "fallback"; got != want {
+	if bound.Principal.ID != "" {
+		t.Fatalf("expected no bound principal, got %#v", bound.Principal)
+	}
+	decision, ok := DecisionFromError(err)
+	if !ok {
+		t.Fatalf("expected decision error, got %v", err)
+	}
+	if got, want := decision.Reason, ReasonConditionError; got != want {
+		t.Fatalf("unexpected deny reason: got %q want %q", got, want)
+	}
+	if got, want := decision.Binding, "missing-claim"; got != want {
 		t.Fatalf("unexpected binding: got %q want %q", got, want)
 	}
 }
