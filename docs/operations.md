@@ -53,7 +53,20 @@ cleanroom config validate --json
 
 Runtime config covers host-specific choices such as the default backend,
 control endpoint, backend asset paths, gateway settings, cache peers,
-observability, snapshot drivers, and Docker service defaults.
+observability, sandbox lifecycle timers, snapshot drivers, and Docker service
+defaults.
+
+Idle sandbox suspension is disabled unless the host runtime config opts in:
+
+```yaml
+sandbox_lifecycle:
+  idle_suspend_after_seconds: 600
+  wake_timeout_seconds: 30
+```
+
+Set `idle_suspend_after_seconds` to `0` or omit it to leave automatic idle
+suspend disabled. The policy applies only to backends that report
+`sandbox.suspend=true`.
 
 Repository behavior belongs in `cleanroom.yaml`; see [Policy](policy.md).
 
