@@ -19,6 +19,8 @@ import (
 type Record struct {
 	CacheKey                 string
 	Stage                    string
+	OwnerPrincipalID         string
+	OwnerScope               string
 	ReuseMode                string
 	State                    string
 	BackingSnapshotID        string
@@ -165,6 +167,8 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 		INSERT INTO cache_entries (
 			cache_key,
 			stage,
+			owner_principal_id,
+			owner_scope,
 			reuse_mode,
 			state,
 			backing_snapshot_id,
@@ -195,7 +199,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			last_used_at_unix_nano,
 			last_validated_at_unix_nano,
 			producer_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	if replace {
 		verb = "upsert"
@@ -203,6 +207,8 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			INSERT INTO cache_entries (
 				cache_key,
 				stage,
+				owner_principal_id,
+				owner_scope,
 				reuse_mode,
 				state,
 				backing_snapshot_id,
@@ -233,8 +239,9 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				last_used_at_unix_nano,
 				last_validated_at_unix_nano,
 				producer_version
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(stage, cache_key) DO UPDATE SET
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(stage, cache_key, owner_principal_id) DO UPDATE SET
+				owner_scope = excluded.owner_scope,
 				reuse_mode = excluded.reuse_mode,
 				state = excluded.state,
 				backing_snapshot_id = excluded.backing_snapshot_id,
@@ -271,6 +278,8 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 	if _, err := db.ExecContext(ctx, statement,
 		record.CacheKey,
 		record.Stage,
+		strings.TrimSpace(record.OwnerPrincipalID),
+		nullableString(record.OwnerScope),
 		nullableString(record.ReuseMode),
 		record.State,
 		record.BackingSnapshotID,
@@ -308,6 +317,18 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 }
 
 func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, bool, error) {
+	return s.getReadyForOwner(ctx, stage, cacheKey, "")
+}
+
+func (s *Store) GetReadyForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string) (Record, bool, error) {
+	ownerPrincipalID = strings.TrimSpace(ownerPrincipalID)
+	if ownerPrincipalID == "" {
+		return Record{}, false, nil
+	}
+	return s.getReadyForOwner(ctx, stage, cacheKey, ownerPrincipalID)
+}
+
+func (s *Store) getReadyForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string) (Record, bool, error) {
 	db, err := s.open(ctx)
 	if err != nil {
 		return Record{}, false, err
@@ -318,6 +339,8 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 		SELECT
 			cache_key,
 			stage,
+			owner_principal_id,
+			owner_scope,
 			reuse_mode,
 			state,
 			backing_snapshot_id,
@@ -349,8 +372,8 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			last_validated_at_unix_nano,
 			producer_version
 		FROM cache_entries
-		WHERE stage = ? AND cache_key = ? AND state = 'ready'
-	`, strings.TrimSpace(stage), strings.TrimSpace(cacheKey))
+		WHERE stage = ? AND cache_key = ? AND owner_principal_id = ? AND state = 'ready'
+	`, strings.TrimSpace(stage), strings.TrimSpace(cacheKey), strings.TrimSpace(ownerPrincipalID))
 
 	record, err := scanRecord(row)
 	if err != nil {
@@ -363,6 +386,18 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 }
 
 func (s *Store) UpdateLastUsedAt(ctx context.Context, stage, cacheKey string, lastUsedAt time.Time) error {
+	return s.updateLastUsedAtForOwner(ctx, stage, cacheKey, "", lastUsedAt)
+}
+
+func (s *Store) UpdateLastUsedAtForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string, lastUsedAt time.Time) error {
+	ownerPrincipalID = strings.TrimSpace(ownerPrincipalID)
+	if ownerPrincipalID == "" {
+		return fmt.Errorf("cache metadata %q/%q missing owner principal", stage, cacheKey)
+	}
+	return s.updateLastUsedAtForOwner(ctx, stage, cacheKey, ownerPrincipalID, lastUsedAt)
+}
+
+func (s *Store) updateLastUsedAtForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string, lastUsedAt time.Time) error {
 	if lastUsedAt.IsZero() {
 		lastUsedAt = time.Now().UTC()
 	}
@@ -376,8 +411,8 @@ func (s *Store) UpdateLastUsedAt(ctx context.Context, stage, cacheKey string, la
 	result, err := db.ExecContext(ctx, `
 		UPDATE cache_entries
 		SET last_used_at_unix_nano = ?
-		WHERE stage = ? AND cache_key = ?
-	`, lastUsedAt.UTC().UnixNano(), strings.TrimSpace(stage), strings.TrimSpace(cacheKey))
+		WHERE stage = ? AND cache_key = ? AND owner_principal_id = ?
+	`, lastUsedAt.UTC().UnixNano(), strings.TrimSpace(stage), strings.TrimSpace(cacheKey), strings.TrimSpace(ownerPrincipalID))
 	if err != nil {
 		return fmt.Errorf("update cache last used time %q/%q: %w", stage, cacheKey, err)
 	}
@@ -391,6 +426,10 @@ func (s *Store) Touch(ctx context.Context, stage, cacheKey string) error {
 	return s.UpdateLastUsedAt(ctx, stage, cacheKey, time.Now().UTC())
 }
 
+func (s *Store) TouchForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	return s.UpdateLastUsedAtForOwner(ctx, stage, cacheKey, ownerPrincipalID, time.Now().UTC())
+}
+
 func (s *Store) List(ctx context.Context) ([]Record, error) {
 	db, err := s.open(ctx)
 	if err != nil {
@@ -402,6 +441,8 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 		SELECT
 			cache_key,
 			stage,
+			owner_principal_id,
+			owner_scope,
 			reuse_mode,
 			state,
 			backing_snapshot_id,
@@ -433,7 +474,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			last_validated_at_unix_nano,
 			producer_version
 		FROM cache_entries
-		ORDER BY created_at_unix_nano ASC, cache_key ASC
+		ORDER BY created_at_unix_nano ASC, cache_key ASC, owner_principal_id ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query cache metadata: %w", err)
@@ -470,6 +511,22 @@ func (s *Store) Delete(ctx context.Context, stage, cacheKey string) error {
 	return nil
 }
 
+func (s *Store) DeleteForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	db, err := s.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, `
+		DELETE FROM cache_entries
+		WHERE stage = ? AND cache_key = ? AND owner_principal_id = ?
+	`, strings.TrimSpace(stage), strings.TrimSpace(cacheKey), strings.TrimSpace(ownerPrincipalID)); err != nil {
+		return fmt.Errorf("delete cache metadata %q/%q for owner %q: %w", stage, cacheKey, ownerPrincipalID, err)
+	}
+	return nil
+}
+
 func (s *Store) open(ctx context.Context) (*sql.DB, error) {
 	if err := s.initDB(ctx); err != nil {
 		return nil, err
@@ -492,6 +549,8 @@ func (s *Store) initDB(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS cache_entries (
 			cache_key TEXT NOT NULL,
 			stage TEXT NOT NULL,
+			owner_principal_id TEXT NOT NULL DEFAULT '',
+			owner_scope TEXT,
 			reuse_mode TEXT,
 			state TEXT NOT NULL,
 			backend TEXT NOT NULL,
@@ -521,7 +580,7 @@ func (s *Store) initDB(ctx context.Context) error {
 			last_used_at_unix_nano INTEGER NOT NULL,
 			last_validated_at_unix_nano INTEGER NOT NULL DEFAULT 0,
 			producer_version TEXT NOT NULL,
-			PRIMARY KEY (stage, cache_key)
+			PRIMARY KEY (stage, cache_key, owner_principal_id)
 		);
 		CREATE INDEX IF NOT EXISTS idx_cache_entries_state_created_at ON cache_entries(state, created_at_unix_nano);
 		CREATE INDEX IF NOT EXISTS idx_cache_entries_last_used_at ON cache_entries(last_used_at_unix_nano);
@@ -583,7 +642,221 @@ func (s *Store) initDB(ctx context.Context) error {
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN last_validated_at_unix_nano INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata last_validated_at_unix_nano column: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN owner_principal_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata owner_principal_id column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN owner_scope TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata owner_scope column: %w", err)
+	}
+	if err := ensureCacheEntriesOwnerPrimaryKey(ctx, db); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_cache_entries_state_created_at ON cache_entries(state, created_at_unix_nano);
+		CREATE INDEX IF NOT EXISTS idx_cache_entries_last_used_at ON cache_entries(last_used_at_unix_nano);
+	`); err != nil {
+		return fmt.Errorf("ensure cache metadata indexes: %w", err)
+	}
 	return nil
+}
+
+func ensureCacheEntriesOwnerPrimaryKey(ctx context.Context, db *sql.DB) error {
+	primaryKey, err := cacheEntriesPrimaryKeyColumns(ctx, db)
+	if err != nil {
+		return err
+	}
+	if stringSlicesEqual(primaryKey, []string{"stage", "cache_key", "owner_principal_id"}) {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin cache metadata owner primary key migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE cache_entries_owner_pk (
+			cache_key TEXT NOT NULL,
+			stage TEXT NOT NULL,
+			owner_principal_id TEXT NOT NULL DEFAULT '',
+			owner_scope TEXT,
+			reuse_mode TEXT,
+			state TEXT NOT NULL,
+			backing_snapshot_id TEXT NOT NULL DEFAULT '',
+			backend TEXT NOT NULL,
+			architecture TEXT,
+			runtime_base_key TEXT,
+			policy_hash TEXT NOT NULL,
+			policy_proto BLOB NOT NULL,
+			repository_proto BLOB,
+			repository_has_changeset INTEGER NOT NULL DEFAULT 0,
+			repository_changeset_id TEXT,
+			parent_cache_key TEXT,
+			storage_driver TEXT NOT NULL DEFAULT 'file',
+			storage_ref TEXT NOT NULL,
+			storage_size_bytes INTEGER NOT NULL DEFAULT 0,
+			exclusive_size_bytes INTEGER NOT NULL DEFAULT 0,
+			driver_metadata TEXT,
+			input_manifest_digest TEXT,
+			command_digest TEXT,
+			env_digest TEXT,
+			normalized_outputs_digest TEXT,
+			output_manifest_digest TEXT,
+			dependency_key_files_digest TEXT,
+			output_records_json BLOB,
+			checkout_refresh_required INTEGER NOT NULL DEFAULT 0,
+			imported_from_peer INTEGER NOT NULL DEFAULT 0,
+			created_at_unix_nano INTEGER NOT NULL,
+			last_used_at_unix_nano INTEGER NOT NULL,
+			last_validated_at_unix_nano INTEGER NOT NULL DEFAULT 0,
+			producer_version TEXT NOT NULL,
+			PRIMARY KEY (stage, cache_key, owner_principal_id)
+		)
+	`); err != nil {
+		return fmt.Errorf("create cache metadata owner primary key table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO cache_entries_owner_pk (
+			cache_key,
+			stage,
+			owner_principal_id,
+			owner_scope,
+			reuse_mode,
+			state,
+			backing_snapshot_id,
+			backend,
+			architecture,
+			runtime_base_key,
+			policy_hash,
+			policy_proto,
+			repository_proto,
+			repository_has_changeset,
+			repository_changeset_id,
+			parent_cache_key,
+			storage_driver,
+			storage_ref,
+			storage_size_bytes,
+			exclusive_size_bytes,
+			driver_metadata,
+			input_manifest_digest,
+			command_digest,
+			env_digest,
+			normalized_outputs_digest,
+			output_manifest_digest,
+			dependency_key_files_digest,
+			output_records_json,
+			checkout_refresh_required,
+			imported_from_peer,
+			created_at_unix_nano,
+			last_used_at_unix_nano,
+			last_validated_at_unix_nano,
+			producer_version
+		)
+		SELECT
+			cache_key,
+			stage,
+			COALESCE(owner_principal_id, ''),
+			owner_scope,
+			reuse_mode,
+			state,
+			backing_snapshot_id,
+			backend,
+			architecture,
+			runtime_base_key,
+			policy_hash,
+			policy_proto,
+			repository_proto,
+			repository_has_changeset,
+			repository_changeset_id,
+			parent_cache_key,
+			storage_driver,
+			storage_ref,
+			storage_size_bytes,
+			exclusive_size_bytes,
+			driver_metadata,
+			input_manifest_digest,
+			command_digest,
+			env_digest,
+			normalized_outputs_digest,
+			output_manifest_digest,
+			dependency_key_files_digest,
+			output_records_json,
+			checkout_refresh_required,
+			imported_from_peer,
+			created_at_unix_nano,
+			last_used_at_unix_nano,
+			last_validated_at_unix_nano,
+			producer_version
+		FROM cache_entries
+	`); err != nil {
+		return fmt.Errorf("copy cache metadata into owner primary key table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE cache_entries`); err != nil {
+		return fmt.Errorf("drop old cache metadata table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE cache_entries_owner_pk RENAME TO cache_entries`); err != nil {
+		return fmt.Errorf("rename cache metadata owner primary key table: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit cache metadata owner primary key migration: %w", err)
+	}
+	return nil
+}
+
+func cacheEntriesPrimaryKeyColumns(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(cache_entries)`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect cache metadata primary key: %w", err)
+	}
+	defer rows.Close()
+
+	type primaryKeyColumn struct {
+		name string
+		pos  int
+	}
+	var cols []primaryKeyColumn
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			columnTyp string
+			notNull   int
+			defaultV  any
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &columnTyp, &notNull, &defaultV, &pk); err != nil {
+			return nil, fmt.Errorf("scan cache metadata primary key: %w", err)
+		}
+		if pk > 0 {
+			cols = append(cols, primaryKeyColumn{name: name, pos: pk})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cache metadata primary key: %w", err)
+	}
+	for i := 1; i < len(cols); i++ {
+		for j := i; j > 0 && cols[j-1].pos > cols[j].pos; j-- {
+			cols[j-1], cols[j] = cols[j], cols[j-1]
+		}
+	}
+	names := make([]string, 0, len(cols))
+	for _, col := range cols {
+		names = append(names, col.name)
+	}
+	return names, nil
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type recordScanner interface {
@@ -598,6 +871,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		repositoryHasChangeset   int
 		checkoutRefreshRequired  int
 		importedFromPeer         int
+		ownerScope               sql.NullString
 		reuseMode                sql.NullString
 		architecture             sql.NullString
 		runtimeBaseKey           sql.NullString
@@ -618,6 +892,8 @@ func scanRecord(row recordScanner) (Record, error) {
 	if err := row.Scan(
 		&record.CacheKey,
 		&record.Stage,
+		&record.OwnerPrincipalID,
+		&ownerScope,
 		&reuseMode,
 		&record.State,
 		&record.BackingSnapshotID,
@@ -663,6 +939,9 @@ func scanRecord(row recordScanner) (Record, error) {
 		}
 	}
 	record.RepositoryHasChangeset = repositoryHasChangeset != 0
+	if ownerScope.Valid {
+		record.OwnerScope = ownerScope.String
+	}
 	if repositoryChangesetID.Valid {
 		record.RepositoryChangesetID = repositoryChangesetID.String
 	}

@@ -2362,7 +2362,7 @@ func newMemoryCacheStore() *memoryCacheStore {
 func (s *memoryCacheStore) Create(_ context.Context, record cachestore.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := cacheStoreKey(record.Stage, record.CacheKey)
+	key := cacheStoreOwnerKey(record.Stage, record.CacheKey, record.OwnerPrincipalID)
 	if _, exists := s.records[key]; exists {
 		return errors.New("cache record already exists")
 	}
@@ -2373,14 +2373,26 @@ func (s *memoryCacheStore) Create(_ context.Context, record cachestore.Record) e
 func (s *memoryCacheStore) Upsert(_ context.Context, record cachestore.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records[cacheStoreKey(record.Stage, record.CacheKey)] = record
+	s.records[cacheStoreOwnerKey(record.Stage, record.CacheKey, record.OwnerPrincipalID)] = record
 	return nil
 }
 
 func (s *memoryCacheStore) GetReady(_ context.Context, stage, cacheKey string) (cachestore.Record, bool, error) {
+	return s.getReadyForOwner(stage, cacheKey, "")
+}
+
+func (s *memoryCacheStore) GetReadyForOwner(_ context.Context, stage, cacheKey, ownerPrincipalID string) (cachestore.Record, bool, error) {
+	ownerPrincipalID = strings.TrimSpace(ownerPrincipalID)
+	if ownerPrincipalID == "" {
+		return cachestore.Record{}, false, nil
+	}
+	return s.getReadyForOwner(stage, cacheKey, ownerPrincipalID)
+}
+
+func (s *memoryCacheStore) getReadyForOwner(stage, cacheKey, ownerPrincipalID string) (cachestore.Record, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, ok := s.records[cacheStoreKey(stage, cacheKey)]
+	record, ok := s.records[cacheStoreOwnerKey(stage, cacheKey, ownerPrincipalID)]
 	if !ok || record.State != cacheStateReady {
 		return cachestore.Record{}, false, nil
 	}
@@ -2388,9 +2400,21 @@ func (s *memoryCacheStore) GetReady(_ context.Context, stage, cacheKey string) (
 }
 
 func (s *memoryCacheStore) Touch(_ context.Context, stage, cacheKey string) error {
+	return s.touchForOwner(stage, cacheKey, "")
+}
+
+func (s *memoryCacheStore) TouchForOwner(_ context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	ownerPrincipalID = strings.TrimSpace(ownerPrincipalID)
+	if ownerPrincipalID == "" {
+		return errors.New("cache record missing owner")
+	}
+	return s.touchForOwner(stage, cacheKey, ownerPrincipalID)
+}
+
+func (s *memoryCacheStore) touchForOwner(stage, cacheKey, ownerPrincipalID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := cacheStoreKey(stage, cacheKey)
+	key := cacheStoreOwnerKey(stage, cacheKey, ownerPrincipalID)
 	record, ok := s.records[key]
 	if !ok {
 		return errors.New("cache record not found")
@@ -2413,7 +2437,18 @@ func (s *memoryCacheStore) List(_ context.Context) ([]cachestore.Record, error) 
 func (s *memoryCacheStore) Delete(_ context.Context, stage, cacheKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.records, cacheStoreKey(stage, cacheKey))
+	for key, record := range s.records {
+		if strings.TrimSpace(record.Stage) == strings.TrimSpace(stage) && strings.TrimSpace(record.CacheKey) == strings.TrimSpace(cacheKey) {
+			delete(s.records, key)
+		}
+	}
+	return nil
+}
+
+func (s *memoryCacheStore) DeleteForOwner(_ context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.records, cacheStoreOwnerKey(stage, cacheKey, ownerPrincipalID))
 	return nil
 }
 
@@ -2476,6 +2511,10 @@ func (s *memoryChangesetStore) Put(_ context.Context, repository *repositorychec
 
 func cacheStoreKey(stage, cacheKey string) string {
 	return strings.TrimSpace(stage) + "\x00" + strings.TrimSpace(cacheKey)
+}
+
+func cacheStoreOwnerKey(stage, cacheKey, ownerPrincipalID string) string {
+	return cacheStoreKey(stage, cacheKey) + "\x00" + strings.TrimSpace(ownerPrincipalID)
 }
 
 func cacheRecordBackingSnapshotID(record cachestore.Record) (string, bool) {

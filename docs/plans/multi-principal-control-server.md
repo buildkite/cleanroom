@@ -1,8 +1,8 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Slice 2A implemented; Slice 2B next
-**Last reviewed:** 2026-05-26
+**Status:** Slice 2B-1 implemented; gateway and content-cache auth next
+**Last reviewed:** 2026-05-27
 
 ## Summary
 
@@ -41,6 +41,11 @@ Slice 2 is split into PR-sized enforcement work:
   create-time grant checks, and exact owner checks for control-plane resources.
 - Slice 2B carries owner authorization into embedded gateway routes,
   `content-cache` request envelopes, and stage-cache metadata partitioning.
+- Slice 2B-1 now stamps owner metadata on stage-cache records, partitions
+  stage-cache lookups and touches by exact principal, keeps ownerless cache
+  records visible only to unauthenticated local callers, migrates the SQLite
+  stage-cache primary key to include owner, and disables cache-peer imports for
+  authenticated requests until the peer protocol carries owner metadata.
 
 Focused validation run on 2026-05-25:
 
@@ -64,6 +69,14 @@ Slice 2A validation run on 2026-05-26:
 mise exec -- go test ./internal/controlservice -run 'TestDeleteSnapshotRejectsSnapshotWithMetadataLoadInFlight|TestAuthzSnapshotRestoreEvaluatesSandboxCreateAgainstSnapshotBackend|TestAuthz' -count=1
 mise exec -- go test ./internal/authz ./internal/controlserver ./internal/controlclient ./internal/cli ./internal/snapshotstore
 mise run check
+```
+
+Result: passed.
+
+Slice 2B-1 focused validation run on 2026-05-27:
+
+```text
+mise exec -- go test ./internal/cachestore ./internal/controlservice ./internal/controlserver ./internal/storagegc
 ```
 
 Result: passed.
@@ -642,6 +655,17 @@ Scope:
 - Deny auth-enabled access to pre-existing cache records that have no owner
   metadata.
 
+Progress:
+
+- 2B-1 completed the stage-cache metadata partition: owner fields are persisted,
+  exact-owner cache lookup is used under authenticated contexts, cache
+  publication stamps the authenticated principal, ownerless legacy records miss
+  under auth, block-volume stage-cache records follow the same owner rules, and
+  storage GC deletes owner-scoped metadata without removing another owner's row
+  for the same logical cache key.
+- Cache-peer imports are disabled for authenticated contexts in this slice
+  because `LookupCachePeerRequest` does not yet include an owner envelope.
+
 Definition of done: with auth enabled, a sandbox can only receive cached Git or
 OCI content and reusable stage-cache filesystem state that is authorized for its
 owner, including warm cache hits. Routes that cannot authorize cached objects
@@ -737,6 +761,8 @@ Runtime smoke test:
 - Relationship-based sharing across teams, bot pools, or repositories.
 - Admin APIs for listing principals, grants, and audit decisions.
 - Persistent sandbox and execution stores beyond current retained server state.
+- Owner-aware cache-peer lookup and transfer envelopes for authenticated cache
+  sharing.
 
 ## Open Questions
 

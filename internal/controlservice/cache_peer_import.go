@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -254,6 +255,11 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 	if len(s.Config.Cache.Peers) == 0 || s.CachePeerTransferDriver == nil || opts.NewRecord == nil || opts.ValidateRecord == nil {
 		return cachePeerImportResult{}, nil
 	}
+	if _, ok := authz.BoundPrincipalFromContext(ctx); ok {
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "cache peer import disabled for authenticated principal"))
+		return cachePeerImportResult{}, nil
+	}
 	if opts.Backend != "firecracker" || opts.StorageDriver != "zfs" {
 		return cachePeerImportResult{}, nil
 	}
@@ -265,7 +271,7 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 	if err != nil {
 		return cachePeerImportResult{}, nil
 	}
-	parent, ok, err := store.GetReady(ctx, opts.ParentStage, opts.ParentCacheKey)
+	parent, ok, err := lookupReadyCacheRecord(ctx, store, opts.ParentStage, opts.ParentCacheKey)
 	if err != nil {
 		return cachePeerImportResult{}, err
 	}
@@ -370,6 +376,7 @@ func (s *Service) importCachePeerCandidate(
 	}
 
 	record := opts.NewRecord(snapshotID, imported, s.clock().Now())
+	stampCacheRecordOwner(ctx, &record)
 	if err := store.Create(ctx, record); err != nil {
 		existing, found, _, lookupErr := opts.ValidateRecord(ctx)
 		_ = adapter.DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
@@ -399,7 +406,7 @@ func (s *Service) importCachePeerCandidate(
 
 	validated, found, reason, err := opts.ValidateRecord(ctx)
 	if err != nil {
-		_ = store.Delete(context.Background(), record.Stage, record.CacheKey)
+		_ = deleteCacheRecord(context.Background(), store, record)
 		_ = adapter.DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
 			StorageRef:        imported.StorageRef,
@@ -412,7 +419,7 @@ func (s *Service) importCachePeerCandidate(
 		return cachePeerImportResult{}, true, err
 	}
 	if !found {
-		_ = store.Delete(context.Background(), record.Stage, record.CacheKey)
+		_ = deleteCacheRecord(context.Background(), store, record)
 		_ = adapter.DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
 			StorageRef:        imported.StorageRef,
@@ -604,5 +611,5 @@ func (s *Service) cacheRecordByKey(ctx context.Context, stage, cacheKey string) 
 	if err != nil {
 		return cachestore.Record{}, false, nil
 	}
-	return store.GetReady(ctx, stage, cacheKey)
+	return lookupReadyCacheRecord(ctx, store, stage, cacheKey)
 }

@@ -313,6 +313,169 @@ func TestStoreCreateRejectsDuplicateStageCacheKey(t *testing.T) {
 	}
 }
 
+func TestStorePartitionsReadyRecordsByOwner(t *testing.T) {
+	t.Parallel()
+
+	store, err := New(Options{MetadataDBPath: filepath.Join(t.TempDir(), "caches.db")})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	record := Record{
+		CacheKey:          "workspace-stage:test",
+		Stage:             "workspace",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-workspace-test",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/workspace-test.ext4",
+		StorageDriver:     "file",
+		ProducerVersion:   "cleanroom-test/1",
+	}
+	alice := record
+	alice.OwnerPrincipalID = "oidc:test:alice"
+	alice.OwnerScope = "scope:alice"
+	alice.BackingSnapshotID = "snapshot-alice"
+	alice.StorageRef = "/tmp/alice.ext4"
+	bob := record
+	bob.OwnerPrincipalID = "oidc:test:bob"
+	bob.OwnerScope = "scope:bob"
+	bob.BackingSnapshotID = "snapshot-bob"
+	bob.StorageRef = "/tmp/bob.ext4"
+	if err := store.Create(context.Background(), alice); err != nil {
+		t.Fatalf("Create alice returned error: %v", err)
+	}
+	if err := store.Create(context.Background(), bob); err != nil {
+		t.Fatalf("Create bob with same stage/cache_key returned error: %v", err)
+	}
+
+	if _, ok, err := store.GetReady(context.Background(), record.Stage, record.CacheKey); err != nil {
+		t.Fatalf("ownerless GetReady returned error: %v", err)
+	} else if ok {
+		t.Fatal("ownerless GetReady returned an owned record")
+	}
+	gotAlice, ok, err := store.GetReadyForOwner(context.Background(), record.Stage, record.CacheKey, "oidc:test:alice")
+	if err != nil {
+		t.Fatalf("GetReadyForOwner alice returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected alice-owned record")
+	}
+	if gotAlice.StorageRef != alice.StorageRef || gotAlice.OwnerScope != alice.OwnerScope {
+		t.Fatalf("unexpected alice record: %#v", gotAlice)
+	}
+	gotBob, ok, err := store.GetReadyForOwner(context.Background(), record.Stage, record.CacheKey, "oidc:test:bob")
+	if err != nil {
+		t.Fatalf("GetReadyForOwner bob returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected bob-owned record")
+	}
+	if gotBob.StorageRef != bob.StorageRef || gotBob.OwnerScope != bob.OwnerScope {
+		t.Fatalf("unexpected bob record: %#v", gotBob)
+	}
+
+	next := time.Unix(1700000300, 0).UTC()
+	if err := store.UpdateLastUsedAtForOwner(context.Background(), record.Stage, record.CacheKey, "oidc:test:alice", next); err != nil {
+		t.Fatalf("UpdateLastUsedAtForOwner returned error: %v", err)
+	}
+	gotAlice, ok, err = store.GetReadyForOwner(context.Background(), record.Stage, record.CacheKey, "oidc:test:alice")
+	if err != nil || !ok {
+		t.Fatalf("GetReadyForOwner alice after touch = ok %v err %v", ok, err)
+	}
+	gotBob, ok, err = store.GetReadyForOwner(context.Background(), record.Stage, record.CacheKey, "oidc:test:bob")
+	if err != nil || !ok {
+		t.Fatalf("GetReadyForOwner bob after touch = ok %v err %v", ok, err)
+	}
+	if !gotAlice.LastUsedAt.Equal(next) {
+		t.Fatalf("unexpected alice last_used_at: got %s want %s", gotAlice.LastUsedAt.Format(time.RFC3339Nano), next.Format(time.RFC3339Nano))
+	}
+	if gotBob.LastUsedAt.Equal(next) {
+		t.Fatalf("bob last_used_at changed when touching alice: %s", gotBob.LastUsedAt.Format(time.RFC3339Nano))
+	}
+}
+
+func TestNewMigratesLegacyOwnerlessPrimaryKey(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "caches.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy cache db: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+		CREATE TABLE cache_entries (
+			cache_key TEXT NOT NULL,
+			stage TEXT NOT NULL,
+			reuse_mode TEXT,
+			state TEXT NOT NULL,
+			backend TEXT NOT NULL,
+			architecture TEXT,
+			runtime_base_key TEXT,
+			policy_hash TEXT NOT NULL,
+			policy_proto BLOB NOT NULL,
+			repository_proto BLOB,
+			repository_has_changeset INTEGER NOT NULL DEFAULT 0,
+			repository_changeset_id TEXT,
+			parent_cache_key TEXT,
+			storage_driver TEXT NOT NULL DEFAULT 'file',
+			storage_ref TEXT NOT NULL,
+			storage_size_bytes INTEGER NOT NULL DEFAULT 0,
+			exclusive_size_bytes INTEGER NOT NULL DEFAULT 0,
+			driver_metadata TEXT,
+			input_manifest_digest TEXT,
+			command_digest TEXT,
+			env_digest TEXT,
+			normalized_outputs_digest TEXT,
+			output_manifest_digest TEXT,
+			dependency_key_files_digest TEXT,
+			output_records_json BLOB,
+			checkout_refresh_required INTEGER NOT NULL DEFAULT 0,
+			imported_from_peer INTEGER NOT NULL DEFAULT 0,
+			created_at_unix_nano INTEGER NOT NULL,
+			last_used_at_unix_nano INTEGER NOT NULL,
+			last_validated_at_unix_nano INTEGER NOT NULL DEFAULT 0,
+			producer_version TEXT NOT NULL,
+			PRIMARY KEY (stage, cache_key)
+		)
+	`); err != nil {
+		t.Fatalf("create legacy cache table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy cache db: %v", err)
+	}
+
+	store, err := New(Options{MetadataDBPath: dbPath})
+	if err != nil {
+		t.Fatalf("New returned error for legacy cache db: %v", err)
+	}
+	record := Record{
+		CacheKey:          "workspace-stage:test",
+		Stage:             "workspace",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-workspace-test",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/workspace-test.ext4",
+		StorageDriver:     "file",
+		ProducerVersion:   "cleanroom-test/1",
+	}
+	alice := record
+	alice.OwnerPrincipalID = "oidc:test:alice"
+	alice.StorageRef = "/tmp/alice.ext4"
+	bob := record
+	bob.OwnerPrincipalID = "oidc:test:bob"
+	bob.StorageRef = "/tmp/bob.ext4"
+	if err := store.Create(context.Background(), alice); err != nil {
+		t.Fatalf("Create alice after legacy migration returned error: %v", err)
+	}
+	if err := store.Create(context.Background(), bob); err != nil {
+		t.Fatalf("Create bob with same stage/cache_key after legacy migration returned error: %v", err)
+	}
+}
+
 func TestNewMigratesLegacySchemalessDatabase(t *testing.T) {
 	t.Parallel()
 

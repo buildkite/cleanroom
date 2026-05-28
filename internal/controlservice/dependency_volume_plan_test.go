@@ -1045,8 +1045,22 @@ func (s *recordingCacheStore) GetReady(ctx context.Context, stage, cacheKey stri
 	return record, ok, err
 }
 
+func (s *recordingCacheStore) GetReadyForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string) (cachestore.Record, bool, error) {
+	record, ok, err := s.inner.GetReadyForOwner(ctx, stage, cacheKey, ownerPrincipalID)
+	s.lookups = append(s.lookups, recordingCacheStoreLookup{
+		stage:    stage,
+		cacheKey: cacheKey,
+		hit:      ok,
+	})
+	return record, ok, err
+}
+
 func (s *recordingCacheStore) Touch(ctx context.Context, stage, cacheKey string) error {
 	return s.inner.Touch(ctx, stage, cacheKey)
+}
+
+func (s *recordingCacheStore) TouchForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	return s.inner.TouchForOwner(ctx, stage, cacheKey, ownerPrincipalID)
 }
 
 func (s *recordingCacheStore) List(ctx context.Context) ([]cachestore.Record, error) {
@@ -1055,6 +1069,10 @@ func (s *recordingCacheStore) List(ctx context.Context) ([]cachestore.Record, er
 
 func (s *recordingCacheStore) Delete(ctx context.Context, stage, cacheKey string) error {
 	return s.inner.Delete(ctx, stage, cacheKey)
+}
+
+func (s *recordingCacheStore) DeleteForOwner(ctx context.Context, stage, cacheKey, ownerPrincipalID string) error {
+	return s.inner.DeleteForOwner(ctx, stage, cacheKey, ownerPrincipalID)
 }
 
 func (s *recordingCacheStore) getReadyCount(stage string) int {

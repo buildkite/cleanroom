@@ -42,6 +42,10 @@ type CacheStore interface {
 	Delete(context.Context, string, string) error
 }
 
+type ownerCacheStore interface {
+	DeleteForOwner(context.Context, string, string, string) error
+}
+
 type ImageManager interface {
 	List(context.Context) ([]imagemgr.Record, error)
 	Remove(context.Context, string) ([]imagemgr.Record, error)
@@ -75,19 +79,21 @@ type InventoryOptions struct {
 }
 
 type Entry struct {
-	Kind        string    `json:"kind"`
-	ID          string    `json:"id,omitempty"`
-	Backend     string    `json:"backend,omitempty"`
-	Stage       string    `json:"stage,omitempty"`
-	CacheKey    string    `json:"cache_key,omitempty"`
-	Path        string    `json:"path,omitempty"`
-	StorageRef  string    `json:"storage_ref,omitempty"`
-	SizeBytes   int64     `json:"size_bytes"`
-	Reclaimable bool      `json:"reclaimable"`
-	Reason      string    `json:"reason,omitempty"`
-	ProtectedBy []string  `json:"protected_by,omitempty"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
-	LastUsedAt  time.Time `json:"last_used_at,omitempty"`
+	Kind             string    `json:"kind"`
+	ID               string    `json:"id,omitempty"`
+	Backend          string    `json:"backend,omitempty"`
+	Stage            string    `json:"stage,omitempty"`
+	CacheKey         string    `json:"cache_key,omitempty"`
+	OwnerPrincipalID string    `json:"owner_principal_id,omitempty"`
+	OwnerScope       string    `json:"owner_scope,omitempty"`
+	Path             string    `json:"path,omitempty"`
+	StorageRef       string    `json:"storage_ref,omitempty"`
+	SizeBytes        int64     `json:"size_bytes"`
+	Reclaimable      bool      `json:"reclaimable"`
+	Reason           string    `json:"reason,omitempty"`
+	ProtectedBy      []string  `json:"protected_by,omitempty"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
+	LastUsedAt       time.Time `json:"last_used_at,omitempty"`
 }
 
 type CategoryTotal struct {
@@ -526,7 +532,14 @@ func executeAction(ctx context.Context, report Report, action Action, roots []st
 		if cacheStore == nil {
 			return errors.New("cache metadata store is not configured")
 		}
-		if err := cacheStore.Delete(ctx, action.Entry.Stage, action.Entry.CacheKey); err != nil {
+		owner := strings.TrimSpace(action.Entry.OwnerPrincipalID)
+		if ownerStore, ok := cacheStore.(ownerCacheStore); ok {
+			if err := ownerStore.DeleteForOwner(ctx, action.Entry.Stage, action.Entry.CacheKey, owner); err != nil {
+				return fmt.Errorf("delete stage-cache metadata %q/%q for owner %q: %w", action.Entry.Stage, action.Entry.CacheKey, owner, err)
+			}
+		} else if owner != "" {
+			return fmt.Errorf("cache metadata store cannot delete owner-scoped stage-cache metadata %q/%q for owner %q", action.Entry.Stage, action.Entry.CacheKey, owner)
+		} else if err := cacheStore.Delete(ctx, action.Entry.Stage, action.Entry.CacheKey); err != nil {
 			return fmt.Errorf("delete stage-cache metadata %q/%q: %w", action.Entry.Stage, action.Entry.CacheKey, err)
 		}
 		return removeOwnedPath(stageCachePath, roots)
@@ -567,18 +580,20 @@ func entryFromCacheRecord(record cachestore.Record) Entry {
 		reason = "stage-cache metadata uses non-filesystem storage"
 	}
 	return Entry{
-		Kind:        KindStageCache,
-		ID:          record.Stage + "/" + record.CacheKey,
-		Backend:     record.Backend,
-		Stage:       record.Stage,
-		CacheKey:    record.CacheKey,
-		Path:        path,
-		StorageRef:  record.StorageRef,
-		Reclaimable: false,
-		Reason:      reason,
-		ProtectedBy: protectedBy,
-		CreatedAt:   record.CreatedAt,
-		LastUsedAt:  record.LastUsedAt,
+		Kind:             KindStageCache,
+		ID:               record.Stage + "/" + record.CacheKey,
+		Backend:          record.Backend,
+		Stage:            record.Stage,
+		CacheKey:         record.CacheKey,
+		OwnerPrincipalID: record.OwnerPrincipalID,
+		OwnerScope:       record.OwnerScope,
+		Path:             path,
+		StorageRef:       record.StorageRef,
+		Reclaimable:      false,
+		Reason:           reason,
+		ProtectedBy:      protectedBy,
+		CreatedAt:        record.CreatedAt,
+		LastUsedAt:       record.LastUsedAt,
 	}
 }
 

@@ -317,6 +317,9 @@ func (s *Service) planCachePeerExport(ctx context.Context, lookup cachePeerLooku
 	if !ok {
 		return cachePeerExportMatch{}, cachePeerMissRecordNotFound, nil
 	}
+	if strings.TrimSpace(child.OwnerPrincipalID) != "" {
+		return cachePeerExportMatch{}, cachePeerMissRecordNotFound, nil
+	}
 	if missReason := cachePeerChildRecordMissReason(child, lookup); missReason != "" {
 		return cachePeerExportMatch{}, missReason, nil
 	}
@@ -326,6 +329,9 @@ func (s *Service) planCachePeerExport(ctx context.Context, lookup cachePeerLooku
 		return cachePeerExportMatch{}, "", err
 	}
 	if !ok {
+		return cachePeerExportMatch{}, cachePeerMissParentRecordNotFound, nil
+	}
+	if strings.TrimSpace(parent.OwnerPrincipalID) != "" {
 		return cachePeerExportMatch{}, cachePeerMissParentRecordNotFound, nil
 	}
 	if strings.TrimSpace(parent.Backend) != lookup.Backend || strings.TrimSpace(parent.StorageDriver) != lookup.StorageDriver {
