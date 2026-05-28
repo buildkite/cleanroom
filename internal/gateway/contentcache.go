@@ -230,10 +230,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 			if closer, ok := any(handler).(interface{ Close() }); ok {
 				entry.closer = closeFunc(closer.Close)
 			}
-			entry.evictCloser = closeFunc(func() {
-				if entry.closer != nil {
-					_ = entry.closer.Close()
-				}
+			entry.evictCleaner = closeFunc(func() {
 				_ = deleteScopedEnvelopeEntries(context.Background(), db, "goproxy", []string{"mod", "info", "list"}, policyPrefix)
 			})
 			return entry, nil
@@ -383,10 +380,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 				if closer, ok := any(handler).(interface{ Close() }); ok {
 					entry.closer = closeFunc(closer.Close)
 				}
-				entry.evictCloser = closeFunc(func() {
-					if entry.closer != nil {
-						_ = entry.closer.Close()
-					}
+				entry.evictCleaner = closeFunc(func() {
 					_ = deleteScopedEnvelopeEntries(context.Background(), db, "fetch", []string{"resource"}, policyPrefix)
 				})
 				return entry, nil

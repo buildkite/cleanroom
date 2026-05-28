@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -288,6 +289,70 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	releaseC()
 }
 
+func TestGoProxyHandlerForPolicyStaleEvictionDoesNotCleanReplacementMetadata(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	var cleaned []string
+	builds := make(map[string]int)
+	cache := &ContentCache{}
+	cache.goProxy = goProxyHandlerEntry{
+		handlers:    make(map[string]*goProxyScopedHandler),
+		maxHandlers: 2,
+		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
+			key := compiled.Hash
+			builds[key]++
+			id := fmt.Sprintf("%s#%d", key, builds[key])
+			return goProxyScopedHandler{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, id)
+				}),
+				evictCleaner: closeFunc(func() {
+					cleaned = append(cleaned, id)
+				}),
+			}, nil
+		},
+	}
+
+	policyA := &policy.CompiledPolicy{Hash: "policy-a"}
+	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
+	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
+
+	_, releaseA1, err := cache.GoProxyHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A1: %v", err)
+	}
+	_, releaseB1, err := cache.GoProxyHandlerForPolicy(policyB)
+	if err != nil {
+		t.Fatalf("handler B1: %v", err)
+	}
+	_, releaseC, err := cache.GoProxyHandlerForPolicy(policyC)
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+	_, releaseA2, err := cache.GoProxyHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A2: %v", err)
+	}
+
+	releaseA1()
+	if !slices.Contains(closed, "policy-a#1") {
+		t.Fatalf("expected stale policy-a handler to close, got %v", closed)
+	}
+	if slices.Contains(cleaned, "policy-a#1") {
+		t.Fatalf("expected stale policy-a metadata cleanup to be skipped, got %v", cleaned)
+	}
+
+	releaseB1()
+	if !slices.Contains(cleaned, "policy-b#1") {
+		t.Fatalf("expected evicted policy-b metadata cleanup to run, got %v", cleaned)
+	}
+
+	releaseC()
+	releaseA2()
+}
+
 func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	t.Parallel()
 
@@ -353,6 +418,70 @@ func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	releaseA()
 	releaseReusedA()
 	releaseC()
+}
+
+func TestFetchHandlerForPolicyStaleEvictionDoesNotCleanReplacementMetadata(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	var cleaned []string
+	builds := make(map[string]int)
+	cache := &ContentCache{}
+	cache.fetch = fetchHandlerEntry{
+		handlers:    make(map[string]*fetchScopedHandler),
+		maxHandlers: 2,
+		buildHandler: func(compiled *policy.CompiledPolicy) (fetchScopedHandler, error) {
+			key := compiled.Hash
+			builds[key]++
+			id := fmt.Sprintf("%s#%d", key, builds[key])
+			return fetchScopedHandler{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, id)
+				}),
+				evictCleaner: closeFunc(func() {
+					cleaned = append(cleaned, id)
+				}),
+			}, nil
+		},
+	}
+
+	policyA := &policy.CompiledPolicy{Hash: "policy-a"}
+	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
+	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
+
+	_, releaseA1, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A1: %v", err)
+	}
+	_, releaseB1, err := cache.FetchHandlerForPolicy(policyB)
+	if err != nil {
+		t.Fatalf("handler B1: %v", err)
+	}
+	_, releaseC, err := cache.FetchHandlerForPolicy(policyC)
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+	_, releaseA2, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A2: %v", err)
+	}
+
+	releaseA1()
+	if !slices.Contains(closed, "policy-a#1") {
+		t.Fatalf("expected stale policy-a handler to close, got %v", closed)
+	}
+	if slices.Contains(cleaned, "policy-a#1") {
+		t.Fatalf("expected stale policy-a metadata cleanup to be skipped, got %v", cleaned)
+	}
+
+	releaseB1()
+	if !slices.Contains(cleaned, "policy-b#1") {
+		t.Fatalf("expected evicted policy-b metadata cleanup to run, got %v", cleaned)
+	}
+
+	releaseC()
+	releaseA2()
 }
 
 func TestScopedEnvelopeStoreDeletesOnlyEvictedPolicyEntries(t *testing.T) {

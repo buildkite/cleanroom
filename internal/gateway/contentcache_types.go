@@ -40,11 +40,11 @@ type ociHandlerEntry struct {
 }
 
 type goProxyScopedHandler struct {
-	handler     http.Handler
-	closer      io.Closer
-	evictCloser io.Closer
-	active      int
-	evicted     bool
+	handler      http.Handler
+	closer       io.Closer
+	evictCleaner io.Closer
+	active       int
+	evicted      bool
 }
 
 type goProxyHandlerEntry struct {
@@ -88,11 +88,11 @@ type fetchHandlerEntry struct {
 }
 
 type fetchScopedHandler struct {
-	handler     http.Handler
-	closer      io.Closer
-	evictCloser io.Closer
-	active      int
-	evicted     bool
+	handler      http.Handler
+	closer       io.Closer
+	evictCleaner io.Closer
+	active       int
+	evicted      bool
 }
 
 // ContentCache holds the shared storage and protocol handlers.
@@ -244,7 +244,7 @@ func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) 
 	if entry, ok := c.goProxy.handlers[key]; ok {
 		entry.active++
 		c.goProxy.touchLocked(key)
-		release := c.goProxy.releaseHandler(entry)
+		release := c.goProxy.releaseHandler(key, entry)
 		c.goProxy.mu.Unlock()
 		return entry.handler, release, nil
 	}
@@ -259,13 +259,10 @@ func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) 
 	}
 	entry := &entryValue
 	entry.active = 1
-	if entry.evictCloser == nil {
-		entry.evictCloser = entry.closer
-	}
 	c.goProxy.handlers[key] = entry
 	c.goProxy.touchLocked(key)
 	evicted := c.goProxy.evictLocked()
-	release := c.goProxy.releaseHandler(entry)
+	release := c.goProxy.releaseHandler(key, entry)
 	c.goProxy.mu.Unlock()
 	if evicted != nil {
 		_ = evicted.Close()
@@ -305,10 +302,10 @@ func (e *goProxyHandlerEntry) evictLocked() io.Closer {
 		entry.evicted = true
 		return nil
 	}
-	return entry.evictCloser
+	return e.closeEvictedHandler(evictedKey, entry)
 }
 
-func (e *goProxyHandlerEntry) releaseHandler(entry *goProxyScopedHandler) func() {
+func (e *goProxyHandlerEntry) releaseHandler(key string, entry *goProxyScopedHandler) func() {
 	var once sync.Once
 	return func() {
 		var closer io.Closer
@@ -318,9 +315,7 @@ func (e *goProxyHandlerEntry) releaseHandler(entry *goProxyScopedHandler) func()
 				entry.active--
 			}
 			if entry.active == 0 && entry.evicted {
-				closer = entry.evictCloser
-				entry.closer = nil
-				entry.evictCloser = nil
+				closer = e.closeEvictedHandler(key, entry)
 			}
 			e.mu.Unlock()
 		})
@@ -328,6 +323,26 @@ func (e *goProxyHandlerEntry) releaseHandler(entry *goProxyScopedHandler) func()
 			_ = closer.Close()
 		}
 	}
+}
+
+func (e *goProxyHandlerEntry) closeEvictedHandler(key string, entry *goProxyScopedHandler) io.Closer {
+	return closeFunc(func() {
+		var handlerCloser io.Closer
+		e.mu.Lock()
+		handlerCloser = entry.closer
+		entry.closer = nil
+		cleaner := entry.evictCleaner
+		entry.evictCleaner = nil
+		if cleaner != nil {
+			if replacement, ok := e.handlers[key]; !ok || replacement == entry {
+				_ = cleaner.Close()
+			}
+		}
+		e.mu.Unlock()
+		if handlerCloser != nil {
+			_ = handlerCloser.Close()
+		}
+	})
 }
 
 // HasSumDBHandler reports whether sumdb caching is configured.
@@ -409,7 +424,7 @@ func (c *ContentCache) FetchHandlerForPolicy(compiled *policy.CompiledPolicy) (h
 	if entry, ok := c.fetch.handlers[key]; ok {
 		entry.active++
 		c.fetch.touchLocked(key)
-		release := c.fetch.releaseHandler(entry)
+		release := c.fetch.releaseHandler(key, entry)
 		c.fetch.mu.Unlock()
 		return entry.handler, release, nil
 	}
@@ -424,13 +439,10 @@ func (c *ContentCache) FetchHandlerForPolicy(compiled *policy.CompiledPolicy) (h
 	}
 	entry := &entryValue
 	entry.active = 1
-	if entry.evictCloser == nil {
-		entry.evictCloser = entry.closer
-	}
 	c.fetch.handlers[key] = entry
 	c.fetch.touchLocked(key)
 	evicted := c.fetch.evictLocked()
-	release := c.fetch.releaseHandler(entry)
+	release := c.fetch.releaseHandler(key, entry)
 	c.fetch.mu.Unlock()
 	if evicted != nil {
 		_ = evicted.Close()
@@ -470,10 +482,10 @@ func (e *fetchHandlerEntry) evictLocked() io.Closer {
 		entry.evicted = true
 		return nil
 	}
-	return entry.evictCloser
+	return e.closeEvictedHandler(evictedKey, entry)
 }
 
-func (e *fetchHandlerEntry) releaseHandler(entry *fetchScopedHandler) func() {
+func (e *fetchHandlerEntry) releaseHandler(key string, entry *fetchScopedHandler) func() {
 	var once sync.Once
 	return func() {
 		var closer io.Closer
@@ -483,9 +495,7 @@ func (e *fetchHandlerEntry) releaseHandler(entry *fetchScopedHandler) func() {
 				entry.active--
 			}
 			if entry.active == 0 && entry.evicted {
-				closer = entry.evictCloser
-				entry.closer = nil
-				entry.evictCloser = nil
+				closer = e.closeEvictedHandler(key, entry)
 			}
 			e.mu.Unlock()
 		})
@@ -493,6 +503,26 @@ func (e *fetchHandlerEntry) releaseHandler(entry *fetchScopedHandler) func() {
 			_ = closer.Close()
 		}
 	}
+}
+
+func (e *fetchHandlerEntry) closeEvictedHandler(key string, entry *fetchScopedHandler) io.Closer {
+	return closeFunc(func() {
+		var handlerCloser io.Closer
+		e.mu.Lock()
+		handlerCloser = entry.closer
+		entry.closer = nil
+		cleaner := entry.evictCleaner
+		entry.evictCleaner = nil
+		if cleaner != nil {
+			if replacement, ok := e.handlers[key]; !ok || replacement == entry {
+				_ = cleaner.Close()
+			}
+		}
+		e.mu.Unlock()
+		if handlerCloser != nil {
+			_ = handlerCloser.Close()
+		}
+	})
 }
 
 func compiledPolicyCacheKey(compiled *policy.CompiledPolicy) string {

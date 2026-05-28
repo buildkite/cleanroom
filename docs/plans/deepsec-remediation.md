@@ -218,7 +218,9 @@ upstream fetch, while misses use policy-pinned HTTP clients and per-policy
 download singleflight groups for direct requests and redirects. The scoped
 handler maps are LRU-bounded, evicted handlers close only after outstanding
 requests release their leases, and evicted policy metadata is removed from the
-shared metadata indexes.
+shared metadata indexes. If the same policy is rebuilt while an old active
+handler is waiting to close, the stale handler closes without deleting metadata
+owned by the replacement.
 
 Focused validation run on 2026-05-28:
 
