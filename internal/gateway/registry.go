@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -14,6 +15,7 @@ type SandboxScope struct {
 	SandboxID    string
 	GuestIP      string
 	Policy       *policy.CompiledPolicy
+	GatewayScope gatewayauth.ScopeMetadata
 	ExecutionID  string
 	TraceContext trace.SpanContext
 }
@@ -35,16 +37,17 @@ func NewRegistry() *Registry {
 
 // Register adds a sandbox scope keyed by guest IP. Returns an error if the IP
 // is already registered (possible hash collision).
-func (r *Registry) Register(guestIP, sandboxID string, p *policy.CompiledPolicy) error {
+func (r *Registry) Register(guestIP, sandboxID string, p *policy.CompiledPolicy, metadata ...gatewayauth.ScopeMetadata) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.byGuestIP[guestIP]; exists {
 		return fmt.Errorf("guest IP %s already registered (possible IP collision)", guestIP)
 	}
 	r.byGuestIP[guestIP] = &SandboxScope{
-		SandboxID: sandboxID,
-		GuestIP:   guestIP,
-		Policy:    p,
+		SandboxID:    sandboxID,
+		GuestIP:      guestIP,
+		Policy:       p,
+		GatewayScope: firstScopeMetadata(metadata).Clone(),
 	}
 	return nil
 }
@@ -66,7 +69,7 @@ func (r *Registry) Lookup(guestIP string) (*SandboxScope, bool) {
 
 // RegisterScopeToken adds a sandbox scope keyed by a capability token.
 // Returns an error if the token is already registered.
-func (r *Registry) RegisterScopeToken(scopeToken, sandboxID string, p *policy.CompiledPolicy) error {
+func (r *Registry) RegisterScopeToken(scopeToken, sandboxID string, p *policy.CompiledPolicy, metadata ...gatewayauth.ScopeMetadata) error {
 	scopeToken = strings.TrimSpace(scopeToken)
 	if scopeToken == "" {
 		return fmt.Errorf("scope token must not be empty")
@@ -77,10 +80,18 @@ func (r *Registry) RegisterScopeToken(scopeToken, sandboxID string, p *policy.Co
 		return fmt.Errorf("scope token already registered")
 	}
 	r.byScopeToken[scopeToken] = &SandboxScope{
-		SandboxID: sandboxID,
-		Policy:    p,
+		SandboxID:    sandboxID,
+		Policy:       p,
+		GatewayScope: firstScopeMetadata(metadata).Clone(),
 	}
 	return nil
+}
+
+func firstScopeMetadata(values []gatewayauth.ScopeMetadata) gatewayauth.ScopeMetadata {
+	if len(values) == 0 {
+		return gatewayauth.ScopeMetadata{}
+	}
+	return values[0]
 }
 
 // ReleaseScopeToken removes a sandbox scope by token.
@@ -114,6 +125,22 @@ func (r *Registry) SetActiveExecutionTrace(sandboxID, executionID string, spanCo
 	}
 }
 
+func (r *Registry) SetActiveExecutionScope(sandboxID, executionID string, spanContext trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return
+	}
+	executionID = strings.TrimSpace(executionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.byGuestIP {
+		setActiveExecutionScopeForScope(scope, sandboxID, executionID, spanContext, metadata)
+	}
+	for _, scope := range r.byScopeToken {
+		setActiveExecutionScopeForScope(scope, sandboxID, executionID, spanContext, metadata)
+	}
+}
+
 func (r *Registry) ClearActiveExecutionTrace(sandboxID, executionID string) {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
@@ -135,6 +162,7 @@ func cloneSandboxScope(scope *SandboxScope) *SandboxScope {
 		return nil
 	}
 	clone := *scope
+	clone.GatewayScope = scope.GatewayScope.Clone()
 	return &clone
 }
 
@@ -144,6 +172,15 @@ func setActiveExecutionTraceForScope(scope *SandboxScope, sandboxID, executionID
 	}
 	scope.ExecutionID = executionID
 	scope.TraceContext = spanContext
+}
+
+func setActiveExecutionScopeForScope(scope *SandboxScope, sandboxID, executionID string, spanContext trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+	if scope == nil || scope.SandboxID != sandboxID {
+		return
+	}
+	scope.ExecutionID = executionID
+	scope.TraceContext = spanContext
+	scope.GatewayScope = metadata.Clone()
 }
 
 func clearActiveExecutionTraceForScope(scope *SandboxScope, sandboxID, executionID string) {

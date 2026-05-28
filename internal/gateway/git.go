@@ -38,6 +38,7 @@ const (
 	reasonCached                = observability.ReasonCached
 	reasonFallback              = observability.ReasonFallback
 	reasonRubyGemsUnavailable   = observability.ReasonRubyGemsUnavailable
+	reasonGatewayAuthDenied     = observability.ReasonGatewayAuthDenied
 	gatewayActionAllow          = observability.GatewayActionAllow
 	gatewayActionDeny           = observability.GatewayActionDeny
 )
@@ -48,21 +49,23 @@ var (
 )
 
 type gitHandler struct {
-	credentials CredentialProvider
-	mirrors     GitMirrorStore
-	logger      *log.Logger
-	client      *http.Client
+	credentials  CredentialProvider
+	mirrors      GitMirrorStore
+	logger       *log.Logger
+	client       *http.Client
+	requireOwner bool
 }
 
 func newGitHandler(creds CredentialProvider, logger *log.Logger) *gitHandler {
-	return newGitHandlerWithMirrors(creds, nil, logger)
+	return newGitHandlerWithMirrors(creds, nil, logger, false)
 }
 
-func newGitHandlerWithMirrors(creds CredentialProvider, mirrors GitMirrorStore, logger *log.Logger) *gitHandler {
+func newGitHandlerWithMirrors(creds CredentialProvider, mirrors GitMirrorStore, logger *log.Logger, requireOwner bool) *gitHandler {
 	return &gitHandler{
-		credentials: creds,
-		mirrors:     mirrors,
-		logger:      logger,
+		credentials:  creds,
+		mirrors:      mirrors,
+		logger:       logger,
+		requireOwner: requireOwner,
 		client: &http.Client{
 			Transport: &http.Transport{
 				DialContext:           (&net.Dialer{Timeout: defaultUpstreamTimeout}).DialContext,
@@ -109,6 +112,18 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "upstream host is not allowed by sandbox policy")
 		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream host is not allowed by sandbox policy")
+		return
+	}
+	if err := authorizeGitGatewayRequest(scope, upstreamHost, repoPath, h.requireOwner); err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonGatewayAuthDenied)
+		span.RecordError(err)
+		span.SetAttributes(
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonGatewayAuthDenied),
+		)
+		span.SetStatus(codes.Error, err.Error())
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonGatewayAuthDenied)
+		writeReasonError(w, http.StatusForbidden, reasonGatewayAuthDenied, err.Error())
 		return
 	}
 

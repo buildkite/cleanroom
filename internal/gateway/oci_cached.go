@@ -24,14 +24,16 @@ type registryPrefixHandlerProvider interface {
 // and extracts the upstream registry host from the configured prefix mapping
 // for policy evaluation.
 type cachedRegistryHandler struct {
-	cache  registryPrefixHandlerProvider
-	logger *log.Logger
+	cache        registryPrefixHandlerProvider
+	logger       *log.Logger
+	requireOwner bool
 }
 
-func newCachedRegistryHandler(cache registryPrefixHandlerProvider, logger *log.Logger) *cachedRegistryHandler {
+func newCachedRegistryHandler(cache registryPrefixHandlerProvider, logger *log.Logger, requireOwner bool) *cachedRegistryHandler {
 	return &cachedRegistryHandler{
-		cache:  cache,
-		logger: logger,
+		cache:        cache,
+		logger:       logger,
+		requireOwner: requireOwner,
 	}
 }
 
@@ -100,6 +102,18 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		span.SetStatus(codes.Error, "upstream registry host is not allowed by sandbox policy")
 		h.auditLog(r.Context(), scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream registry host is not allowed by sandbox policy")
+		return
+	}
+	if err := authorizeOCIGatewayRequest(scope, normalizedPrefix, rest, h.requireOwner); err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonGatewayAuthDenied)
+		span.RecordError(err)
+		span.SetAttributes(
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonGatewayAuthDenied),
+		)
+		span.SetStatus(codes.Error, err.Error())
+		h.auditLog(r.Context(), scope.SandboxID, normalizedPrefix, gatewayActionDeny, reasonGatewayAuthDenied)
+		writeReasonError(w, http.StatusForbidden, reasonGatewayAuthDenied, err.Error())
 		return
 	}
 	span.SetAttributes(

@@ -164,6 +164,7 @@ type ServerConfig struct {
 	Logger                          *log.Logger
 	TracerProvider                  trace.TracerProvider
 	MeterProvider                   metric.MeterProvider
+	RequireOwner                    bool
 	ScopeTokenTrustedSourcePrefixes []netip.Prefix
 	AllowScopeTokenFromAnySource    bool
 }
@@ -217,18 +218,19 @@ func NewServer(cfg ServerConfig) *Server {
 	mux := http.NewServeMux()
 
 	// Git: prefer content-cache, fall back to mirror-backed proxy.
+	fallbackGit := newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger, cfg.RequireOwner)
 	if cfg.ContentCache != nil && cfg.ContentCache.HasGitHandler() {
-		mux.Handle(RouteGit, newCachedGitHandler(cfg.ContentCache, newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger), cfg.Logger))
+		mux.Handle(RouteGit, newCachedGitHandler(cfg.ContentCache, fallbackGit, cfg.Logger, cfg.RequireOwner))
 	} else {
-		mux.Handle(RouteGit, newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger))
+		mux.Handle(RouteGit, fallbackGit)
 	}
 
 	// Registry: prefer content-cache OCI handler, fall back to stub.
 	if cfg.ContentCache != nil && cfg.ContentCache.HasOCIHandler() {
-		dockerHubMirror := newDockerHubMirrorHandler(cfg.ContentCache, cfg.Logger)
+		dockerHubMirror := newDockerHubMirrorHandler(cfg.ContentCache, cfg.Logger, cfg.RequireOwner)
 		mux.Handle("/v2", dockerHubMirror)
 		mux.Handle(RouteDockerHubMirror, dockerHubMirror)
-		mux.Handle(RouteRegistry, newCachedRegistryHandler(cfg.ContentCache, cfg.Logger))
+		mux.Handle(RouteRegistry, newCachedRegistryHandler(cfg.ContentCache, cfg.Logger, cfg.RequireOwner))
 	} else {
 		mux.HandleFunc("/v2", stubHandler("dockerhub mirror"))
 		mux.HandleFunc(RouteDockerHubMirror, stubHandler("dockerhub mirror"))

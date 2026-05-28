@@ -29,6 +29,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/bootassets"
 	"github.com/buildkite/cleanroom/internal/ext4edit"
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/observability"
@@ -65,8 +66,8 @@ type Adapter struct {
 	sandboxMu                   sync.Mutex
 	sandboxes                   map[string]*sandboxInstance
 	provisioning                map[string]struct{}
-	launchSandboxVMFn           func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error)
-	launchSandboxVMFromRootFSFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, string, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error)
+	launchSandboxVMFn           func(context.Context, string, *policy.CompiledPolicy, gatewayauth.ScopeMetadata, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error)
+	launchSandboxVMFromRootFSFn func(context.Context, string, *policy.CompiledPolicy, gatewayauth.ScopeMetadata, backend.FirecrackerConfig, string, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error)
 	runGuestCommandFn           func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
 
 	GatewayRegistry gatewayRegistry
@@ -81,9 +82,10 @@ type Adapter struct {
 
 // gatewayRegistry is the subset of gateway.Registry used by the adapter.
 type gatewayRegistry interface {
-	Register(guestIP, sandboxID string, p *policy.CompiledPolicy) error
+	Register(guestIP, sandboxID string, p *policy.CompiledPolicy, metadata ...gatewayauth.ScopeMetadata) error
 	Release(guestIP string)
 	SetActiveExecutionTrace(sandboxID, executionID string, spanContext trace.SpanContext)
+	SetActiveExecutionScope(sandboxID, executionID string, spanContext trace.SpanContext, metadata gatewayauth.ScopeMetadata)
 	ClearActiveExecutionTrace(sandboxID, executionID string)
 }
 
@@ -347,7 +349,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 		launch = a.launchSandboxVM
 	}
 
-	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, req.CacheOutputVolumes)
+	instance, err := launch(ctx, sandboxID, req.Policy, req.GatewayScope, req.FirecrackerConfig, req.CacheOutputVolumes)
 	if err != nil {
 		a.sandboxMu.Lock()
 		delete(a.provisioning, sandboxID)
@@ -452,7 +454,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		defer instance.warnings.SetHandler(nil)
 	}
 	if a.GatewayRegistry != nil {
-		a.GatewayRegistry.SetActiveExecutionTrace(sandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx))
+		a.GatewayRegistry.SetActiveExecutionScope(sandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx), req.GatewayScope)
 		defer a.GatewayRegistry.ClearActiveExecutionTrace(sandboxID, req.ExecutionID)
 	}
 
@@ -741,7 +743,7 @@ func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.
 	if launch == nil {
 		launch = a.launchSandboxVMFromRootFS
 	}
-	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, storageRef, req.CacheOutputVolumes)
+	instance, err := launch(ctx, sandboxID, req.Policy, req.GatewayScope, req.FirecrackerConfig, storageRef, req.CacheOutputVolumes)
 	if err != nil {
 		a.sandboxMu.Lock()
 		delete(a.provisioning, sandboxID)
@@ -1695,7 +1697,7 @@ func (a *Adapter) getImageManager() (imageEnsurer, error) {
 	return a.imageManager, nil
 }
 
-func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, gatewayScope gatewayauth.ScopeMetadata, cfg backend.FirecrackerConfig, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -1707,7 +1709,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, err
 	}
-	instance, err := a.launchSandboxVMFromRootFS(ctx, sandboxID, compiled, cfg, preparedRootFSPath, cacheOutputVolumeSpecs)
+	instance, err := a.launchSandboxVMFromRootFS(ctx, sandboxID, compiled, gatewayScope, cfg, preparedRootFSPath, cacheOutputVolumeSpecs)
 	if err != nil {
 		return nil, err
 	}
@@ -1716,7 +1718,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	return instance, nil
 }
 
-func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, sourceRootFSPath string, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, gatewayScope gatewayauth.ScopeMetadata, cfg backend.FirecrackerConfig, sourceRootFSPath string, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -1849,7 +1851,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 
 	if a.GatewayRegistry != nil {
-		if err := a.GatewayRegistry.Register(networkCfg.GuestIP, sandboxID, compiled); err != nil {
+		if err := a.GatewayRegistry.Register(networkCfg.GuestIP, sandboxID, compiled, gatewayScope); err != nil {
 			cleanupNetwork()
 			cleanupStorage()
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)

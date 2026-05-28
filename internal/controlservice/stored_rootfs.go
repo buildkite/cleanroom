@@ -179,6 +179,7 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 			SnapshotID:         provisionSnapshotID,
 			StorageRef:         record.StorageRef,
 			Policy:             effectivePolicy,
+			GatewayScope:       gatewayScopeMetadata(owner, record.Repository, effectivePolicy),
 			CacheOutputVolumes: cloneCacheOutputVolumeSpecs(cacheOutputVolumes),
 			FirecrackerConfig:  firecrackerCfg,
 		})

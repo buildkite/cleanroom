@@ -1416,7 +1416,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		if scopeSandboxID == "" {
 			scopeSandboxID = vmID
 		}
-		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, networkPolicy); err != nil {
+		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, networkPolicy, req.GatewayScope); err != nil {
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
 		a.GatewayRegistry.SetActiveExecutionTrace(scopeSandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx))
@@ -1938,7 +1938,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		if tokenErr != nil {
 			return nil, fmt.Errorf("generate gateway scope token: %w", tokenErr)
 		}
-		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, networkPolicy); err != nil {
+		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, networkPolicy, req.GatewayScope); err != nil {
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
 		a.GatewayRegistry.SetActiveExecutionTrace(scopeSandboxID, req.ExecutionID, trace.SpanContextFromContext(runCtx))

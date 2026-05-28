@@ -159,6 +159,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		ctx.Observability.MeterProvider(),
 		logger.With("subsystem", "gateway"),
 		darwinGatewayHost,
+		gatewayRequiresAuthenticatedOwner(ctx, ep),
 	))
 	if err := gwServer.Start(); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
@@ -301,7 +302,7 @@ func isLoopbackListenHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
+func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, logger *log.Logger, darwinGatewayHost string, requireOwner bool) gateway.ServerConfig {
 	sourcePolicy := gatewayScopeTokenSourcePolicyForGatewayHost(strings.TrimSpace(darwinGatewayHost))
 	return gateway.ServerConfig{
 		ListenAddr:                      listen,
@@ -312,9 +313,14 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 		Logger:                          logger,
 		TracerProvider:                  tracerProvider,
 		MeterProvider:                   meterProvider,
+		RequireOwner:                    requireOwner,
 		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
 		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
 	}
+}
+
+func gatewayRequiresAuthenticatedOwner(ctx *runtimeContext, ep endpoint.Endpoint) bool {
+	return ctx != nil && ctx.Config.Auth.Required && ep.Scheme != "unix"
 }
 
 func (s *ServeCommand) githubAppCredentialsConfig(base runtimeconfig.GatewayGitHubAppCredentialsConfig, cwd string) (runtimeconfig.GatewayGitHubAppCredentialsConfig, error) {

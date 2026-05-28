@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -14,6 +15,20 @@ type stubGitHostHandlerProvider struct {
 	handler http.Handler
 	err     error
 	host    string
+}
+
+func cachedGitOwnedScope(repoPrefixes ...string) *SandboxScope {
+	scope := cachedGitTestScope()
+	scope.GatewayScope = gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{
+			PrincipalID: "oidc:test:alice",
+			Scope:       "repo:buildkite/cleanroom",
+		},
+		Authorization: gatewayauth.Authorization{
+			GitRepoPrefixes: repoPrefixes,
+		},
+	}
+	return scope
 }
 
 func (s *stubGitHostHandlerProvider) GitHandlerForHost(host string) (http.Handler, error) {
@@ -64,7 +79,7 @@ func TestCachedGitHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for denied host")
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false)
 
 	req := httptest.NewRequest("GET", "/git/evil.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -87,7 +102,7 @@ func TestCachedGitHandlerRejectsReceivePack(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for receive-pack")
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false)
 
 	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-receive-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -107,7 +122,7 @@ func TestCachedGitHandlerNoScope(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called without scope")
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false)
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	w := httptest.NewRecorder()
@@ -115,6 +130,77 @@ func TestCachedGitHandlerNoScope(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestCachedGitHandlerRequiresOwnerWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("backend should not be called without owner")
+	})
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, true)
+
+	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, cachedGitTestScope())
+	req, obs := withGatewayRequestObservability(req)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+	if got := w.Header().Get(reasonCodeHeader); got != reasonGatewayAuthDenied {
+		t.Fatalf("expected reason %s, got %q", reasonGatewayAuthDenied, got)
+	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonGatewayAuthDenied)
+}
+
+func TestCachedGitHandlerDeniesRepoOutsideGatewayEnvelope(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubGitHostHandlerProvider{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("backend should not be called for unauthorized repo")
+		}),
+	}
+	h := newCachedGitHandler(provider, nil, nil, true)
+
+	req := httptest.NewRequest("GET", "/git/github.com/buildkite/private.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, cachedGitOwnedScope("github.com/buildkite/cleanroom"))
+	req, obs := withGatewayRequestObservability(req)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+	if provider.host != "" {
+		t.Fatalf("expected cache handler lookup to be skipped, got %q", provider.host)
+	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonGatewayAuthDenied)
+}
+
+func TestCachedGitHandlerAllowsRepoInGatewayEnvelope(t *testing.T) {
+	t.Parallel()
+
+	var called bool
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, true)
+
+	req := httptest.NewRequest("GET", "/git/github.com/buildkite/cleanroom.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, cachedGitOwnedScope("github.com/buildkite/cleanroom"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !called {
+		t.Fatal("expected cache handler to be called")
 	}
 }
 
@@ -127,7 +213,7 @@ func TestCachedGitHandlerStripsGitPrefixAndDelegates(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	provider := &stubGitHostHandlerProvider{handler: backend}
-	h := newCachedGitHandler(provider, nil, nil)
+	h := newCachedGitHandler(provider, nil, nil, false)
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -157,7 +243,7 @@ func TestCachedGitHandlerUploadPackDelegates(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	provider := &stubGitHostHandlerProvider{handler: backend}
-	h := newCachedGitHandler(provider, nil, nil)
+	h := newCachedGitHandler(provider, nil, nil, false)
 
 	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -192,7 +278,7 @@ func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {
 	provider := &stubGitHostHandlerProvider{
 		err: fmt.Errorf("%w: github.enterprise.test", errGitHostNotConfiguredForCaching),
 	}
-	h := newCachedGitHandler(provider, fallback, nil)
+	h := newCachedGitHandler(provider, fallback, nil, false)
 
 	req := httptest.NewRequest("GET", "/git/github.enterprise.test/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, &SandboxScope{
@@ -239,7 +325,7 @@ func TestCachedGitHandlerFallsBackForNonDotGitRemotes(t *testing.T) {
 			t.Fatal("cache handler should not be used for non-.git remotes")
 		}),
 	}
-	h := newCachedGitHandler(provider, fallback, nil)
+	h := newCachedGitHandler(provider, fallback, nil, false)
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())

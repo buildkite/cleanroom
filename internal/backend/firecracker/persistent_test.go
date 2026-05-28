@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"go.opentelemetry.io/otel/trace"
@@ -26,7 +27,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ gatewayauth.ScopeMetadata, _ backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			if sandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox id %q", sandboxID)
 			}
@@ -63,7 +64,7 @@ func TestProvisionSandboxRejectsStageScopedNetworkPolicy(t *testing.T) {
 	t.Parallel()
 
 	adapter := &Adapter{
-		launchSandboxVMFn: func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(context.Context, string, *policy.CompiledPolicy, gatewayauth.ScopeMetadata, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			t.Fatal("launchSandboxVMFn should not be called")
 			return nil, nil
 		},
@@ -87,7 +88,7 @@ func TestProvisionSandboxForwardsCacheOutputVolumes(t *testing.T) {
 	specs := testCacheOutputVolumeSpecs()
 	var gotSpecs []backend.CacheOutputVolumeSpec
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ gatewayauth.ScopeMetadata, _ backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			if sandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox id %q", sandboxID)
 			}
@@ -625,11 +626,70 @@ func TestRunInSandboxClosedEnvSkipsGatewayEnv(t *testing.T) {
 
 type testGatewayRegistry struct{}
 
-func (testGatewayRegistry) Register(string, string, *policy.CompiledPolicy) error { return nil }
-func (testGatewayRegistry) Release(string)                                        {}
+func (testGatewayRegistry) Register(string, string, *policy.CompiledPolicy, ...gatewayauth.ScopeMetadata) error {
+	return nil
+}
+func (testGatewayRegistry) Release(string) {}
 func (testGatewayRegistry) SetActiveExecutionTrace(string, string, trace.SpanContext) {
 }
+func (testGatewayRegistry) SetActiveExecutionScope(string, string, trace.SpanContext, gatewayauth.ScopeMetadata) {
+}
 func (testGatewayRegistry) ClearActiveExecutionTrace(string, string) {}
+
+type capturingGatewayRegistry struct {
+	testGatewayRegistry
+	scope gatewayauth.ScopeMetadata
+}
+
+func (r *capturingGatewayRegistry) SetActiveExecutionScope(_ string, _ string, _ trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+	r.scope = metadata.Clone()
+}
+
+func TestRunInSandboxUpdatesGatewayScope(t *testing.T) {
+	t.Parallel()
+
+	registry := &capturingGatewayRegistry{}
+	adapter := &Adapter{
+		GatewayRegistry: registry,
+		GatewayPort:     8170,
+	}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, _ vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			HostIP:    "192.168.127.1",
+			Policy: &policy.CompiledPolicy{
+				Version:        1,
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-gateway-scope",
+		Command:     []string{"true"},
+		GatewayScope: gatewayauth.ScopeMetadata{
+			Owner: gatewayauth.Owner{PrincipalID: "oidc:test:alice"},
+			Authorization: gatewayauth.Authorization{
+				GitRepoPrefixes: []string{"github.com/buildkite/cleanroom"},
+			},
+		},
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if got, want := registry.scope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("gateway scope owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := registry.scope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
+		t.Fatalf("gateway scope git prefixes mismatch: got %v want %v", got, want)
+	}
+}
 
 func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 	t.Parallel()

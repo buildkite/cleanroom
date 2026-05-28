@@ -1,7 +1,7 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Slice 2B-1 implemented; gateway and content-cache auth next
+**Status:** Slice 2B-2 implemented; runtime hardening and sharing follow-ups next
 **Last reviewed:** 2026-05-27
 
 ## Summary
@@ -46,6 +46,15 @@ Slice 2 is split into PR-sized enforcement work:
   records visible only to unauthenticated local callers, migrates the SQLite
   stage-cache primary key to include owner, and disables cache-peer imports for
   authenticated requests until the peer protocol carries owner metadata.
+- Slice 2B-2 now carries authenticated sandbox owner metadata and a small
+  gateway authorization envelope into gateway scopes for both Firecracker
+  source-IP registration and DarwinVZ scope-token registration. Under
+  `auth.required`, gateway Git, cached Git fallback, OCI registry, and Docker
+  Hub mirror routes deny ownerless scopes and deny requested repositories that
+  are outside the sandbox's envelope before embedded `content-cache` handlers
+  or host-side Git credentials can serve bytes. The first envelope is exact:
+  Git is limited to the sandbox checkout repository, and OCI is limited to the
+  sandbox image repository.
 
 Focused validation run on 2026-05-25:
 
@@ -77,6 +86,22 @@ Slice 2B-1 focused validation run on 2026-05-27:
 
 ```text
 mise exec -- go test ./internal/cachestore ./internal/controlservice ./internal/controlserver ./internal/storagegc
+```
+
+Result: passed.
+
+Slice 2B-2 focused validation run on 2026-05-27:
+
+```text
+mise exec -- go test ./internal/gatewayauth ./internal/gateway ./internal/controlservice ./internal/backend/firecracker ./internal/backend/darwinvz ./internal/cli
+```
+
+Result: passed.
+
+Slice 2B-2 repository validation run on 2026-05-27:
+
+```text
+mise run check
 ```
 
 Result: passed.
@@ -663,6 +688,13 @@ Progress:
   under auth, block-volume stage-cache records follow the same owner rules, and
   storage GC deletes owner-scoped metadata without removing another owner's row
   for the same logical cache key.
+- 2B-2 completed the embedded gateway owner envelope: controlservice derives
+  gateway scope metadata from the authenticated sandbox owner, repository
+  checkout, and compiled image; backend provision and execution requests carry
+  that metadata into Firecracker and DarwinVZ gateway registrations; and Git,
+  cached Git fallback, OCI registry, and Docker Hub mirror handlers deny
+  ownerless or out-of-envelope requests before embedded `content-cache` or
+  host-side Git credential paths can serve cached or upstream content.
 - Cache-peer imports are disabled for authenticated contexts in this slice
   because `LookupCachePeerRequest` does not yet include an owner envelope.
 

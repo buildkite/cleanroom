@@ -17,14 +17,16 @@ const dockerHubMirrorPrefix = "docker.io"
 // dockerHubMirrorHandler exposes a Docker Hub-compatible pull-through mirror at
 // /v2/ so guest dockerd can use the shared gateway as a registry mirror.
 type dockerHubMirrorHandler struct {
-	cache  registryPrefixHandlerProvider
-	logger *log.Logger
+	cache        registryPrefixHandlerProvider
+	logger       *log.Logger
+	requireOwner bool
 }
 
-func newDockerHubMirrorHandler(cache registryPrefixHandlerProvider, logger *log.Logger) *dockerHubMirrorHandler {
+func newDockerHubMirrorHandler(cache registryPrefixHandlerProvider, logger *log.Logger, requireOwner bool) *dockerHubMirrorHandler {
 	return &dockerHubMirrorHandler{
-		cache:  cache,
-		logger: logger,
+		cache:        cache,
+		logger:       logger,
+		requireOwner: requireOwner,
 	}
 }
 
@@ -75,6 +77,19 @@ func (h *dockerHubMirrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		span.SetStatus(codes.Error, "upstream registry host is not allowed by sandbox policy")
 		h.auditLog(r.Context(), scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream registry host is not allowed by sandbox policy")
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/v2/")
+	if err := authorizeOCIGatewayRequest(scope, dockerHubMirrorPrefix, rest, h.requireOwner); err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonGatewayAuthDenied)
+		span.RecordError(err)
+		span.SetAttributes(
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonGatewayAuthDenied),
+		)
+		span.SetStatus(codes.Error, err.Error())
+		h.auditLog(r.Context(), scope.SandboxID, dockerHubMirrorPrefix, gatewayActionDeny, reasonGatewayAuthDenied)
+		writeReasonError(w, http.StatusForbidden, reasonGatewayAuthDenied, err.Error())
 		return
 	}
 

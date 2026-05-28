@@ -4,7 +4,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func testPolicy() *policy.CompiledPolicy {
@@ -36,6 +38,42 @@ func TestRegistryRegisterAndLookup(t *testing.T) {
 	}
 	if scope.Policy != p {
 		t.Fatal("policy mismatch")
+	}
+}
+
+func TestRegistryRegisterCopiesGatewayScopeMetadata(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	metadata := gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{
+			PrincipalID: "oidc:test:alice",
+			Scope:       "repo:buildkite/cleanroom",
+		},
+		Authorization: gatewayauth.Authorization{
+			GitRepoPrefixes: []string{"github.com/buildkite/cleanroom"},
+			OCIRepoPrefixes: []string{"ghcr.io/buildkite/cleanroom-base/alpine"},
+		},
+	}
+	if err := r.Register("10.1.1.2", "sandbox-1", testPolicy(), metadata); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	metadata.Authorization.GitRepoPrefixes[0] = "github.com/other/repo"
+
+	scope, ok := r.Lookup("10.1.1.2")
+	if !ok {
+		t.Fatal("expected lookup to succeed")
+	}
+	if got, want := scope.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("unexpected owner: got %q want %q", got, want)
+	}
+	if got, want := scope.GatewayScope.Authorization.GitRepoPrefixes[0], "github.com/buildkite/cleanroom"; got != want {
+		t.Fatalf("unexpected git authorization: got %q want %q", got, want)
+	}
+	scope.GatewayScope.Authorization.GitRepoPrefixes[0] = "github.com/mutated/repo"
+	scope, _ = r.Lookup("10.1.1.2")
+	if got, want := scope.GatewayScope.Authorization.GitRepoPrefixes[0], "github.com/buildkite/cleanroom"; got != want {
+		t.Fatalf("lookup returned mutable metadata: got %q want %q", got, want)
 	}
 }
 
@@ -134,6 +172,61 @@ func TestRegistryRegisterScopeTokenAndLookup(t *testing.T) {
 	}
 	if scope.Policy != p {
 		t.Fatal("policy mismatch")
+	}
+}
+
+func TestRegistryRegisterScopeTokenCopiesGatewayScopeMetadata(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	metadata := gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{PrincipalID: "oidc:test:alice"},
+		Authorization: gatewayauth.Authorization{
+			GitRepoPrefixes: []string{"github.com/buildkite/cleanroom"},
+		},
+	}
+	if err := r.RegisterScopeToken("token-1", "sandbox-1", testPolicy(), metadata); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	scope, ok := r.LookupScopeToken("token-1")
+	if !ok {
+		t.Fatal("expected token lookup to succeed")
+	}
+	if got, want := scope.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("unexpected owner: got %q want %q", got, want)
+	}
+}
+
+func TestRegistrySetActiveExecutionScopeUpdatesGatewayScope(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	if err := r.Register("10.1.1.2", "sandbox-1", testPolicy(), gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{PrincipalID: "oidc:test:old"},
+	}); err != nil {
+		t.Fatalf("register scope: %v", err)
+	}
+
+	r.SetActiveExecutionScope("sandbox-1", "exec-1", trace.SpanContext{}, gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{PrincipalID: "oidc:test:alice"},
+		Authorization: gatewayauth.Authorization{
+			GitRepoPrefixes: []string{"github.com/buildkite/cleanroom"},
+		},
+	})
+
+	scope, ok := r.Lookup("10.1.1.2")
+	if !ok {
+		t.Fatal("expected scope lookup to succeed")
+	}
+	if got, want := scope.ExecutionID, "exec-1"; got != want {
+		t.Fatalf("execution id mismatch: got %q want %q", got, want)
+	}
+	if got, want := scope.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("gateway owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := scope.GatewayScope.Authorization.GitRepoPrefixes[0], "github.com/buildkite/cleanroom"; got != want {
+		t.Fatalf("gateway git prefix mismatch: got %q want %q", got, want)
 	}
 }
 

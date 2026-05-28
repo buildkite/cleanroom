@@ -767,6 +767,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 		SandboxID:          sandboxID,
 		Policy:             compiled,
+		GatewayScope:       gatewayScopeMetadata(owner, repository, compiled),
 		CacheOutputVolumes: appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes),
 		Progress:           provisionProgress,
 		FirecrackerConfig:  firecrackerCfg,
@@ -3553,6 +3554,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		Env:               append([]string(nil), ex.Env...),
 		TTY:               ex.TTY,
 		Policy:            sb.Policy,
+		GatewayScope:      gatewayScopeMetadata(sb.Owner, sb.Repository, sb.Policy),
 		NetworkStage:      networkStage,
 		FirecrackerConfig: firecrackerCfg,
 	}
@@ -3960,7 +3962,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		}
 	}
 
-	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommand(
+	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommandWithOptions(
 		ctx,
 		adapter,
 		sandboxID,
@@ -3969,7 +3971,9 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY,
 		policy.NetworkStageWorkspace,
 		command,
+		nil,
 		stdin,
+		persistentSandboxCommandOptions{GatewayScope: s.gatewayScopeForSandboxRepository(sandboxID, repository)},
 		reporter,
 	)
 	if s.Logger != nil {
