@@ -213,6 +213,7 @@ Execution and sandbox telemetry should use backend-neutral outcomes:
 - `failed`
 - `canceled`
 - `timed_out`
+- `indeterminate`
 
 Gateway request telemetry keeps the request decision as a separate axis:
 
