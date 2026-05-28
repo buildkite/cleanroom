@@ -389,11 +389,11 @@ func runSandboxCreate(ctx *runtimeContext, cwd string, connectFlags clientFlags,
 		}
 		sandbox = resp.GetSandbox()
 	} else {
-		compiled, err := defaultSandboxCreatePolicy(resolvedHost, imageRefOverride, requireDockerService, dangerouslyAllowAll)
+		compiled, err := defaultSandboxCreatePolicy(resolvedHost, imageRefOverride, requireDockerService)
 		if err != nil {
 			return err
 		}
-		_, sandbox, err = createSandboxWithPolicy(context.Background(), client, compiled, backend, launchSeconds, nil, repositoryLocalChanges{})
+		_, sandbox, err = createSandboxWithPolicy(context.Background(), client, compiled, backend, launchSeconds, dangerouslyAllowAll, nil, repositoryLocalChanges{})
 		if err != nil {
 			return err
 		}
@@ -527,25 +527,7 @@ func createTopLevelSandbox(
 	if err != nil {
 		return "", nil, err
 	}
-	compiled, err = overrideCompiledPolicyNetworkDefault(compiled, dangerouslyAllowAll)
-	if err != nil {
-		return "", nil, err
-	}
-
-	return createSandboxWithPolicy(callCtx, client, compiled, backendName, launchSeconds, repository, localChanges)
-}
-
-func overrideCompiledPolicyNetworkDefault(compiled *policy.CompiledPolicy, dangerouslyAllowAll bool) (*policy.CompiledPolicy, error) {
-	if !dangerouslyAllowAll {
-		return compiled, nil
-	}
-	if compiled == nil {
-		return nil, errors.New("create sandbox: missing compiled policy")
-	}
-	pb := compiled.ToProto()
-	pb.NetworkDefault = "allow"
-	pb.Hash = ""
-	return policy.FromProto(pb)
+	return createSandboxWithPolicy(callCtx, client, compiled, backendName, launchSeconds, dangerouslyAllowAll, repository, localChanges)
 }
 
 func createSandboxWithProgress(
@@ -632,6 +614,7 @@ func createSandboxWithPolicy(
 	compiled *policy.CompiledPolicy,
 	backendName string,
 	launchSeconds int64,
+	dangerouslyAllowAll bool,
 	repository *resolvedRepositoryCheckout,
 	localChanges repositoryLocalChanges,
 ) (string, *cleanroomv1.Sandbox, error) {
@@ -642,7 +625,8 @@ func createSandboxWithPolicy(
 	createSandboxResp, sandboxID, err := createSandboxWithProgress(callCtx, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,
 		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: launchSeconds,
+			LaunchSeconds:             launchSeconds,
+			DangerouslyAllowAllEgress: dangerouslyAllowAll,
 		},
 		Policy:                 compiled.ToProto(),
 		RepositoryCheckout:     repositoryCheckoutProto(repository),
@@ -657,7 +641,7 @@ func createSandboxWithPolicy(
 	return sandboxID, sandbox, nil
 }
 
-func defaultSandboxCreatePolicy(host, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool) (*policy.CompiledPolicy, error) {
+func defaultSandboxCreatePolicy(host, imageRefOverride string, requireDockerService bool) (*policy.CompiledPolicy, error) {
 	imageRefOverride = strings.TrimSpace(imageRefOverride)
 	resolvedRef := ""
 	if imageRefOverride == "" {
@@ -678,15 +662,10 @@ func defaultSandboxCreatePolicy(host, imageRefOverride string, requireDockerServ
 		resolvedRef = ref
 	}
 
-	networkDefault := "deny"
-	if dangerouslyAllowAll {
-		networkDefault = "allow"
-	}
-
 	compiled, err := policy.FromProto(&cleanroomv1.Policy{
 		Version:        1,
 		ImageRef:       resolvedRef,
-		NetworkDefault: networkDefault,
+		NetworkDefault: "deny",
 		Docker: &cleanroomv1.PolicyDocker{
 			Required: requireDockerService,
 		},
