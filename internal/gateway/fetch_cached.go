@@ -8,11 +8,12 @@ import (
 
 	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/observability"
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 type fetchHandlerProvider interface {
 	FetchAllowsHost(host string) bool
-	FetchHandler() (http.Handler, error)
+	FetchHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, func(), error)
 }
 
 // cachedFetchHandler wraps content-cache's immutable artifact fetch handler
@@ -58,13 +59,14 @@ func (h *cachedFetchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handler, err := h.cache.FetchHandler()
+	handler, releaseHandler, err := h.cache.FetchHandlerForPolicy(scope.Policy)
 	if err != nil {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 		h.auditLog(r.Context(), scope.SandboxID, "fetch", gatewayActionDeny, reasonUpstreamError)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "fetch cache is not configured")
 		return
 	}
+	defer releaseHandler()
 
 	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
 	h.auditLog(r.Context(), scope.SandboxID, host, gatewayActionAllow, reasonCached)

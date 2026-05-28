@@ -30,11 +30,11 @@ func (s *stubGoProxyHandlerProvider) GoProxyUpstream() (string, int, string, int
 	return s.goPolicyHost, s.goPolicyPort, s.goUpstreamHost, s.goUpstreamPort, nil
 }
 
-func (s *stubGoProxyHandlerProvider) GoProxyHandlerForPolicy(*policy.CompiledPolicy) (http.Handler, error) {
+func (s *stubGoProxyHandlerProvider) GoProxyHandlerForPolicy(*policy.CompiledPolicy) (http.Handler, func(), error) {
 	if s.err != nil {
-		return nil, s.err
+		return nil, nil, s.err
 	}
-	return s.goHandler, nil
+	return s.goHandler, func() {}, nil
 }
 
 func (s *stubGoProxyHandlerProvider) SumDBUpstream() (string, int, string, int, error) {

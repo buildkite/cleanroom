@@ -224,7 +224,7 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	var closed []string
 	cache := &ContentCache{}
 	cache.goProxy = goProxyHandlerEntry{
-		handlers:    make(map[string]goProxyScopedHandler),
+		handlers:    make(map[string]*goProxyScopedHandler),
 		maxHandlers: 2,
 		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
 			key := compiled.Hash
@@ -241,21 +241,23 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
 	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
 
-	handlerA, err := cache.GoProxyHandlerForPolicy(policyA)
+	handlerA, releaseA, err := cache.GoProxyHandlerForPolicy(policyA)
 	if err != nil {
 		t.Fatalf("handler A: %v", err)
 	}
-	if _, err := cache.GoProxyHandlerForPolicy(policyB); err != nil {
+	_, releaseB, err := cache.GoProxyHandlerForPolicy(policyB)
+	if err != nil {
 		t.Fatalf("handler B: %v", err)
 	}
-	reusedA, err := cache.GoProxyHandlerForPolicy(policyA)
+	reusedA, releaseReusedA, err := cache.GoProxyHandlerForPolicy(policyA)
 	if err != nil {
 		t.Fatalf("reused handler A: %v", err)
 	}
 	if reusedA != handlerA {
 		t.Fatal("expected policy A handler to be reused before eviction")
 	}
-	if _, err := cache.GoProxyHandlerForPolicy(policyC); err != nil {
+	_, releaseC, err := cache.GoProxyHandlerForPolicy(policyC)
+	if err != nil {
 		t.Fatalf("handler C: %v", err)
 	}
 
@@ -271,9 +273,83 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	if _, ok := cache.goProxy.handlers["policy-b"]; ok {
 		t.Fatal("expected policy-b to be evicted")
 	}
+	if len(closed) != 0 {
+		t.Fatalf("expected active policy-b handler to stay open until release, got %v", closed)
+	}
+	releaseB()
 	if !slices.Equal(closed, []string{"policy-b"}) {
 		t.Fatalf("expected policy-b closer to run, got %v", closed)
 	}
+	releaseA()
+	releaseReusedA()
+	releaseC()
+}
+
+func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	cache := &ContentCache{}
+	cache.fetch = fetchHandlerEntry{
+		handlers:    make(map[string]*fetchScopedHandler),
+		maxHandlers: 2,
+		buildHandler: func(compiled *policy.CompiledPolicy) (fetchScopedHandler, error) {
+			key := compiled.Hash
+			return fetchScopedHandler{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, key)
+				}),
+			}, nil
+		},
+	}
+
+	policyA := &policy.CompiledPolicy{Hash: "policy-a"}
+	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
+	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
+
+	handlerA, releaseA, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A: %v", err)
+	}
+	_, releaseB, err := cache.FetchHandlerForPolicy(policyB)
+	if err != nil {
+		t.Fatalf("handler B: %v", err)
+	}
+	reusedA, releaseReusedA, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("reused handler A: %v", err)
+	}
+	if reusedA != handlerA {
+		t.Fatal("expected policy A handler to be reused before eviction")
+	}
+	_, releaseC, err := cache.FetchHandlerForPolicy(policyC)
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+
+	if got, want := len(cache.fetch.handlers), 2; got != want {
+		t.Fatalf("expected %d cached handlers, got %d", want, got)
+	}
+	if _, ok := cache.fetch.handlers["policy-a"]; !ok {
+		t.Fatal("expected policy-a to remain cached after recent reuse")
+	}
+	if _, ok := cache.fetch.handlers["policy-c"]; !ok {
+		t.Fatal("expected policy-c to be cached")
+	}
+	if _, ok := cache.fetch.handlers["policy-b"]; ok {
+		t.Fatal("expected policy-b to be evicted")
+	}
+	if len(closed) != 0 {
+		t.Fatalf("expected active policy-b handler to stay open until release, got %v", closed)
+	}
+	releaseB()
+	if !slices.Equal(closed, []string{"policy-b"}) {
+		t.Fatalf("expected policy-b closer to run, got %v", closed)
+	}
+	releaseA()
+	releaseReusedA()
+	releaseC()
 }
 
 func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {

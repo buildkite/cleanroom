@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -105,7 +107,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	sumDBHTTPClient := newSumDBContentCacheHTTPClient()
 	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
 	rubyGemsHTTPClient := newRubyGemsContentCacheHTTPClient(cfg.Credentials)
-	fetchHTTPClient := newFetchContentCacheHTTPClient()
 
 	packIdx, err := metadb.NewEnvelopeIndex(db, "git", "pack", 24*time.Hour)
 	if err != nil {
@@ -126,21 +127,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create oci image index: %w", err)
-	}
-	goProxyModIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "mod", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create goproxy mod index: %w", err)
-	}
-	goProxyInfoIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "info", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create goproxy info index: %w", err)
-	}
-	goProxyListIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "list", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create goproxy list index: %w", err)
 	}
 	sumDBIdx, err := metadb.NewEnvelopeIndex(db, "sumdb", "cache", 0)
 	if err != nil {
@@ -176,14 +162,8 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create rubygems gemspec index: %w", err)
 	}
-	fetchResourceIdx, err := metadb.NewEnvelopeIndex(db, "fetch", "resource", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create fetch resource index: %w", err)
-	}
 
 	gitIndex := ccgit.NewIndex(packIdx)
-	goProxyIndex := ccgoproxy.NewIndex(goProxyModIdx, goProxyInfoIdx, goProxyListIdx)
 	sumDBIndex := ccgoproxy.NewSumdbIndex(sumDBIdx)
 	ociIndex := ccoci.NewIndex(imageIdx, manifestIdx, blobIdx)
 	rubyGemsIndex := ccrubygems.NewIndex(
@@ -194,7 +174,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		rubyGemsGemspecIdx,
 		cafs,
 	)
-	fetchIndex := ccfetch.NewIndex(fetchResourceIdx)
 	allowedGitHosts := normalizeAllowedGitHosts(cfg.GitAllowedHosts)
 	allowedFetchHosts := normalizeAllowedHostList(cfg.FetchAllowedHosts)
 	allowedFetchHostSet := normalizeAllowedGitHosts(allowedFetchHosts)
@@ -227,9 +206,13 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		policyPort:   goProxyPolicyPort,
 		upstreamHost: goProxyPolicyHost,
 		upstreamPort: goProxyPolicyPort,
-		handlers:     make(map[string]goProxyScopedHandler),
+		handlers:     make(map[string]*goProxyScopedHandler),
 		maxHandlers:  defaultMaxGoProxyScopedHandlers,
 		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
+			goProxyIndex, err := newScopedGoProxyIndex(db, compiledPolicyCacheKey(compiled))
+			if err != nil {
+				return goProxyScopedHandler{}, err
+			}
 			goProxyUpstream := ccgoproxy.NewUpstream(
 				ccgoproxy.WithUpstreamURL(goProxyUpstreamURL),
 				ccgoproxy.WithHTTPClient(newGoProxyContentCacheHTTPClient(compiled)),
@@ -370,23 +353,65 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		cache.rubyGems.closer = closeFunc(closer.Close)
 	}
 	if len(allowedFetchHosts) > 0 {
-		fetchHandler := ccfetch.NewHandler(
-			fetchIndex,
-			cafs,
-			ccfetch.WithHTTPClient(fetchHTTPClient),
-			ccfetch.WithLogger(logger),
-			ccfetch.WithDownloader(dl),
-			ccfetch.WithAllowedHosts(allowedFetchHosts),
-		)
 		cache.fetch = fetchHandlerEntry{
-			handler:      fetchHandler,
 			allowedHosts: allowedFetchHostSet,
-		}
-		if closer, ok := any(fetchHandler).(interface{ Close() }); ok {
-			cache.fetch.closer = closeFunc(closer.Close)
+			handlers:     make(map[string]*fetchScopedHandler),
+			maxHandlers:  defaultMaxFetchScopedHandlers,
+			buildHandler: func(compiled *policy.CompiledPolicy) (fetchScopedHandler, error) {
+				fetchIndex, err := newScopedFetchIndex(db, compiledPolicyCacheKey(compiled))
+				if err != nil {
+					return fetchScopedHandler{}, err
+				}
+				handler := ccfetch.NewHandler(
+					fetchIndex,
+					cafs,
+					ccfetch.WithHTTPClient(newFetchContentCacheHTTPClient(compiled)),
+					ccfetch.WithLogger(logger),
+					ccfetch.WithDownloader(dl),
+					ccfetch.WithAllowedHosts(allowedFetchHosts),
+				)
+				entry := fetchScopedHandler{handler: handler}
+				if closer, ok := any(handler).(interface{ Close() }); ok {
+					entry.closer = closeFunc(closer.Close)
+				}
+				return entry, nil
+			},
 		}
 	}
 	return cache, nil
+}
+
+func newScopedGoProxyIndex(db metadb.EnvelopeStore, policyKey string) (*ccgoproxy.Index, error) {
+	modIdx, err := newScopedEnvelopeIndex(db, "goproxy", "mod", policyKey, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped goproxy mod index: %w", err)
+	}
+	infoIdx, err := newScopedEnvelopeIndex(db, "goproxy", "info", policyKey, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped goproxy info index: %w", err)
+	}
+	listIdx, err := newScopedEnvelopeIndex(db, "goproxy", "list", policyKey, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped goproxy list index: %w", err)
+	}
+	return ccgoproxy.NewIndex(modIdx, infoIdx, listIdx), nil
+}
+
+func newScopedFetchIndex(db metadb.EnvelopeStore, policyKey string) (*ccfetch.Index, error) {
+	resourceIdx, err := newScopedEnvelopeIndex(db, "fetch", "resource", policyKey, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped fetch resource index: %w", err)
+	}
+	return ccfetch.NewIndex(resourceIdx), nil
+}
+
+func newScopedEnvelopeIndex(db metadb.EnvelopeStore, protocol, kind, policyKey string, ttl time.Duration) (*metadb.EnvelopeIndex, error) {
+	return metadb.NewEnvelopeIndex(db, protocol, scopedMetadataKind(kind, policyKey), ttl)
+}
+
+func scopedMetadataKind(kind, policyKey string) string {
+	digest := sha256.Sum256([]byte(policyKey))
+	return kind + "-" + hex.EncodeToString(digest[:8])
 }
 
 func newGitContentCacheUpstream(client *http.Client, logger *slog.Logger, credentials CredentialProvider) *ccgit.Upstream {

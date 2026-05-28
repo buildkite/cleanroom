@@ -18,6 +18,7 @@ import (
 
 const (
 	defaultMaxGoProxyScopedHandlers = 32
+	defaultMaxFetchScopedHandlers   = 32
 	defaultMaxOCIHandlers           = 32
 )
 
@@ -41,6 +42,8 @@ type ociHandlerEntry struct {
 type goProxyScopedHandler struct {
 	handler http.Handler
 	closer  io.Closer
+	active  int
+	evicted bool
 }
 
 type goProxyHandlerEntry struct {
@@ -49,7 +52,7 @@ type goProxyHandlerEntry struct {
 	upstreamHost string
 	upstreamPort int
 	mu           sync.Mutex
-	handlers     map[string]goProxyScopedHandler
+	handlers     map[string]*goProxyScopedHandler
 	order        []string
 	maxHandlers  int
 	buildHandler func(*policy.CompiledPolicy) (goProxyScopedHandler, error)
@@ -75,9 +78,19 @@ type rubyGemsHandlerEntry struct {
 }
 
 type fetchHandlerEntry struct {
-	handler      http.Handler
 	allowedHosts map[string]struct{}
-	closer       io.Closer
+	mu           sync.Mutex
+	handlers     map[string]*fetchScopedHandler
+	order        []string
+	maxHandlers  int
+	buildHandler func(*policy.CompiledPolicy) (fetchScopedHandler, error)
+}
+
+type fetchScopedHandler struct {
+	handler http.Handler
+	closer  io.Closer
+	active  int
+	evicted bool
 }
 
 // ContentCache holds the shared storage and protocol handlers.
@@ -129,9 +142,13 @@ func (c *ContentCache) Close() error {
 	if c.rubyGems.closer != nil {
 		closers = append(closers, c.rubyGems.closer)
 	}
-	if c.fetch.closer != nil {
-		closers = append(closers, c.fetch.closer)
+	c.fetch.mu.Lock()
+	for _, entry := range c.fetch.handlers {
+		if entry.closer != nil {
+			closers = append(closers, entry.closer)
+		}
 	}
+	c.fetch.mu.Unlock()
 
 	if c.closer != nil {
 		closers = append(closers, c.closer)
@@ -210,43 +227,45 @@ func (c *ContentCache) GoProxyUpstream() (string, int, string, int, error) {
 // GoProxyHandlerForPolicy returns a Go module proxy cache handler scoped to
 // the provided compiled policy. The handler caches background fills against the
 // same allowlist that authorized the originating sandbox request.
-func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, error) {
+func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, func(), error) {
 	if c == nil || c.goProxy.buildHandler == nil {
-		return nil, errors.New("goproxy cache not configured")
+		return nil, nil, errors.New("goproxy cache not configured")
 	}
 	if compiled == nil {
-		return nil, errors.New("goproxy policy is required")
+		return nil, nil, errors.New("goproxy policy is required")
 	}
 
-	key := strings.TrimSpace(compiled.Hash)
-	if key == "" {
-		key = fmt.Sprintf("%p", compiled)
-	}
+	key := compiledPolicyCacheKey(compiled)
 
 	c.goProxy.mu.Lock()
 
 	if entry, ok := c.goProxy.handlers[key]; ok {
+		entry.active++
 		c.goProxy.touchLocked(key)
+		release := c.goProxy.releaseHandler(entry)
 		c.goProxy.mu.Unlock()
-		return entry.handler, nil
+		return entry.handler, release, nil
 	}
 
-	entry, err := c.goProxy.buildHandler(compiled)
+	entryValue, err := c.goProxy.buildHandler(compiled)
 	if err != nil {
 		c.goProxy.mu.Unlock()
-		return nil, err
+		return nil, nil, err
 	}
 	if c.goProxy.handlers == nil {
-		c.goProxy.handlers = make(map[string]goProxyScopedHandler)
+		c.goProxy.handlers = make(map[string]*goProxyScopedHandler)
 	}
+	entry := &entryValue
+	entry.active = 1
 	c.goProxy.handlers[key] = entry
 	c.goProxy.touchLocked(key)
 	evicted := c.goProxy.evictLocked()
+	release := c.goProxy.releaseHandler(entry)
 	c.goProxy.mu.Unlock()
 	if evicted != nil {
 		_ = evicted.Close()
 	}
-	return entry.handler, nil
+	return entry.handler, release, nil
 }
 
 func (e *goProxyHandlerEntry) touchLocked(key string) {
@@ -277,7 +296,32 @@ func (e *goProxyHandlerEntry) evictLocked() io.Closer {
 		return nil
 	}
 	delete(e.handlers, evictedKey)
+	if entry.active > 0 {
+		entry.evicted = true
+		return nil
+	}
 	return entry.closer
+}
+
+func (e *goProxyHandlerEntry) releaseHandler(entry *goProxyScopedHandler) func() {
+	var once sync.Once
+	return func() {
+		var closer io.Closer
+		once.Do(func() {
+			e.mu.Lock()
+			if entry.active > 0 {
+				entry.active--
+			}
+			if entry.active == 0 && entry.evicted {
+				closer = entry.closer
+				entry.closer = nil
+			}
+			e.mu.Unlock()
+		})
+		if closer != nil {
+			_ = closer.Close()
+		}
+	}
 }
 
 // HasSumDBHandler reports whether sumdb caching is configured.
@@ -325,12 +369,12 @@ func (c *ContentCache) RubyGemsHandler() (http.Handler, error) {
 
 // HasFetchHandler reports whether immutable artifact fetch caching is configured.
 func (c *ContentCache) HasFetchHandler() bool {
-	return c != nil && c.fetch.handler != nil
+	return c != nil && c.fetch.buildHandler != nil
 }
 
 // FetchAllowsHost reports whether the immutable artifact fetch route is configured for host.
 func (c *ContentCache) FetchAllowsHost(host string) bool {
-	if c == nil || c.fetch.handler == nil {
+	if c == nil || c.fetch.buildHandler == nil {
 		return false
 	}
 	host = strings.ToLower(strings.TrimSpace(host))
@@ -341,12 +385,112 @@ func (c *ContentCache) FetchAllowsHost(host string) bool {
 	return ok
 }
 
-// FetchHandler returns the configured immutable artifact fetch cache handler.
-func (c *ContentCache) FetchHandler() (http.Handler, error) {
-	if c == nil || c.fetch.handler == nil {
-		return nil, errors.New("fetch cache not configured")
+// FetchHandlerForPolicy returns an immutable artifact fetch cache handler scoped
+// to the provided compiled policy. Cached fetch metadata is partitioned by
+// policy so a hit cannot skip redirect authorization for a narrower sandbox.
+func (c *ContentCache) FetchHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, func(), error) {
+	if c == nil || c.fetch.buildHandler == nil {
+		return nil, nil, errors.New("fetch cache not configured")
 	}
-	return c.fetch.handler, nil
+	if compiled == nil {
+		return nil, nil, errors.New("fetch policy is required")
+	}
+
+	key := compiledPolicyCacheKey(compiled)
+
+	c.fetch.mu.Lock()
+
+	if entry, ok := c.fetch.handlers[key]; ok {
+		entry.active++
+		c.fetch.touchLocked(key)
+		release := c.fetch.releaseHandler(entry)
+		c.fetch.mu.Unlock()
+		return entry.handler, release, nil
+	}
+
+	entryValue, err := c.fetch.buildHandler(compiled)
+	if err != nil {
+		c.fetch.mu.Unlock()
+		return nil, nil, err
+	}
+	if c.fetch.handlers == nil {
+		c.fetch.handlers = make(map[string]*fetchScopedHandler)
+	}
+	entry := &entryValue
+	entry.active = 1
+	c.fetch.handlers[key] = entry
+	c.fetch.touchLocked(key)
+	evicted := c.fetch.evictLocked()
+	release := c.fetch.releaseHandler(entry)
+	c.fetch.mu.Unlock()
+	if evicted != nil {
+		_ = evicted.Close()
+	}
+	return entry.handler, release, nil
+}
+
+func (e *fetchHandlerEntry) touchLocked(key string) {
+	for i, existing := range e.order {
+		if existing != key {
+			continue
+		}
+		copy(e.order[i:], e.order[i+1:])
+		e.order = e.order[:len(e.order)-1]
+		break
+	}
+	e.order = append(e.order, key)
+}
+
+func (e *fetchHandlerEntry) evictLocked() io.Closer {
+	maxHandlers := e.maxHandlers
+	if maxHandlers <= 0 {
+		maxHandlers = defaultMaxFetchScopedHandlers
+	}
+	if len(e.order) <= maxHandlers {
+		return nil
+	}
+
+	evictedKey := e.order[0]
+	e.order = e.order[1:]
+	entry, ok := e.handlers[evictedKey]
+	if !ok {
+		return nil
+	}
+	delete(e.handlers, evictedKey)
+	if entry.active > 0 {
+		entry.evicted = true
+		return nil
+	}
+	return entry.closer
+}
+
+func (e *fetchHandlerEntry) releaseHandler(entry *fetchScopedHandler) func() {
+	var once sync.Once
+	return func() {
+		var closer io.Closer
+		once.Do(func() {
+			e.mu.Lock()
+			if entry.active > 0 {
+				entry.active--
+			}
+			if entry.active == 0 && entry.evicted {
+				closer = entry.closer
+				entry.closer = nil
+			}
+			e.mu.Unlock()
+		})
+		if closer != nil {
+			_ = closer.Close()
+		}
+	}
+}
+
+func compiledPolicyCacheKey(compiled *policy.CompiledPolicy) string {
+	key := strings.TrimSpace(compiled.Hash)
+	if key == "" {
+		key = fmt.Sprintf("%p", compiled)
+	}
+	return key
 }
 
 // OCIUpstreamForPrefix returns policy/upstream metadata for the requested
@@ -602,8 +746,8 @@ func newRubyGemsContentCacheHTTPClient(_ CredentialProvider) *http.Client {
 	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
 }
 
-func newFetchContentCacheHTTPClient() *http.Client {
-	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
+func newFetchContentCacheHTTPClient(compiled *policy.CompiledPolicy) *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil, compiled)
 }
 
 func newPolicyValidatingContentCacheHTTPClient(credentials CredentialProvider, compiled *policy.CompiledPolicy) *http.Client {
