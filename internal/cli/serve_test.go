@@ -25,6 +25,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/changesetstore"
+	"github.com/buildkite/cleanroom/internal/endpoint"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -280,6 +281,24 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 	}
 	if !cfg.AllowScopeTokenFromAnySource {
 		t.Fatal("expected allow-any-source fallback to be preserved in server config")
+	}
+}
+
+func TestGatewayRequiresAuthenticatedOwnerMatchesControlServerAuth(t *testing.T) {
+	t.Parallel()
+
+	ctx := &runtimeContext{Config: runtimeconfig.Config{
+		Auth: runtimeconfig.AuthConfig{Required: true},
+	}}
+
+	if gatewayRequiresAuthenticatedOwner(ctx, endpoint.Endpoint{Scheme: "unix"}) {
+		t.Fatal("expected trusted unix socket control server to keep ownerless gateway scopes allowed")
+	}
+	if !gatewayRequiresAuthenticatedOwner(ctx, endpoint.Endpoint{Scheme: "tcp"}) {
+		t.Fatal("expected authenticated tcp control server to require gateway owners")
+	}
+	if gatewayRequiresAuthenticatedOwner(&runtimeContext{}, endpoint.Endpoint{Scheme: "tcp"}) {
+		t.Fatal("expected gateway owner requirement to stay off when auth is not required")
 	}
 }
 

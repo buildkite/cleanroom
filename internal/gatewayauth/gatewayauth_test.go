@@ -38,6 +38,23 @@ func TestOCIRepoPrefixFromImageRefDefaultsDockerHubLibrary(t *testing.T) {
 	}
 }
 
+func TestOCIRepoPrefixFromImageRefCanonicalizesDockerHubAliases(t *testing.T) {
+	t.Parallel()
+
+	for _, imageRef := range []string{
+		"index.docker.io/library/docker:latest",
+		"registry-1.docker.io/library/docker@sha256:0123456789abcdef",
+	} {
+		got, err := OCIRepoPrefixFromImageRef(imageRef)
+		if err != nil {
+			t.Fatalf("OCIRepoPrefixFromImageRef(%q) returned error: %v", imageRef, err)
+		}
+		if want := "docker.io/library/docker"; got != want {
+			t.Fatalf("OCIRepoPrefixFromImageRef(%q) = %q, want %q", imageRef, got, want)
+		}
+	}
+}
+
 func TestOCIRepoKeyFromPathExtractsRepository(t *testing.T) {
 	t.Parallel()
 
@@ -49,6 +66,21 @@ func TestOCIRepoKeyFromPathExtractsRepository(t *testing.T) {
 		t.Fatal("expected repository to be present")
 	}
 	if want := "ghcr.io/buildkite/cleanroom"; got != want {
+		t.Fatalf("unexpected key: got %q want %q", got, want)
+	}
+}
+
+func TestOCIRepoKeyFromPathExtractsReferrersRepository(t *testing.T) {
+	t.Parallel()
+
+	got, ok, err := OCIRepoKeyFromPath("docker.io", "library/alpine/referrers/sha256:abc")
+	if err != nil {
+		t.Fatalf("OCIRepoKeyFromPath returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected repository to be present")
+	}
+	if want := "docker.io/library/alpine"; got != want {
 		t.Fatalf("unexpected key: got %q want %q", got, want)
 	}
 }

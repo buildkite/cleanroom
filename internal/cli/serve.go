@@ -159,7 +159,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		ctx.Observability.MeterProvider(),
 		logger.With("subsystem", "gateway"),
 		darwinGatewayHost,
-		ctx.Config.Auth.Required,
+		gatewayRequiresAuthenticatedOwner(ctx, ep),
 	))
 	if err := gwServer.Start(); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
@@ -317,6 +317,10 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
 		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
 	}
+}
+
+func gatewayRequiresAuthenticatedOwner(ctx *runtimeContext, ep endpoint.Endpoint) bool {
+	return ctx != nil && ctx.Config.Auth.Required && ep.Scheme != "unix"
 }
 
 func (s *ServeCommand) githubAppCredentialsConfig(base runtimeconfig.GatewayGitHubAppCredentialsConfig, cwd string) (runtimeconfig.GatewayGitHubAppCredentialsConfig, error) {

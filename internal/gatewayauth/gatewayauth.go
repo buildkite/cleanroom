@@ -126,7 +126,7 @@ func OCIRepoKeyFromPath(prefix, rest string) (repoKey string, ok bool, err error
 	parts := strings.Split(rest, "/")
 	for i := len(parts) - 2; i >= 1; i-- {
 		switch parts[i] {
-		case "manifests", "blobs":
+		case "manifests", "blobs", "referrers":
 			return NormalizeOCIRepoPrefix(prefix + "/" + strings.Join(parts[:i], "/")), true, nil
 		}
 	}
@@ -153,6 +153,10 @@ func NormalizeOCIRepoPrefix(value string) string {
 			return "docker.io/library/" + repo
 		}
 		return "docker.io/" + repo
+	}
+	if first == "index.docker.io" || first == "registry-1.docker.io" {
+		parts[0] = "docker.io"
+		return strings.Join(parts, "/")
 	}
 	return repo
 }
