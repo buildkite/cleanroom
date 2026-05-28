@@ -1680,7 +1680,7 @@ func TestFromProtoRejectsOverlappingDependencyAndServiceOutputs(t *testing.T) {
 	}
 }
 
-func TestFromProtoAcceptsAllowDefault(t *testing.T) {
+func TestFromProtoAcceptsStoredAllowDefault(t *testing.T) {
 	t.Parallel()
 
 	compiled, err := FromProto(&cleanroomv1.Policy{
@@ -1695,7 +1695,59 @@ func TestFromProtoAcceptsAllowDefault(t *testing.T) {
 		t.Fatalf("unexpected network default: got %q want %q", got, want)
 	}
 	if !compiled.Allows("example.com", 443) {
+		t.Fatal("expected stored allow-default policy to allow arbitrary host:port")
+	}
+}
+
+func TestFromCreateRequestProtoRejectsAllowDefault(t *testing.T) {
+	t.Parallel()
+
+	_, err := FromCreateRequestProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "allow",
+	})
+	if err == nil {
+		t.Fatal("expected FromCreateRequestProto to reject allow-default policy protobuf")
+	}
+	if !strings.Contains(err.Error(), "network_default=allow") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDangerouslyAllowAllEgressReturnsAllowDefaultCopy(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		NetworkStages: &cleanroomv1.PolicyNetworkStages{
+			Execution: &cleanroomv1.PolicyNetwork{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	compiled.Allow = []AllowRule{{Host: "api.github.com", Ports: []int{443}}}
+	allowAll, err := DangerouslyAllowAllEgress(compiled)
+	if err != nil {
+		t.Fatalf("DangerouslyAllowAllEgress returned error: %v", err)
+	}
+	if got, want := allowAll.NetworkDefault, "allow"; got != want {
+		t.Fatalf("unexpected network default: got %q want %q", got, want)
+	}
+	if len(allowAll.Allow) != 0 {
+		t.Fatalf("expected allow rules to be cleared, got %v", allowAll.Allow)
+	}
+	if allowAll.NetworkStages != nil {
+		t.Fatalf("expected stage-local policy to be cleared, got %#v", allowAll.NetworkStages)
+	}
+	if !allowAll.Allows("example.com", 443) {
 		t.Fatal("expected allow-default policy to allow arbitrary host:port")
+	}
+	if compiled.NetworkDefault != "deny" || compiled.NetworkStages == nil {
+		t.Fatalf("expected original policy to stay deny with stage network, got %#v", compiled)
 	}
 }
 

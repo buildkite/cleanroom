@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 6c ready for review
+**Status:** Slice 7 ready for review
 **Last reviewed:** 2026-05-28
 
 ## Summary
@@ -226,6 +226,22 @@ Focused validation run on 2026-05-28:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+```
+
+Result: passed.
+
+Slice 7 is implemented and ready for review. Client-supplied policy protobufs
+for sandbox creation can no longer set `network_default=allow`. The
+`--dangerously-allow-all` path now sends an explicit sandbox creation option,
+and the control service applies allow-all egress server-side after validating
+the policy protobuf as deny-only. Stored compiled policies still round-trip
+allow-default records so existing snapshots and caches created through the
+explicit dangerous option remain readable.
+
+Focused validation run on 2026-05-28:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/policy ./internal/controlservice ./internal/cli
 ```
 
 Result: passed.

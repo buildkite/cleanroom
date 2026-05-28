@@ -1611,8 +1611,12 @@ func (x *Policy) GetDocker() *PolicyDocker {
 type SandboxOptions struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LaunchSeconds int64                  `protobuf:"varint,3,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Explicitly request allow-all egress for a newly created sandbox. Policy
+	// protobufs remain deny-by-default; this option is the only API surface for
+	// the dangerous escape hatch used by CLI --dangerously-allow-all.
+	DangerouslyAllowAllEgress bool `protobuf:"varint,4,opt,name=dangerously_allow_all_egress,json=dangerouslyAllowAllEgress,proto3" json:"dangerously_allow_all_egress,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *SandboxOptions) Reset() {
@@ -1650,6 +1654,13 @@ func (x *SandboxOptions) GetLaunchSeconds() int64 {
 		return x.LaunchSeconds
 	}
 	return 0
+}
+
+func (x *SandboxOptions) GetDangerouslyAllowAllEgress() bool {
+	if x != nil {
+		return x.DangerouslyAllowAllEgress
+	}
+	return false
 }
 
 type RepositoryCheckout struct {
@@ -6491,9 +6502,10 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	" \x01(\v2\x17.cleanroom.v1.PolicyRunR\x03run\x12;\n" +
 	"\tresources\x18\v \x01(\v2\x1d.cleanroom.v1.PolicyResourcesR\tresources\x12H\n" +
 	"\x0enetwork_stages\x18\f \x01(\v2!.cleanroom.v1.PolicyNetworkStagesR\rnetworkStages\x122\n" +
-	"\x06docker\x18\r \x01(\v2\x1a.cleanroom.v1.PolicyDockerR\x06docker\"R\n" +
+	"\x06docker\x18\r \x01(\v2\x1a.cleanroom.v1.PolicyDockerR\x06docker\"\x93\x01\n" +
 	"\x0eSandboxOptions\x12%\n" +
-	"\x0elaunch_seconds\x18\x03 \x01(\x03R\rlaunchSecondsJ\x04\b\x02\x10\x03R\x13read_only_workspace\"\xe1\x01\n" +
+	"\x0elaunch_seconds\x18\x03 \x01(\x03R\rlaunchSeconds\x12?\n" +
+	"\x1cdangerously_allow_all_egress\x18\x04 \x01(\bR\x19dangerouslyAllowAllEgressJ\x04\b\x02\x10\x03R\x13read_only_workspace\"\xe1\x01\n" +
 	"\x12RepositoryCheckout\x12\x1d\n" +
 	"\n" +
 	"remote_url\x18\x01 \x01(\tR\tremoteUrl\x12\x1d\n" +

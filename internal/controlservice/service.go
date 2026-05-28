@@ -413,6 +413,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	createStarted := s.clock().Now()
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
+	opts := req.GetOptions()
 	metricSourceKind := ""
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
 	commitBundle := repositoryCommitBundleFromProto(req.GetRepositoryCommitBundle())
@@ -458,6 +459,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}()
 
 	if snapshotID != "" {
+		if opts.GetDangerouslyAllowAllEgress() {
+			return nil, errors.New("snapshot-backed sandbox creation cannot request dangerously allow-all egress")
+		}
 		if req.GetPolicy() != nil {
 			return nil, errors.New("snapshot-backed sandbox creation cannot include policy")
 		}
@@ -476,9 +480,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		return nil, errors.New("missing policy")
 	}
 
-	compiled, err := policy.FromProto(req.GetPolicy())
+	compiled, err := policy.FromCreateRequestProto(req.GetPolicy())
 	if err != nil {
 		return nil, fmt.Errorf("invalid policy: %w", err)
+	}
+	if opts.GetDangerouslyAllowAllEgress() {
+		compiled, err = policy.DangerouslyAllowAllEgress(compiled)
+		if err != nil {
+			return nil, fmt.Errorf("apply dangerously allow-all egress: %w", err)
+		}
 	}
 	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
 	if err := validateRepositoryScopedCreatePolicy(compiled, repository); err != nil {
@@ -506,7 +516,6 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := validateRepositoryCommitBundleForCheckout(repository, commitBundle); err != nil {
 		return nil, err
 	}
-	opts := req.GetOptions()
 	execOpts := executionOptions{}
 	if opts != nil {
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()

@@ -609,6 +609,52 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 	}
 }
 
+func TestCreateSandboxRejectsAllowDefaultPolicyProto(t *testing.T) {
+	t.Parallel()
+
+	policyProto := testPolicy()
+	policyProto.NetworkDefault = "allow"
+	svc := newTestService(&stubAdapter{})
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: policyProto,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox to reject allow-default policy protobuf")
+	}
+	if !strings.Contains(err.Error(), "network_default=allow") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateSandboxDangerouslyAllowAllOptionAppliesServerSide(t *testing.T) {
+	t.Parallel()
+
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+	policyProto := testPolicy()
+	policyProto.Allow = []*cleanroomv1.PolicyAllowRule{{Host: "api.github.com", Ports: []int32{443}}}
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: policyProto,
+		Options: &cleanroomv1.SandboxOptions{
+			DangerouslyAllowAllEgress: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if adapter.provisionReq.Policy == nil {
+		t.Fatal("expected provisioned policy")
+	}
+	if got, want := adapter.provisionReq.Policy.NetworkDefault, "allow"; got != want {
+		t.Fatalf("unexpected provisioned network default: got %q want %q", got, want)
+	}
+	if len(adapter.provisionReq.Policy.Allow) != 0 {
+		t.Fatalf("expected allow rules to be cleared, got %v", adapter.provisionReq.Policy.Allow)
+	}
+}
+
 func TestDialSandboxPortUsesReadySandboxBackendDialer(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer serverConn.Close()

@@ -204,6 +204,10 @@ message SandboxOptions {
   reserved 2;
   reserved "read_only_workspace";
   int64 launch_seconds = 3;
+  // Explicitly request allow-all egress for a newly created sandbox. Policy
+  // protobufs remain deny-by-default; this option is the only API surface for
+  // the dangerous escape hatch used by CLI --dangerously-allow-all.
+  bool dangerously_allow_all_egress = 4;
 }
 
 message RepositoryCheckout {

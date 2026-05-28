@@ -1257,6 +1257,40 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	return compiled, nil
 }
 
+// FromCreateRequestProto converts a client-supplied policy request into a
+// CompiledPolicy. Create requests must use SandboxOptions for allow-all egress
+// so the dangerous mode is explicit at the API boundary instead of hidden in
+// the policy payload.
+func FromCreateRequestProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
+	networkDefault := strings.TrimSpace(strings.ToLower(pb.GetNetworkDefault()))
+	if networkDefault == "" {
+		networkDefault = "deny"
+	}
+	if networkDefault == "allow" {
+		return nil, errors.New("policy network_default=allow is not accepted in create requests; use sandbox options for dangerously allow-all egress")
+	}
+	return FromProto(pb)
+}
+
+// DangerouslyAllowAllEgress returns a copy of compiled with outbound network
+// filtering disabled. This is intentionally separate from FromProto so callers
+// cannot smuggle allow-all egress through the policy payload.
+func DangerouslyAllowAllEgress(compiled *CompiledPolicy) (*CompiledPolicy, error) {
+	if compiled == nil {
+		return nil, errors.New("missing policy")
+	}
+	out := *compiled
+	out.NetworkDefault = "allow"
+	out.Allow = nil
+	out.NetworkStages = nil
+	hash, err := hashPolicy(&out)
+	if err != nil {
+		return nil, err
+	}
+	out.Hash = hash
+	return &out, nil
+}
+
 func normalizeDocker(raw rawDockerConfig) DockerService {
 	return DockerService{Required: raw.Required}
 }
