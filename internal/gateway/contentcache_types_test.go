@@ -3,15 +3,19 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
 	ccgit "github.com/buildkite/content-cache/protocol/git"
+	"github.com/buildkite/content-cache/store/metadb"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -222,9 +226,10 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	t.Parallel()
 
 	var closed []string
+	var events []string
 	cache := &ContentCache{}
 	cache.goProxy = goProxyHandlerEntry{
-		handlers:    make(map[string]goProxyScopedHandler),
+		handlers:    make(map[string]*goProxyScopedHandler),
 		maxHandlers: 2,
 		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
 			key := compiled.Hash
@@ -232,6 +237,10 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 				handler: &comparableHandler{},
 				closer: closeFunc(func() {
 					closed = append(closed, key)
+					events = append(events, "close:"+key)
+				}),
+				evictCleaner: closeFunc(func() {
+					events = append(events, "clean:"+key)
 				}),
 			}, nil
 		},
@@ -241,21 +250,23 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
 	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
 
-	handlerA, err := cache.GoProxyHandlerForPolicy(policyA)
+	handlerA, releaseA, err := cache.GoProxyHandlerForPolicy(policyA)
 	if err != nil {
 		t.Fatalf("handler A: %v", err)
 	}
-	if _, err := cache.GoProxyHandlerForPolicy(policyB); err != nil {
+	_, releaseB, err := cache.GoProxyHandlerForPolicy(policyB)
+	if err != nil {
 		t.Fatalf("handler B: %v", err)
 	}
-	reusedA, err := cache.GoProxyHandlerForPolicy(policyA)
+	reusedA, releaseReusedA, err := cache.GoProxyHandlerForPolicy(policyA)
 	if err != nil {
 		t.Fatalf("reused handler A: %v", err)
 	}
 	if reusedA != handlerA {
 		t.Fatal("expected policy A handler to be reused before eviction")
 	}
-	if _, err := cache.GoProxyHandlerForPolicy(policyC); err != nil {
+	_, releaseC, err := cache.GoProxyHandlerForPolicy(policyC)
+	if err != nil {
 		t.Fatalf("handler C: %v", err)
 	}
 
@@ -271,8 +282,264 @@ func TestGoProxyHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	if _, ok := cache.goProxy.handlers["policy-b"]; ok {
 		t.Fatal("expected policy-b to be evicted")
 	}
+	if len(closed) != 0 {
+		t.Fatalf("expected active policy-b handler to stay open until release, got %v", closed)
+	}
+	releaseB()
 	if !slices.Equal(closed, []string{"policy-b"}) {
 		t.Fatalf("expected policy-b closer to run, got %v", closed)
+	}
+	if !slices.Equal(events, []string{"close:policy-b", "clean:policy-b"}) {
+		t.Fatalf("expected policy-b cleanup after close, got %v", events)
+	}
+	releaseA()
+	releaseReusedA()
+	releaseC()
+}
+
+func TestGoProxyHandlerForPolicyStaleEvictionDoesNotCleanReplacementMetadata(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	var cleaned []string
+	builds := make(map[string]int)
+	cache := &ContentCache{}
+	cache.goProxy = goProxyHandlerEntry{
+		handlers:    make(map[string]*goProxyScopedHandler),
+		maxHandlers: 2,
+		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
+			key := compiled.Hash
+			builds[key]++
+			id := fmt.Sprintf("%s#%d", key, builds[key])
+			return goProxyScopedHandler{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, id)
+				}),
+				evictCleaner: closeFunc(func() {
+					cleaned = append(cleaned, id)
+				}),
+			}, nil
+		},
+	}
+
+	policyA := &policy.CompiledPolicy{Hash: "policy-a"}
+	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
+	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
+
+	_, releaseA1, err := cache.GoProxyHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A1: %v", err)
+	}
+	_, releaseB1, err := cache.GoProxyHandlerForPolicy(policyB)
+	if err != nil {
+		t.Fatalf("handler B1: %v", err)
+	}
+	_, releaseC, err := cache.GoProxyHandlerForPolicy(policyC)
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+	_, releaseA2, err := cache.GoProxyHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A2: %v", err)
+	}
+
+	releaseA1()
+	if !slices.Contains(closed, "policy-a#1") {
+		t.Fatalf("expected stale policy-a handler to close, got %v", closed)
+	}
+	if slices.Contains(cleaned, "policy-a#1") {
+		t.Fatalf("expected stale policy-a metadata cleanup to be skipped, got %v", cleaned)
+	}
+
+	releaseB1()
+	if !slices.Contains(cleaned, "policy-b#1") {
+		t.Fatalf("expected evicted policy-b metadata cleanup to run, got %v", cleaned)
+	}
+
+	releaseC()
+	releaseA2()
+}
+
+func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	var events []string
+	cache := &ContentCache{}
+	cache.fetch = fetchHandlerEntry{
+		handlers:    make(map[string]*fetchScopedHandler),
+		maxHandlers: 2,
+		buildHandler: func(compiled *policy.CompiledPolicy) (fetchScopedHandler, error) {
+			key := compiled.Hash
+			return fetchScopedHandler{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, key)
+					events = append(events, "close:"+key)
+				}),
+				evictCleaner: closeFunc(func() {
+					events = append(events, "clean:"+key)
+				}),
+			}, nil
+		},
+	}
+
+	policyA := &policy.CompiledPolicy{Hash: "policy-a"}
+	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
+	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
+
+	handlerA, releaseA, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A: %v", err)
+	}
+	_, releaseB, err := cache.FetchHandlerForPolicy(policyB)
+	if err != nil {
+		t.Fatalf("handler B: %v", err)
+	}
+	reusedA, releaseReusedA, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("reused handler A: %v", err)
+	}
+	if reusedA != handlerA {
+		t.Fatal("expected policy A handler to be reused before eviction")
+	}
+	_, releaseC, err := cache.FetchHandlerForPolicy(policyC)
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+
+	if got, want := len(cache.fetch.handlers), 2; got != want {
+		t.Fatalf("expected %d cached handlers, got %d", want, got)
+	}
+	if _, ok := cache.fetch.handlers["policy-a"]; !ok {
+		t.Fatal("expected policy-a to remain cached after recent reuse")
+	}
+	if _, ok := cache.fetch.handlers["policy-c"]; !ok {
+		t.Fatal("expected policy-c to be cached")
+	}
+	if _, ok := cache.fetch.handlers["policy-b"]; ok {
+		t.Fatal("expected policy-b to be evicted")
+	}
+	if len(closed) != 0 {
+		t.Fatalf("expected active policy-b handler to stay open until release, got %v", closed)
+	}
+	releaseB()
+	if !slices.Equal(closed, []string{"policy-b"}) {
+		t.Fatalf("expected policy-b closer to run, got %v", closed)
+	}
+	if !slices.Equal(events, []string{"close:policy-b", "clean:policy-b"}) {
+		t.Fatalf("expected policy-b cleanup after close, got %v", events)
+	}
+	releaseA()
+	releaseReusedA()
+	releaseC()
+}
+
+func TestFetchHandlerForPolicyStaleEvictionDoesNotCleanReplacementMetadata(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	var cleaned []string
+	builds := make(map[string]int)
+	cache := &ContentCache{}
+	cache.fetch = fetchHandlerEntry{
+		handlers:    make(map[string]*fetchScopedHandler),
+		maxHandlers: 2,
+		buildHandler: func(compiled *policy.CompiledPolicy) (fetchScopedHandler, error) {
+			key := compiled.Hash
+			builds[key]++
+			id := fmt.Sprintf("%s#%d", key, builds[key])
+			return fetchScopedHandler{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, id)
+				}),
+				evictCleaner: closeFunc(func() {
+					cleaned = append(cleaned, id)
+				}),
+			}, nil
+		},
+	}
+
+	policyA := &policy.CompiledPolicy{Hash: "policy-a"}
+	policyB := &policy.CompiledPolicy{Hash: "policy-b"}
+	policyC := &policy.CompiledPolicy{Hash: "policy-c"}
+
+	_, releaseA1, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A1: %v", err)
+	}
+	_, releaseB1, err := cache.FetchHandlerForPolicy(policyB)
+	if err != nil {
+		t.Fatalf("handler B1: %v", err)
+	}
+	_, releaseC, err := cache.FetchHandlerForPolicy(policyC)
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+	_, releaseA2, err := cache.FetchHandlerForPolicy(policyA)
+	if err != nil {
+		t.Fatalf("handler A2: %v", err)
+	}
+
+	releaseA1()
+	if !slices.Contains(closed, "policy-a#1") {
+		t.Fatalf("expected stale policy-a handler to close, got %v", closed)
+	}
+	if slices.Contains(cleaned, "policy-a#1") {
+		t.Fatalf("expected stale policy-a metadata cleanup to be skipped, got %v", cleaned)
+	}
+
+	releaseB1()
+	if !slices.Contains(cleaned, "policy-b#1") {
+		t.Fatalf("expected evicted policy-b metadata cleanup to run, got %v", cleaned)
+	}
+
+	releaseC()
+	releaseA2()
+}
+
+func TestScopedEnvelopeStoreDeletesOnlyEvictedPolicyEntries(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := metadb.NewBoltDB()
+	if err := db.Open(t.TempDir() + "/meta.db"); err != nil {
+		t.Fatalf("open metadb: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	prefixA := scopedMetadataPrefix("policy-a")
+	prefixB := scopedMetadataPrefix("policy-b")
+	indexA, err := newScopedEnvelopeIndex(db, "fetch", "resource", prefixA, time.Hour)
+	if err != nil {
+		t.Fatalf("index A: %v", err)
+	}
+	indexB, err := newScopedEnvelopeIndex(db, "fetch", "resource", prefixB, time.Hour)
+	if err != nil {
+		t.Fatalf("index B: %v", err)
+	}
+
+	if err := indexA.Put(ctx, "https://dl.example/tool.tgz", []byte("policy-a"), metadb.ContentType_CONTENT_TYPE_TEXT, nil); err != nil {
+		t.Fatalf("put policy A: %v", err)
+	}
+	if err := indexB.Put(ctx, "https://dl.example/tool.tgz", []byte("policy-b"), metadb.ContentType_CONTENT_TYPE_TEXT, nil); err != nil {
+		t.Fatalf("put policy B: %v", err)
+	}
+
+	if err := deleteScopedEnvelopeEntries(ctx, db, "fetch", []string{"resource"}, prefixA); err != nil {
+		t.Fatalf("delete policy A entries: %v", err)
+	}
+	if _, err := indexA.Get(ctx, "https://dl.example/tool.tgz"); !errors.Is(err, metadb.ErrNotFound) {
+		t.Fatalf("expected policy A entry to be deleted, got %v", err)
+	}
+	gotB, err := indexB.Get(ctx, "https://dl.example/tool.tgz")
+	if err != nil {
+		t.Fatalf("get policy B: %v", err)
+	}
+	if string(gotB) != "policy-b" {
+		t.Fatalf("expected policy B entry to remain, got %q", gotB)
 	}
 }
 

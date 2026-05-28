@@ -1,6 +1,9 @@
 package gateway
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -105,7 +108,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	sumDBHTTPClient := newSumDBContentCacheHTTPClient()
 	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
 	rubyGemsHTTPClient := newRubyGemsContentCacheHTTPClient(cfg.Credentials)
-	fetchHTTPClient := newFetchContentCacheHTTPClient()
 
 	packIdx, err := metadb.NewEnvelopeIndex(db, "git", "pack", 24*time.Hour)
 	if err != nil {
@@ -126,21 +128,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create oci image index: %w", err)
-	}
-	goProxyModIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "mod", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create goproxy mod index: %w", err)
-	}
-	goProxyInfoIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "info", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create goproxy info index: %w", err)
-	}
-	goProxyListIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "list", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create goproxy list index: %w", err)
 	}
 	sumDBIdx, err := metadb.NewEnvelopeIndex(db, "sumdb", "cache", 0)
 	if err != nil {
@@ -176,14 +163,8 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create rubygems gemspec index: %w", err)
 	}
-	fetchResourceIdx, err := metadb.NewEnvelopeIndex(db, "fetch", "resource", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create fetch resource index: %w", err)
-	}
 
 	gitIndex := ccgit.NewIndex(packIdx)
-	goProxyIndex := ccgoproxy.NewIndex(goProxyModIdx, goProxyInfoIdx, goProxyListIdx)
 	sumDBIndex := ccgoproxy.NewSumdbIndex(sumDBIdx)
 	ociIndex := ccoci.NewIndex(imageIdx, manifestIdx, blobIdx)
 	rubyGemsIndex := ccrubygems.NewIndex(
@@ -194,7 +175,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		rubyGemsGemspecIdx,
 		cafs,
 	)
-	fetchIndex := ccfetch.NewIndex(fetchResourceIdx)
 	allowedGitHosts := normalizeAllowedGitHosts(cfg.GitAllowedHosts)
 	allowedFetchHosts := normalizeAllowedHostList(cfg.FetchAllowedHosts)
 	allowedFetchHostSet := normalizeAllowedGitHosts(allowedFetchHosts)
@@ -227,9 +207,14 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		policyPort:   goProxyPolicyPort,
 		upstreamHost: goProxyPolicyHost,
 		upstreamPort: goProxyPolicyPort,
-		handlers:     make(map[string]goProxyScopedHandler),
+		handlers:     make(map[string]*goProxyScopedHandler),
 		maxHandlers:  defaultMaxGoProxyScopedHandlers,
 		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
+			policyPrefix := scopedMetadataPrefix(compiledPolicyCacheKey(compiled))
+			goProxyIndex, err := newScopedGoProxyIndex(db, policyPrefix)
+			if err != nil {
+				return goProxyScopedHandler{}, err
+			}
 			goProxyUpstream := ccgoproxy.NewUpstream(
 				ccgoproxy.WithUpstreamURL(goProxyUpstreamURL),
 				ccgoproxy.WithHTTPClient(newGoProxyContentCacheHTTPClient(compiled)),
@@ -239,12 +224,15 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 				cafs,
 				ccgoproxy.WithUpstream(goProxyUpstream),
 				ccgoproxy.WithLogger(logger),
-				ccgoproxy.WithDownloader(dl),
+				ccgoproxy.WithDownloader(download.New()),
 			)
 			entry := goProxyScopedHandler{handler: handler}
 			if closer, ok := any(handler).(interface{ Close() }); ok {
 				entry.closer = closeFunc(closer.Close)
 			}
+			entry.evictCleaner = closeFunc(func() {
+				_ = deleteScopedEnvelopeEntries(context.Background(), db, "goproxy", []string{"mod", "info", "list"}, policyPrefix)
+			})
 			return entry, nil
 		},
 	}
@@ -370,23 +358,133 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		cache.rubyGems.closer = closeFunc(closer.Close)
 	}
 	if len(allowedFetchHosts) > 0 {
-		fetchHandler := ccfetch.NewHandler(
-			fetchIndex,
-			cafs,
-			ccfetch.WithHTTPClient(fetchHTTPClient),
-			ccfetch.WithLogger(logger),
-			ccfetch.WithDownloader(dl),
-			ccfetch.WithAllowedHosts(allowedFetchHosts),
-		)
 		cache.fetch = fetchHandlerEntry{
-			handler:      fetchHandler,
 			allowedHosts: allowedFetchHostSet,
-		}
-		if closer, ok := any(fetchHandler).(interface{ Close() }); ok {
-			cache.fetch.closer = closeFunc(closer.Close)
+			handlers:     make(map[string]*fetchScopedHandler),
+			maxHandlers:  defaultMaxFetchScopedHandlers,
+			buildHandler: func(compiled *policy.CompiledPolicy) (fetchScopedHandler, error) {
+				policyPrefix := scopedMetadataPrefix(compiledPolicyCacheKey(compiled))
+				fetchIndex, err := newScopedFetchIndex(db, policyPrefix)
+				if err != nil {
+					return fetchScopedHandler{}, err
+				}
+				handler := ccfetch.NewHandler(
+					fetchIndex,
+					cafs,
+					ccfetch.WithHTTPClient(newFetchContentCacheHTTPClient(compiled)),
+					ccfetch.WithLogger(logger),
+					ccfetch.WithDownloader(download.New()),
+					ccfetch.WithAllowedHosts(allowedFetchHosts),
+				)
+				entry := fetchScopedHandler{handler: handler}
+				if closer, ok := any(handler).(interface{ Close() }); ok {
+					entry.closer = closeFunc(closer.Close)
+				}
+				entry.evictCleaner = closeFunc(func() {
+					_ = deleteScopedEnvelopeEntries(context.Background(), db, "fetch", []string{"resource"}, policyPrefix)
+				})
+				return entry, nil
+			},
 		}
 	}
 	return cache, nil
+}
+
+func newScopedGoProxyIndex(db metadb.EnvelopeStore, policyPrefix string) (*ccgoproxy.Index, error) {
+	modIdx, err := newScopedEnvelopeIndex(db, "goproxy", "mod", policyPrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped goproxy mod index: %w", err)
+	}
+	infoIdx, err := newScopedEnvelopeIndex(db, "goproxy", "info", policyPrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped goproxy info index: %w", err)
+	}
+	listIdx, err := newScopedEnvelopeIndex(db, "goproxy", "list", policyPrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped goproxy list index: %w", err)
+	}
+	return ccgoproxy.NewIndex(modIdx, infoIdx, listIdx), nil
+}
+
+func newScopedFetchIndex(db metadb.EnvelopeStore, policyPrefix string) (*ccfetch.Index, error) {
+	resourceIdx, err := newScopedEnvelopeIndex(db, "fetch", "resource", policyPrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped fetch resource index: %w", err)
+	}
+	return ccfetch.NewIndex(resourceIdx), nil
+}
+
+func newScopedEnvelopeIndex(db metadb.EnvelopeStore, protocol, kind, policyPrefix string, ttl time.Duration) (*metadb.EnvelopeIndex, error) {
+	return metadb.NewEnvelopeIndex(&scopedEnvelopeStore{base: db, keyPrefix: policyPrefix}, protocol, kind, ttl)
+}
+
+func scopedMetadataPrefix(policyKey string) string {
+	digest := sha256.Sum256([]byte(policyKey))
+	return "policy/" + hex.EncodeToString(digest[:]) + "/"
+}
+
+func deleteScopedEnvelopeEntries(ctx context.Context, db metadb.EnvelopeStore, protocol string, kinds []string, policyPrefix string) error {
+	var errs []error
+	for _, kind := range kinds {
+		keys, err := db.ListEnvelopeKeys(ctx, protocol, kind)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, key := range keys {
+			if !strings.HasPrefix(key, policyPrefix) {
+				continue
+			}
+			if err := db.DeleteEnvelope(ctx, protocol, kind, key); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+type scopedEnvelopeStore struct {
+	base      metadb.EnvelopeStore
+	keyPrefix string
+}
+
+func (s *scopedEnvelopeStore) scopedKey(key string) string {
+	return s.keyPrefix + key
+}
+
+func (s *scopedEnvelopeStore) PutEnvelope(ctx context.Context, protocol, kind, key string, env *metadb.MetadataEnvelope) error {
+	return s.base.PutEnvelope(ctx, protocol, kind, s.scopedKey(key), env)
+}
+
+func (s *scopedEnvelopeStore) GetEnvelope(ctx context.Context, protocol, kind, key string) (*metadb.MetadataEnvelope, error) {
+	return s.base.GetEnvelope(ctx, protocol, kind, s.scopedKey(key))
+}
+
+func (s *scopedEnvelopeStore) DeleteEnvelope(ctx context.Context, protocol, kind, key string) error {
+	return s.base.DeleteEnvelope(ctx, protocol, kind, s.scopedKey(key))
+}
+
+func (s *scopedEnvelopeStore) ListEnvelopeKeys(ctx context.Context, protocol, kind string) ([]string, error) {
+	keys, err := s.base.ListEnvelopeKeys(ctx, protocol, kind)
+	if err != nil {
+		return nil, err
+	}
+	scoped := make([]string, 0, len(keys))
+	for _, key := range keys {
+		trimmed, ok := strings.CutPrefix(key, s.keyPrefix)
+		if ok {
+			scoped = append(scoped, trimmed)
+		}
+	}
+	return scoped, nil
+}
+
+func (s *scopedEnvelopeStore) GetEnvelopeBlobRefs(ctx context.Context, protocol, kind, key string) ([]string, error) {
+	return s.base.GetEnvelopeBlobRefs(ctx, protocol, kind, s.scopedKey(key))
+}
+
+func (s *scopedEnvelopeStore) UpdateEnvelope(ctx context.Context, protocol, kind, key string, fn func(*metadb.MetadataEnvelope) (*metadb.MetadataEnvelope, error)) error {
+	return s.base.UpdateEnvelope(ctx, protocol, kind, s.scopedKey(key), fn)
 }
 
 func newGitContentCacheUpstream(client *http.Client, logger *slog.Logger, credentials CredentialProvider) *ccgit.Upstream {

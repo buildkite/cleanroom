@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 type stubFetchHandlerProvider struct {
@@ -21,11 +23,11 @@ func (s *stubFetchHandlerProvider) FetchAllowsHost(host string) bool {
 	return ok
 }
 
-func (s *stubFetchHandlerProvider) FetchHandler() (http.Handler, error) {
+func (s *stubFetchHandlerProvider) FetchHandlerForPolicy(*policy.CompiledPolicy) (http.Handler, func(), error) {
 	if s.err != nil {
-		return nil, s.err
+		return nil, nil, s.err
 	}
-	return s.handler, nil
+	return s.handler, func() {}, nil
 }
 
 func TestCachedFetchHandlerStripsPrefixAndDelegates(t *testing.T) {

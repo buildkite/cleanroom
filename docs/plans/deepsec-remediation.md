@@ -1,8 +1,8 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 6b ready for review
-**Last reviewed:** 2026-05-27
+**Status:** Slice 6c ready for review
+**Last reviewed:** 2026-05-28
 
 ## Summary
 
@@ -164,7 +164,8 @@ URL path field injection finding without changing normal HTTPS repository
 credential lookup behavior.
 
 The remaining Slice 6 cache authorization findings for git pack responses,
-fetch cache hits, and Go proxy cache hits remain follow-up work.
+fetch cache hits, and Go proxy cache hits were left for follow-up work and are
+covered below.
 
 Focused validation run on 2026-05-27:
 
@@ -181,6 +182,12 @@ MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/eaa8/cleanroom/mise.to
 ```
 
 Result: passed.
+
+Current `main` also includes owner-scoped gateway authorization for Git and OCI
+cache routes. Auth-required Git cache requests now require an authenticated
+sandbox owner and an authorized repository envelope before the gateway reaches
+content-cache or host Git credentials, closing the cached Git pack response
+authorization finding.
 
 Slice 6b is implemented and ready for review. OCI registry handler creation is
 now bounded by a small LRU cache, so request-controlled registry prefixes cannot
@@ -200,6 +207,25 @@ Repository validation run on 2026-05-27:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Slice 6c is implemented and ready for review. Fetch and Go proxy content-cache
+metadata are now partitioned by compiled sandbox policy. Cache hits therefore
+reuse data only within the same effective policy that authorized the original
+upstream fetch, while misses use policy-pinned HTTP clients and per-policy
+download singleflight groups for direct requests and redirects. The scoped
+handler maps are LRU-bounded, evicted handlers close only after outstanding
+requests release their leases, and evicted policy metadata is removed from the
+shared metadata indexes after the evicted handler closes. If the same policy is
+rebuilt while an old active handler is waiting to close, the stale handler
+closes without deleting metadata owned by the replacement.
+
+Focused validation run on 2026-05-28:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/gateway
 ```
 
 Result: passed.

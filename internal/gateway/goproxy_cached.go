@@ -12,7 +12,7 @@ import (
 
 type goProxyHandlerProvider interface {
 	GoProxyUpstream() (string, int, string, int, error)
-	GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, error)
+	GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, func(), error)
 	SumDBUpstream() (string, int, string, int, error)
 	SumDBHandler() (http.Handler, error)
 }
@@ -63,16 +63,20 @@ func (h *cachedGoProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	var handler http.Handler
+	var releaseHandler func()
 	if service == "sumdb" {
 		handler, err = h.cache.SumDBHandler()
 	} else {
-		handler, err = h.cache.GoProxyHandlerForPolicy(scope.Policy)
+		handler, releaseHandler, err = h.cache.GoProxyHandlerForPolicy(scope.Policy)
 	}
 	if err != nil {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 		h.auditLog(r.Context(), scope.SandboxID, service, service, gatewayActionDeny, reasonUpstreamError)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, service+" cache is not configured")
 		return
+	}
+	if releaseHandler != nil {
+		defer releaseHandler()
 	}
 
 	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
