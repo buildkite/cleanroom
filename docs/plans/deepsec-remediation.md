@@ -214,10 +214,11 @@ Result: passed.
 Slice 6c is implemented and ready for review. Fetch and Go proxy content-cache
 metadata are now partitioned by compiled sandbox policy. Cache hits therefore
 reuse data only within the same effective policy that authorized the original
-upstream fetch, while misses still use policy-validating HTTP clients for
-direct requests and redirects. The scoped handler maps are LRU-bounded so
-policy partitioning does not introduce unbounded handler growth, and evicted
-handlers are closed only after outstanding requests release their leases.
+upstream fetch, while misses use policy-pinned HTTP clients and per-policy
+download singleflight groups for direct requests and redirects. The scoped
+handler maps are LRU-bounded, evicted handlers close only after outstanding
+requests release their leases, and evicted policy metadata is removed from the
+shared metadata indexes.
 
 Focused validation run on 2026-05-28:
 

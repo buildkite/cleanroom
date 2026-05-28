@@ -40,10 +40,11 @@ type ociHandlerEntry struct {
 }
 
 type goProxyScopedHandler struct {
-	handler http.Handler
-	closer  io.Closer
-	active  int
-	evicted bool
+	handler     http.Handler
+	closer      io.Closer
+	evictCloser io.Closer
+	active      int
+	evicted     bool
 }
 
 type goProxyHandlerEntry struct {
@@ -87,10 +88,11 @@ type fetchHandlerEntry struct {
 }
 
 type fetchScopedHandler struct {
-	handler http.Handler
-	closer  io.Closer
-	active  int
-	evicted bool
+	handler     http.Handler
+	closer      io.Closer
+	evictCloser io.Closer
+	active      int
+	evicted     bool
 }
 
 // ContentCache holds the shared storage and protocol handlers.
@@ -257,6 +259,9 @@ func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) 
 	}
 	entry := &entryValue
 	entry.active = 1
+	if entry.evictCloser == nil {
+		entry.evictCloser = entry.closer
+	}
 	c.goProxy.handlers[key] = entry
 	c.goProxy.touchLocked(key)
 	evicted := c.goProxy.evictLocked()
@@ -300,7 +305,7 @@ func (e *goProxyHandlerEntry) evictLocked() io.Closer {
 		entry.evicted = true
 		return nil
 	}
-	return entry.closer
+	return entry.evictCloser
 }
 
 func (e *goProxyHandlerEntry) releaseHandler(entry *goProxyScopedHandler) func() {
@@ -313,8 +318,9 @@ func (e *goProxyHandlerEntry) releaseHandler(entry *goProxyScopedHandler) func()
 				entry.active--
 			}
 			if entry.active == 0 && entry.evicted {
-				closer = entry.closer
+				closer = entry.evictCloser
 				entry.closer = nil
+				entry.evictCloser = nil
 			}
 			e.mu.Unlock()
 		})
@@ -418,6 +424,9 @@ func (c *ContentCache) FetchHandlerForPolicy(compiled *policy.CompiledPolicy) (h
 	}
 	entry := &entryValue
 	entry.active = 1
+	if entry.evictCloser == nil {
+		entry.evictCloser = entry.closer
+	}
 	c.fetch.handlers[key] = entry
 	c.fetch.touchLocked(key)
 	evicted := c.fetch.evictLocked()
@@ -461,7 +470,7 @@ func (e *fetchHandlerEntry) evictLocked() io.Closer {
 		entry.evicted = true
 		return nil
 	}
-	return entry.closer
+	return entry.evictCloser
 }
 
 func (e *fetchHandlerEntry) releaseHandler(entry *fetchScopedHandler) func() {
@@ -474,8 +483,9 @@ func (e *fetchHandlerEntry) releaseHandler(entry *fetchScopedHandler) func() {
 				entry.active--
 			}
 			if entry.active == 0 && entry.evicted {
-				closer = entry.closer
+				closer = entry.evictCloser
 				entry.closer = nil
+				entry.evictCloser = nil
 			}
 			e.mu.Unlock()
 		})

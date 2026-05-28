@@ -3,15 +3,18 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
 	ccgit "github.com/buildkite/content-cache/protocol/git"
+	"github.com/buildkite/content-cache/store/metadb"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -350,6 +353,49 @@ func TestFetchHandlerForPolicyEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	releaseA()
 	releaseReusedA()
 	releaseC()
+}
+
+func TestScopedEnvelopeStoreDeletesOnlyEvictedPolicyEntries(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := metadb.NewBoltDB()
+	if err := db.Open(t.TempDir() + "/meta.db"); err != nil {
+		t.Fatalf("open metadb: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	prefixA := scopedMetadataPrefix("policy-a")
+	prefixB := scopedMetadataPrefix("policy-b")
+	indexA, err := newScopedEnvelopeIndex(db, "fetch", "resource", prefixA, time.Hour)
+	if err != nil {
+		t.Fatalf("index A: %v", err)
+	}
+	indexB, err := newScopedEnvelopeIndex(db, "fetch", "resource", prefixB, time.Hour)
+	if err != nil {
+		t.Fatalf("index B: %v", err)
+	}
+
+	if err := indexA.Put(ctx, "https://dl.example/tool.tgz", []byte("policy-a"), metadb.ContentType_CONTENT_TYPE_TEXT, nil); err != nil {
+		t.Fatalf("put policy A: %v", err)
+	}
+	if err := indexB.Put(ctx, "https://dl.example/tool.tgz", []byte("policy-b"), metadb.ContentType_CONTENT_TYPE_TEXT, nil); err != nil {
+		t.Fatalf("put policy B: %v", err)
+	}
+
+	if err := deleteScopedEnvelopeEntries(ctx, db, "fetch", []string{"resource"}, prefixA); err != nil {
+		t.Fatalf("delete policy A entries: %v", err)
+	}
+	if _, err := indexA.Get(ctx, "https://dl.example/tool.tgz"); !errors.Is(err, metadb.ErrNotFound) {
+		t.Fatalf("expected policy A entry to be deleted, got %v", err)
+	}
+	gotB, err := indexB.Get(ctx, "https://dl.example/tool.tgz")
+	if err != nil {
+		t.Fatalf("get policy B: %v", err)
+	}
+	if string(gotB) != "policy-b" {
+		t.Fatalf("expected policy B entry to remain, got %q", gotB)
+	}
 }
 
 func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {
