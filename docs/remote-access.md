@@ -38,44 +38,46 @@ auth:
         audiences:
           - cleanroom
         jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
-  policy_file: auth-policy.yaml
+        required_claims:
+          repository_owner_id: "123456"
+  policy:
+    bindings:
+      - name: repo-bots
+        when: claims.repository_id == "987654"
+        principal:
+          id: "oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}"
+          scope: "owner:${claims.repository_owner_id}"
+        grants:
+          - name: create-cleanroom-sandboxes
+            actions:
+              - sandbox.create
+            resources:
+              - sandbox
+            condition: >
+              request.backend == "darwin-vz" &&
+              request.repository.remote_url == "https://github.com/buildkite/cleanroom.git"
+          - name: manage-owned-resources
+            actions:
+              - sandbox.get
+              - sandbox.list
+              - execution.create
+              - execution.get
+              - execution.list
+              - snapshot.create
+              - snapshot.get
+              - snapshot.list
+              - snapshot.restore
+            resources:
+              - sandbox
+              - execution
+              - snapshot
 ```
 
-The policy file maps trusted token claims to Cleanroom principals and grants.
-Principals are not listed in the main server config:
-
-```yaml
-bindings:
-  - name: repo-bots
-    when: claims.repository == "buildkite/cleanroom"
-    principal:
-      id: "oidc:${token.issuer}:${token.subject}"
-      scope: "repo:${claims.repository}"
-    grants:
-      - name: create-cleanroom-sandboxes
-        actions:
-          - sandbox.create
-        resources:
-          - sandbox
-        condition: >
-          request.backend == "darwin-vz" &&
-          request.repository.remote_url == "https://github.com/buildkite/cleanroom.git"
-      - name: manage-owned-resources
-        actions:
-          - sandbox.get
-          - sandbox.list
-          - execution.create
-          - execution.get
-          - execution.list
-          - snapshot.create
-          - snapshot.get
-          - snapshot.list
-          - snapshot.restore
-        resources:
-          - sandbox
-          - execution
-          - snapshot
-```
+The inline policy maps trusted token claims to Cleanroom principals and grants.
+Use immutable provider claim IDs, not reusable slugs, for principal IDs. For
+large or generated policies, `auth.policy_file` can point at a separate YAML
+file with the same `bindings` shape; it is mutually exclusive with
+`auth.policy`.
 
 Clients send the token with either `CLEANROOM_AUTH_TOKEN`,
 `--auth-token-env`, or `--auth-token-file`:

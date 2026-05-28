@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/authconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,6 +86,35 @@ func ParsePolicy(raw []byte) (*CompiledPolicy, error) {
 		return nil, err
 	}
 	return CompilePolicy(spec)
+}
+
+func CompileRuntimePolicy(spec authconfig.Policy) (*CompiledPolicy, error) {
+	return CompilePolicy(policyFromRuntimeConfig(spec))
+}
+
+func policyFromRuntimeConfig(spec authconfig.Policy) Policy {
+	bindings := make([]Binding, 0, len(spec.Bindings))
+	for _, binding := range spec.Bindings {
+		grants := make([]Grant, 0, len(binding.Grants))
+		for _, grant := range binding.Grants {
+			grants = append(grants, Grant{
+				Name:      grant.Name,
+				Actions:   append([]string(nil), grant.Actions...),
+				Resources: append([]string(nil), grant.Resources...),
+				Condition: grant.Condition,
+			})
+		}
+		bindings = append(bindings, Binding{
+			Name: binding.Name,
+			When: binding.When,
+			Principal: PrincipalTemplate{
+				ID:    binding.Principal.ID,
+				Scope: binding.Principal.Scope,
+			},
+			Grants: grants,
+		})
+	}
+	return Policy{Bindings: bindings}
 }
 
 func CompilePolicy(spec Policy) (*CompiledPolicy, error) {

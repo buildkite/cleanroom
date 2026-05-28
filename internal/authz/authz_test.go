@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/authconfig"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -46,6 +46,68 @@ func TestOIDCValidatorAcceptsValidToken(t *testing.T) {
 	}
 	if got, want := validated.Claims["repository"], "buildkite/cleanroom"; got != want {
 		t.Fatalf("unexpected repository claim: got %v want %v", got, want)
+	}
+}
+
+func TestOIDCValidatorEnforcesRequiredClaims(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	key := mustRSAKey(t)
+	jwks := jwksServer(t, "kid-1", key)
+	validator, err := NewOIDCValidator([]authconfig.OIDCIssuerConfig{
+		{
+			Name:                    "issuer",
+			Issuer:                  "https://issuer.example",
+			Audiences:               []string{"cleanroom"},
+			JWKSURL:                 jwks.URL,
+			AllowedAlgorithms:       []string{"RS256"},
+			ClockSkewSeconds:        60,
+			MaxTokenLifetimeSeconds: 3600,
+			RequiredClaims:          map[string]string{"organization_id": "org_123"},
+		},
+	}, WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("NewOIDCValidator returned error: %v", err)
+	}
+	baseClaims := jwt.MapClaims{
+		"iss": "https://issuer.example",
+		"sub": "bot-123",
+		"aud": []string{"cleanroom"},
+		"iat": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"nbf": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"exp": jwt.NewNumericDate(now.Add(time.Minute)),
+	}
+	if _, err := validator.Validate(context.Background(), signTestToken(t, key, "kid-1", baseClaims)); err == nil || !strings.Contains(err.Error(), `required claim "organization_id" is missing`) {
+		t.Fatalf("expected missing required claim error, got %v", err)
+	}
+	if _, err := validator.Validate(context.Background(), signTestToken(t, key, "kid-1", withClaim(baseClaims, "organization_id", "other"))); err == nil || !strings.Contains(err.Error(), `required claim "organization_id" does not match`) {
+		t.Fatalf("expected required claim mismatch error, got %v", err)
+	}
+	if _, err := validator.Validate(context.Background(), signTestToken(t, key, "kid-1", withClaim(baseClaims, "organization_id", "org_123"))); err != nil {
+		t.Fatalf("Validate with required claim returned error: %v", err)
+	}
+}
+
+func TestOIDCValidatorRejectsDuplicateNormalizedRequiredClaims(t *testing.T) {
+	_, err := NewOIDCValidator([]authconfig.OIDCIssuerConfig{
+		{
+			Name:                    "issuer",
+			Issuer:                  "https://issuer.example",
+			Audiences:               []string{"cleanroom"},
+			JWKSURL:                 "https://issuer.example/jwks",
+			AllowedAlgorithms:       []string{"RS256"},
+			ClockSkewSeconds:        60,
+			MaxTokenLifetimeSeconds: 3600,
+			RequiredClaims: map[string]string{
+				"repository_owner_id":  "123456",
+				" repository_owner_id": "654321",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate required claim error")
+	}
+	if got, want := err.Error(), `issuer[0].required_claims contains duplicate claim name "repository_owner_id" after trimming whitespace`; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %v", want, err)
 	}
 }
 
@@ -141,7 +203,7 @@ func TestOIDCValidatorExpiresJWKSCache(t *testing.T) {
 		}
 	}))
 	t.Cleanup(jwks.Close)
-	validator, err := NewOIDCValidator([]runtimeconfig.AuthOIDCIssuerConfig{
+	validator, err := NewOIDCValidator([]authconfig.OIDCIssuerConfig{
 		{
 			Name:                    "issuer",
 			Issuer:                  "https://issuer.example",
@@ -587,7 +649,7 @@ func TestPolicyReportsNoBinding(t *testing.T) {
 
 func newTestOIDCValidator(t *testing.T, jwksURL string, now time.Time) *OIDCValidator {
 	t.Helper()
-	validator, err := NewOIDCValidator([]runtimeconfig.AuthOIDCIssuerConfig{
+	validator, err := NewOIDCValidator([]authconfig.OIDCIssuerConfig{
 		{
 			Name:                    "issuer",
 			Issuer:                  "https://issuer.example",

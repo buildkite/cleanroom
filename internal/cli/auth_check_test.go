@@ -41,11 +41,75 @@ func TestAuthCheckCommandReportsAllowedDecision(t *testing.T) {
 	if !decision.Allowed {
 		t.Fatalf("expected allowed decision, got %#v", decision)
 	}
-	if got, want := decision.Principal.ID, "oidc:github-actions:repo:buildkite/cleanroom:ref:refs/heads/main"; got != want {
+	if got, want := decision.Principal.ID, "oidc:github-actions:owner:123456:repo:987654"; got != want {
 		t.Fatalf("unexpected principal ID: got %q want %q", got, want)
 	}
 	if got, want := decision.Binding, "cleanroom-repo-bots"; got != want {
 		t.Fatalf("unexpected binding: got %q want %q", got, want)
+	}
+}
+
+func TestAuthCheckCommandUsesInlineRuntimePolicy(t *testing.T) {
+	fixture := newAuthCheckFixture(t)
+	config := `default_backend: firecracker
+auth:
+  required: true
+  oidc:
+    issuers:
+      - name: github-actions
+        issuer: https://token.actions.githubusercontent.com
+        audiences: [cleanroom]
+        jwks_url: ` + fixture.jwksURL + `
+        required_claims:
+          repository_owner_id: "123456"
+        clock_skew_seconds: 60
+        max_token_lifetime_seconds: 3600
+  policy:
+    bindings:
+      - name: cleanroom-repo-bots
+        when: >
+          token.issuer == "github-actions" &&
+          claims.repository_id == "987654"
+        principal:
+          id: 'oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}'
+          scope: 'owner:${claims.repository_owner_id}'
+        grants:
+          - name: create-cleanroom-sandbox
+            actions: [sandbox.create]
+            resources: [sandbox]
+            condition: >
+              request.repository.remote_url == "https://github.com/buildkite/cleanroom.git" &&
+              request.backend in ["darwin-vz"] &&
+              request.policy.resources.vcpus <= 4 &&
+              request.policy.resources.memory_bytes <= 8589934592 &&
+              request.policy.docker.required == false &&
+              request.policy.network_default == "deny"
+`
+	if err := os.WriteFile(fixture.configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("write inline config: %v", err)
+	}
+
+	stdout, readStdout := makeStdoutCapture(t)
+	err := (&AuthCheckCommand{
+		Config:    fixture.configPath,
+		TokenFile: fixture.tokenPath,
+		Action:    "sandbox.create",
+		Request:   fixture.requestPath,
+		JSON:      true,
+	}).Run(&runtimeContext{CWD: fixture.dir, Stdout: stdout})
+	if err != nil {
+		t.Fatalf("AuthCheckCommand.Run returned error: %v", err)
+	}
+
+	var decision authz.Decision
+	if err := json.Unmarshal([]byte(readStdout()), &decision); err != nil {
+		t.Fatalf("decode auth check json: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("expected allowed decision, got %#v", decision)
+	}
+	if got, want := decision.Principal.ID, "oidc:github-actions:owner:123456:repo:987654"; got != want {
+		t.Fatalf("unexpected principal ID: got %q want %q", got, want)
 	}
 }
 
@@ -164,6 +228,7 @@ type authCheckFixture struct {
 	policyPath  string
 	tokenPath   string
 	requestPath string
+	jwksURL     string
 }
 
 func newAuthCheckFixture(t *testing.T) authCheckFixture {
@@ -187,6 +252,8 @@ auth:
         issuer: https://token.actions.githubusercontent.com
         audiences: [cleanroom]
         jwks_url: ` + jwks.URL + `
+        required_claims:
+          repository_owner_id: "123456"
         clock_skew_seconds: 60
         max_token_lifetime_seconds: 3600
   policy_file: auth-policy.yaml
@@ -196,13 +263,15 @@ auth:
 	}
 	tokenPath := filepath.Join(dir, "token.jwt")
 	token := cliAuthSignToken(t, key, "kid-1", jwt.MapClaims{
-		"iss":        "https://token.actions.githubusercontent.com",
-		"sub":        "repo:buildkite/cleanroom:ref:refs/heads/main",
-		"aud":        []string{"cleanroom"},
-		"iat":        jwt.NewNumericDate(now.Add(-time.Minute)),
-		"nbf":        jwt.NewNumericDate(now.Add(-time.Minute)),
-		"exp":        jwt.NewNumericDate(now.Add(time.Minute)),
-		"repository": "buildkite/cleanroom",
+		"iss":                 "https://token.actions.githubusercontent.com",
+		"sub":                 "repo:buildkite/cleanroom:ref:refs/heads/main",
+		"aud":                 []string{"cleanroom"},
+		"iat":                 jwt.NewNumericDate(now.Add(-time.Minute)),
+		"nbf":                 jwt.NewNumericDate(now.Add(-time.Minute)),
+		"exp":                 jwt.NewNumericDate(now.Add(time.Minute)),
+		"repository":          "buildkite/cleanroom",
+		"repository_owner_id": "123456",
+		"repository_id":       "987654",
 	})
 	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
@@ -225,6 +294,7 @@ auth:
 		policyPath:  policyPath,
 		tokenPath:   tokenPath,
 		requestPath: requestPath,
+		jwksURL:     jwks.URL,
 	}
 }
 
@@ -277,10 +347,10 @@ func cliAuthPolicyYAML() string {
   - name: cleanroom-repo-bots
     when: >
       token.issuer == "github-actions" &&
-      claims.repository == "buildkite/cleanroom"
+      claims.repository_id == "987654"
     principal:
-      id: 'oidc:${token.issuer}:${claims.sub}'
-      scope: 'repo:${claims.repository}'
+      id: 'oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}'
+      scope: 'owner:${claims.repository_owner_id}'
     grants:
       - name: create-cleanroom-sandbox
         actions: [sandbox.create]

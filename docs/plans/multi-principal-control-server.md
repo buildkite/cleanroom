@@ -1,7 +1,7 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Slice 3 implemented; controlled sharing follow-ups next
+**Status:** Slice 3B implemented; controlled sharing follow-ups next
 **Last reviewed:** 2026-05-28
 
 ## Summary
@@ -61,6 +61,11 @@ Slice 2 is split into PR-sized enforcement work:
   structured denials, server bearer-token failures emit redacted audit logs, and
   control-service authorization denials emit audit logs with reason, action,
   resource, principal, binding, and grant fields.
+- Slice 3B now makes inline `auth.policy.bindings` the default config path,
+  keeps `auth.policy_file` as a mutually exclusive escape hatch, enforces
+  issuer-level `required_claims` during OIDC validation, and updates examples
+  to derive owner principal IDs from immutable provider claim IDs instead of
+  reusable subject or slug strings.
 
 Focused validation run on 2026-05-25:
 
@@ -121,6 +126,22 @@ mise exec -- go test ./internal/authz ./internal/cli ./internal/controlserver ./
 Result: passed.
 
 Slice 3 repository validation run on 2026-05-28:
+
+```text
+mise run check
+```
+
+Result: passed.
+
+Slice 3B focused validation run on 2026-05-28:
+
+```text
+mise exec -- go test ./internal/runtimeconfig ./internal/authz ./internal/cli ./internal/controlserver
+```
+
+Result: passed.
+
+Slice 3B repository validation run on 2026-05-28:
 
 ```text
 mise run check
@@ -216,14 +237,17 @@ type Principal struct {
 ```
 
 The principal ID should be stable across server restarts and should include the
-issuer identity. A safe default is `oidc:<issuer-name>:<sub>`, after canonical
-normalization. Do not use the raw `sub` alone because different issuers can reuse
-subject strings.
+issuer identity plus provider claims that are not reusable by another org,
+repository, pipeline, or bot. Do not use raw slug claims as ownership identity.
+`sub` is acceptable only for issuers that guarantee it is stable and
+non-reassignable for the lifetime of retained Cleanroom resources.
 
 ### Runtime Config
 
-The main runtime config should define trust roots and point to authorization
-bindings. It should not require listing every principal for dynamic bot fleets.
+The main runtime config should define trust roots and authorization bindings
+together. It should not require listing every principal for dynamic bot fleets.
+External policy files are useful once policies are generated or large, but they
+should be an escape hatch rather than the default.
 
 ```yaml
 auth:
@@ -235,45 +259,42 @@ auth:
         audiences:
           - cleanroom
         jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
-  policy_file: ~/.config/cleanroom/auth-policy.yaml
-```
-
-The policy file maps trusted claims to derived principals and grants:
-
-```yaml
-bindings:
-  - name: cleanroom-repo-bots
-    when: >
-      token.issuer == "github-actions" &&
-      claims.repository == "buildkite/cleanroom"
-    principal:
-      id: 'oidc:${token.issuer}:${claims.sub}'
-      scope: 'repo:${claims.repository}'
-    grants:
-      - name: create-cleanroom-sandboxes
-        actions:
-          - sandbox.create
-        resources:
-          - sandbox
-        condition: >
-          request.repository.remote_url == "https://github.com/buildkite/cleanroom.git" &&
-          request.backend in ["darwin-vz"] &&
-          request.policy.resources.vcpus <= 4 &&
-          request.policy.resources.memory_bytes <= 8589934592 &&
-          request.policy.docker.required == false &&
-          request.policy.network_default == "deny"
-      - name: manage-owned-resources
-        actions:
-          - sandbox.get
-          - sandbox.list
-          - sandbox.terminate
-          - execution.create
-          - execution.get
-          - execution.list
-          - execution.stream
-        resources:
-          - sandbox
-          - execution
+        required_claims:
+          repository_owner_id: "123456"
+  policy:
+    bindings:
+      - name: cleanroom-repo-bots
+        when: >
+          token.issuer == "github-actions" &&
+          claims.repository_id == "987654"
+        principal:
+          id: 'oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}'
+          scope: 'owner:${claims.repository_owner_id}'
+        grants:
+          - name: create-cleanroom-sandboxes
+            actions:
+              - sandbox.create
+            resources:
+              - sandbox
+            condition: >
+              request.repository.remote_url == "https://github.com/buildkite/cleanroom.git" &&
+              request.backend in ["darwin-vz"] &&
+              request.policy.resources.vcpus <= 4 &&
+              request.policy.resources.memory_bytes <= 8589934592 &&
+              request.policy.docker.required == false &&
+              request.policy.network_default == "deny"
+          - name: manage-owned-resources
+            actions:
+              - sandbox.get
+              - sandbox.list
+              - sandbox.terminate
+              - execution.create
+              - execution.get
+              - execution.list
+              - execution.stream
+            resources:
+              - sandbox
+              - execution
 ```
 
 The exact schema can change during implementation, but the ownership boundary
@@ -753,6 +774,35 @@ Definition of done: auth failures are observable without leaking token material,
 transport behavior is fail-closed for bearer tokens, and every deny path returns
 stable reason codes that can be explained by `cleanroom auth check`.
 
+### Slice 3B: Inline Auth Config And Stable Principal IDs
+
+Scope:
+
+- Make inline `auth.policy.bindings` the default config shape.
+- Keep `auth.policy_file` as a mutually exclusive escape hatch for generated or
+  large policies.
+- Add issuer-level `required_claims` so immutable org or tenant fences are
+  enforced before policy binding.
+- Update examples away from `oidc:<issuer>:<sub>` as the default ownership
+  identity and toward immutable provider claim IDs.
+- Use immutable claim IDs in binding conditions when grants are meant for one
+  org, repository, pipeline, or bot; slug claims are only for readability.
+
+Definition of done: a shared-server operator can configure trust roots,
+immutable claim fences, principal derivation, and grants in one runtime config
+file, while existing external policy files still work when explicitly selected.
+
+Progress:
+
+- `auth.policy.bindings` is parsed directly from runtime config and compiled
+  through the same authz policy engine as external policy files.
+- `auth.policy_file` remains supported but is mutually exclusive with inline
+  policy in runtime config.
+- OIDC issuer config supports `required_claims`, enforced before policy binding.
+- `cleanroom auth check` and `cleanroom serve` both use inline policy by
+  default, with `--policy-file` still available as an explicit diagnostic
+  override for `auth check`.
+
 ### Slice 4: Controlled Sharing
 
 Scope:
@@ -820,6 +870,10 @@ Runtime smoke test:
 - Enforce exact-principal ownership before adding scope-level sharing.
 - Partition stage-cache records by owner in the first auth-enabled version.
 - Treat missing owner metadata as deny when auth is enabled.
+- Prefer inline `auth.policy` for the first auth-enabled version; keep
+  `auth.policy_file` only as an escape hatch for generated or large policies.
+- Require examples to derive owner principal IDs from immutable provider claim
+  IDs where the issuer exposes them.
 
 ## Deferred Work
 

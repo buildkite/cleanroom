@@ -14,6 +14,8 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/authconfig"
+	"github.com/buildkite/cleanroom/internal/authz"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bytesize"
 	"github.com/buildkite/cleanroom/internal/endpoint"
@@ -32,29 +34,23 @@ type Config struct {
 }
 
 const (
-	DefaultAuthOIDCClockSkewSeconds        int64 = 60
-	DefaultAuthOIDCMaxTokenLifetimeSeconds int64 = 3600
+	DefaultAuthOIDCClockSkewSeconds        = authconfig.DefaultOIDCClockSkewSeconds
+	DefaultAuthOIDCMaxTokenLifetimeSeconds = authconfig.DefaultOIDCMaxTokenLifetimeSeconds
 )
+
+type AuthOIDCConfig = authconfig.OIDCConfig
+type AuthOIDCIssuerConfig = authconfig.OIDCIssuerConfig
+type AuthPolicy = authconfig.Policy
+type AuthPolicyBinding = authconfig.PolicyBinding
+type AuthPrincipalTemplate = authconfig.PrincipalTemplate
+type AuthPolicyGrant = authconfig.PolicyGrant
 
 // AuthConfig configures control-plane caller authentication.
 type AuthConfig struct {
 	Required   bool           `yaml:"required,omitempty"`
 	OIDC       AuthOIDCConfig `yaml:"oidc,omitempty"`
+	Policy     AuthPolicy     `yaml:"policy,omitempty"`
 	PolicyFile string         `yaml:"policy_file,omitempty"`
-}
-
-type AuthOIDCConfig struct {
-	Issuers []AuthOIDCIssuerConfig `yaml:"issuers,omitempty"`
-}
-
-type AuthOIDCIssuerConfig struct {
-	Name                    string   `yaml:"name,omitempty"`
-	Issuer                  string   `yaml:"issuer"`
-	Audiences               []string `yaml:"audiences,omitempty"`
-	JWKSURL                 string   `yaml:"jwks_url,omitempty"`
-	AllowedAlgorithms       []string `yaml:"allowed_algorithms,omitempty"`
-	ClockSkewSeconds        int64    `yaml:"clock_skew_seconds,omitempty"`
-	MaxTokenLifetimeSeconds int64    `yaml:"max_token_lifetime_seconds,omitempty"`
 }
 
 // CacheConfig configures host-to-host cache reuse.
@@ -454,20 +450,28 @@ func parseConfig(path string, raw []byte) (Config, error) {
 		cfg.Backends.DarwinVZ.MinimumCacheOutputVolumeBytes = darwinVZMinCacheOutputVolumeBytes
 	}
 
-	cfg = normalizeConfig(cfg, inferredDefaultBackend(backendPresence.Backends.Firecracker != nil, backendPresence.Backends.DarwinVZ != nil || backendPresence.Backends.LegacyDarwinVZ != nil))
+	normalizedCfg, err := normalizeConfig(cfg, inferredDefaultBackend(backendPresence.Backends.Firecracker != nil, backendPresence.Backends.DarwinVZ != nil || backendPresence.Backends.LegacyDarwinVZ != nil))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg = normalizedCfg
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
+func normalizeConfig(cfg Config, inferredDefaultBackend string) (Config, error) {
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
 	if cfg.DefaultBackend == "" {
 		cfg.DefaultBackend = inferredDefaultBackend
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
-	cfg.Auth = normalizeAuthConfig(cfg.Auth)
+	authCfg, err := normalizeAuthConfig(cfg.Auth)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Auth = authCfg
 	cfg.Cache.Peers = normalizeCachePeers(cfg.Cache.Peers)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Gateway.OCI.Registries = trimStringMap(cfg.Gateway.OCI.Registries)
@@ -483,7 +487,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.Observability.Traces.Exporter = strings.TrimSpace(cfg.Observability.Traces.Exporter)
 	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
 	cfg.Observability.Traces.URLTemplate = strings.TrimSpace(cfg.Observability.Traces.URLTemplate)
-	return cfg
+	return cfg, nil
 }
 
 func inferredDefaultBackend(hasFirecracker, hasDarwinVZ bool) string {
@@ -549,7 +553,7 @@ func validateDurationSeconds(name string, seconds int64) error {
 	return nil
 }
 
-func normalizeAuthConfig(cfg AuthConfig) AuthConfig {
+func normalizeAuthConfig(cfg AuthConfig) (AuthConfig, error) {
 	cfg.PolicyFile = strings.TrimSpace(cfg.PolicyFile)
 	for i := range cfg.OIDC.Issuers {
 		issuer := &cfg.OIDC.Issuers[i]
@@ -557,6 +561,11 @@ func normalizeAuthConfig(cfg AuthConfig) AuthConfig {
 		issuer.Issuer = strings.TrimRight(strings.TrimSpace(issuer.Issuer), "/")
 		issuer.JWKSURL = strings.TrimSpace(issuer.JWKSURL)
 		issuer.Audiences = trimStringSlice(issuer.Audiences)
+		requiredClaims, err := trimRequiredClaimsMap(issuer.RequiredClaims, fmt.Sprintf("auth.oidc.issuers[%d].required_claims", i))
+		if err != nil {
+			return AuthConfig{}, err
+		}
+		issuer.RequiredClaims = requiredClaims
 		issuer.AllowedAlgorithms = trimStringSlice(issuer.AllowedAlgorithms)
 		if len(issuer.AllowedAlgorithms) == 0 && issuerConfigHasValues(*issuer) {
 			issuer.AllowedAlgorithms = []string{"RS256"}
@@ -568,7 +577,7 @@ func normalizeAuthConfig(cfg AuthConfig) AuthConfig {
 			issuer.MaxTokenLifetimeSeconds = DefaultAuthOIDCMaxTokenLifetimeSeconds
 		}
 	}
-	return cfg
+	return cfg, nil
 }
 
 func issuerConfigHasValues(cfg AuthOIDCIssuerConfig) bool {
@@ -576,21 +585,30 @@ func issuerConfigHasValues(cfg AuthOIDCIssuerConfig) bool {
 		strings.TrimSpace(cfg.Issuer) != "" ||
 		strings.TrimSpace(cfg.JWKSURL) != "" ||
 		len(cfg.Audiences) > 0 ||
+		len(cfg.RequiredClaims) > 0 ||
 		len(cfg.AllowedAlgorithms) > 0 ||
 		cfg.ClockSkewSeconds != 0 ||
 		cfg.MaxTokenLifetimeSeconds != 0
 }
 
 func validateAuthConfig(cfg AuthConfig) error {
-	configured := cfg.Required || strings.TrimSpace(cfg.PolicyFile) != "" || len(cfg.OIDC.Issuers) > 0
+	configured := cfg.Required || strings.TrimSpace(cfg.PolicyFile) != "" || cfg.Policy.Configured() || len(cfg.OIDC.Issuers) > 0
 	if !configured {
 		return nil
 	}
 	if len(cfg.OIDC.Issuers) == 0 {
 		return errors.New("auth.oidc.issuers must contain at least one issuer when auth is configured")
 	}
-	if strings.TrimSpace(cfg.PolicyFile) == "" {
-		return errors.New("auth.policy_file is required when auth is configured")
+	if strings.TrimSpace(cfg.PolicyFile) != "" && cfg.Policy.Configured() {
+		return errors.New("auth.policy and auth.policy_file are mutually exclusive")
+	}
+	if strings.TrimSpace(cfg.PolicyFile) == "" && !cfg.Policy.Configured() {
+		return errors.New("auth.policy or auth.policy_file is required when auth is configured")
+	}
+	if cfg.Policy.Configured() {
+		if _, err := authz.CompileRuntimePolicy(cfg.Policy); err != nil {
+			return fmt.Errorf("auth.policy: %w", err)
+		}
 	}
 
 	seenNames := map[string]struct{}{}
@@ -620,6 +638,14 @@ func validateAuthConfig(cfg AuthConfig) error {
 
 		if len(issuer.Audiences) == 0 {
 			return fmt.Errorf("auth.oidc.issuers[%d].audiences must contain at least one audience", i)
+		}
+		for claim, value := range issuer.RequiredClaims {
+			if strings.TrimSpace(claim) == "" {
+				return fmt.Errorf("auth.oidc.issuers[%d].required_claims contains an empty claim name", i)
+			}
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("auth.oidc.issuers[%d].required_claims[%q] must not be empty", i, claim)
+			}
 		}
 		if strings.TrimSpace(issuer.JWKSURL) == "" {
 			return fmt.Errorf("auth.oidc.issuers[%d].jwks_url is required", i)
@@ -1015,6 +1041,25 @@ func trimStringMap(input map[string]string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+func trimRequiredClaimsMap(input map[string]string, label string) (map[string]string, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		trimmedKey := strings.TrimSpace(key)
+		if _, ok := out[trimmedKey]; ok {
+			return nil, fmt.Errorf("%s contains duplicate claim name %q after trimming whitespace", label, trimmedKey)
+		}
+		out[trimmedKey] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func trimStringSlice(input []string) []string {
