@@ -31,6 +31,19 @@ elif [[ ! -x "$helper_path" ]]; then
   exit 1
 fi
 
+choose_local_tcp_port() {
+  local port
+  for _ in $(seq 1 50); do
+    port=$((20000 + RANDOM % 20000))
+    if ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1; then
+      printf '%s\n' "$port"
+      return 0
+    fi
+  done
+  echo "could not find an available local tcp port" >&2
+  return 1
+}
+
 tmpdir="$(mktemp -d /tmp/cleanroom-dvz-e2e.XXXXXX)"
 cleanup() {
   publish_buildkite_observability \
@@ -39,6 +52,13 @@ cleanup() {
     "./dist/cleanroom" \
     "${listen_endpoint:-}" \
     "${tmpdir:-}" || true
+  if [[ -n "${exposure_pid:-}" ]]; then
+    kill "$exposure_pid" >/dev/null 2>&1 || true
+    wait "$exposure_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${suspend_sandbox_id:-}" && -n "${listen_endpoint:-}" ]]; then
+    ./dist/cleanroom sandbox rm --host "$listen_endpoint" "$suspend_sandbox_id" >/dev/null 2>&1 || true
+  fi
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
     wait "$srv_pid" >/dev/null 2>&1 || true
@@ -162,5 +182,71 @@ if ! grep -q 'deny-by-default' "$tmpdir/policy.err"; then
   cat "$tmpdir/policy.err" >&2 || true
   exit 1
 fi
+
+echo "--- :pause_button: Suspend/wake lifecycle smoke"
+suspend_sandbox_id="$(./dist/cleanroom sandbox create --host "$listen_endpoint" --backend darwin-vz --image ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9 | tail -n 1)"
+if [[ -z "$suspend_sandbox_id" ]]; then
+  echo "sandbox create did not return a sandbox id" >&2
+  exit 1
+fi
+
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$suspend_sandbox_id"
+./dist/cleanroom sandbox inspect --host "$listen_endpoint" "$suspend_sandbox_id" >"$tmpdir/suspend-inspect.out"
+if ! grep -q '^status: suspended$' "$tmpdir/suspend-inspect.out"; then
+  echo "expected sandbox to inspect as suspended" >&2
+  cat "$tmpdir/suspend-inspect.out" >&2
+  exit 1
+fi
+
+./dist/cleanroom exec --host "$listen_endpoint" --in "$suspend_sandbox_id" -- sh -lc 'printf after-wake >/tmp/cleanroom-suspend-wake.txt; echo command-after-wake' | tee "$tmpdir/wake-exec.out"
+if ! grep -q '^command-after-wake$' "$tmpdir/wake-exec.out"; then
+  echo "expected command-after-wake output missing" >&2
+  exit 1
+fi
+
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$suspend_sandbox_id"
+./dist/cleanroom cp --host "$listen_endpoint" "$suspend_sandbox_id:/tmp/cleanroom-suspend-wake.txt" "$tmpdir/wake-file.txt"
+if ! grep -q '^after-wake$' "$tmpdir/wake-file.txt"; then
+  echo "expected copied wake file content missing" >&2
+  cat "$tmpdir/wake-file.txt" >&2 || true
+  exit 1
+fi
+
+./dist/cleanroom exec --host "$listen_endpoint" --in "$suspend_sandbox_id" -- sh -lc 'mkdir -p /tmp/cleanroom-www; printf "wake-exposure\n" >/tmp/cleanroom-www/index.html; nohup busybox httpd -f -p 18080 -h /tmp/cleanroom-www >/tmp/cleanroom-httpd.log 2>&1 &'
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$suspend_sandbox_id"
+exposure_port="$(choose_local_tcp_port)"
+./dist/cleanroom port-forward --host "$listen_endpoint" --in "$suspend_sandbox_id" "$exposure_port:18080" >"$tmpdir/exposure.out" 2>"$tmpdir/exposure.err" &
+exposure_pid=$!
+for _ in $(seq 1 40); do
+  if grep -q "tcp://127.0.0.1:$exposure_port" "$tmpdir/exposure.out"; then
+    break
+  fi
+  if ! kill -0 "$exposure_pid" >/dev/null 2>&1; then
+    echo "port-forward exited before registering exposure" >&2
+    cat "$tmpdir/exposure.out" >&2 || true
+    cat "$tmpdir/exposure.err" >&2 || true
+    exit 1
+  fi
+  sleep 0.25
+done
+if ! grep -q "tcp://127.0.0.1:$exposure_port" "$tmpdir/exposure.out"; then
+  echo "timed out waiting for port-forward registration" >&2
+  cat "$tmpdir/exposure.out" >&2 || true
+  cat "$tmpdir/exposure.err" >&2 || true
+  exit 1
+fi
+
+curl --fail --max-time 20 --silent --show-error "http://127.0.0.1:$exposure_port/" | tee "$tmpdir/exposure-http.out"
+if ! grep -q '^wake-exposure$' "$tmpdir/exposure-http.out"; then
+  echo "expected local exposure response missing" >&2
+  cat "$tmpdir/exposure-http.out" >&2 || true
+  exit 1
+fi
+kill "$exposure_pid" >/dev/null 2>&1 || true
+wait "$exposure_pid" >/dev/null 2>&1 || true
+unset exposure_pid
+
+./dist/cleanroom sandbox rm --host "$listen_endpoint" "$suspend_sandbox_id"
+suspend_sandbox_id=""
 
 echo "darwin-vz e2e checks passed"

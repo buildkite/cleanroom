@@ -2282,6 +2282,96 @@ func TestServiceEmitsSandboxAndExecutionMetrics(t *testing.T) {
 	}, 1)
 }
 
+func TestServiceEmitsSandboxLifecycleMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	adapter := &suspendableAdapter{}
+	svc := newTestService(adapter)
+	svc.Observability = obs
+
+	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := sandboxResp.GetSandbox().GetSandboxId()
+
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+	if _, err := svc.ResumeSandbox(context.Background(), &cleanroomv1.ResumeSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("ResumeSandbox returned error: %v", err)
+	}
+
+	adapter.suspendFn = func(context.Context, string) error {
+		return errors.New("pause failed")
+	}
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err == nil {
+		t.Fatal("expected failed suspend")
+	}
+
+	adapter.suspendFn = nil
+	if _, err := svc.SuspendSandbox(context.Background(), &cleanroomv1.SuspendSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("second SuspendSandbox returned error: %v", err)
+	}
+	adapter.resumeFn = func(context.Context, string) error {
+		return errors.New("resume failed")
+	}
+	if _, err := svc.ResumeSandbox(context.Background(), &cleanroomv1.ResumeSandboxRequest{SandboxId: sandboxID}); err == nil {
+		t.Fatal("expected failed resume")
+	}
+
+	attrs := map[string]string{
+		observability.MetricLabelBackend: "firecracker",
+		observability.MetricLabelOutcome: observability.OutcomeSucceeded,
+	}
+	metrics := collectResourceMetrics(t, reader)
+	requireHistogramMetricCount(t, metrics, observability.MetricSandboxSuspendDurationSeconds, attrs, 2)
+	requireHistogramMetricCount(t, metrics, observability.MetricSandboxWakeDurationSeconds, attrs, 1)
+	requireHistogramMetricCount(t, metrics, observability.MetricSandboxSuspendDurationSeconds, map[string]string{
+		observability.MetricLabelBackend: "firecracker",
+		observability.MetricLabelOutcome: observability.OutcomeFailed,
+	}, 1)
+	requireHistogramMetricCount(t, metrics, observability.MetricSandboxWakeDurationSeconds, map[string]string{
+		observability.MetricLabelBackend: "firecracker",
+		observability.MetricLabelOutcome: observability.OutcomeFailed,
+	}, 1)
+}
+
+func TestSandboxLifecycleOutcomeMetricValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "success", want: observability.OutcomeSucceeded},
+		{name: "canceled", err: context.Canceled, want: observability.OutcomeCanceled},
+		{name: "timed out", err: context.DeadlineExceeded, want: observability.OutcomeTimedOut},
+		{name: "indeterminate", err: fmt.Errorf("helper response lost: %w", backend.ErrSandboxLifecycleIndeterminate), want: observability.OutcomeIndeterminate},
+		{name: "failed", err: errors.New("pause failed"), want: observability.OutcomeFailed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sandboxLifecycleOutcomeMetricValue(tc.err); got != tc.want {
+				t.Fatalf("sandboxLifecycleOutcomeMetricValue(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestServiceEmitsSandboxResourceMetrics(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))

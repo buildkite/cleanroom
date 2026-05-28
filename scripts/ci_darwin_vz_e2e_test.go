@@ -52,6 +52,13 @@ func TestCiDarwinVZE2EUsesFileHandleNetworkMode(t *testing.T) {
 		`capture_latest_execution_observability "./dist/cleanroom"`,
 		`require_launch_observability "$OBSERVABILITY_SUITE_LABEL"`,
 		`publish_buildkite_observability \`,
+		`choose_local_tcp_port()`,
+		`./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$suspend_sandbox_id"`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --in "$suspend_sandbox_id" -- sh -lc 'printf after-wake >/tmp/cleanroom-suspend-wake.txt; echo command-after-wake'`,
+		`./dist/cleanroom cp --host "$listen_endpoint" "$suspend_sandbox_id:/tmp/cleanroom-suspend-wake.txt" "$tmpdir/wake-file.txt"`,
+		`./dist/cleanroom port-forward --host "$listen_endpoint" --in "$suspend_sandbox_id" "$exposure_port:18080"`,
+		`curl --fail --max-time 20 --silent --show-error "http://127.0.0.1:$exposure_port/"`,
+		`./dist/cleanroom sandbox rm --host "$listen_endpoint" "$suspend_sandbox_id"`,
 	} {
 		if !strings.Contains(string(content), needle) {
 			t.Fatalf("expected ci-darwin-vz-e2e.sh to contain %q", needle)

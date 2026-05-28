@@ -159,6 +159,8 @@ phases.
 The current metric names are:
 
 - `cleanroom_sandbox_create_duration_seconds{backend,source,outcome}`
+- `cleanroom_sandbox_suspend_duration_seconds{backend,outcome}`
+- `cleanroom_sandbox_wake_duration_seconds{backend,outcome}`
 - `cleanroom_sandbox_active_count{backend,status}`
 - `cleanroom_sandbox_effective_memory_bytes{backend,status}`
 - `cleanroom_sandbox_effective_vcpus{backend,status}`
