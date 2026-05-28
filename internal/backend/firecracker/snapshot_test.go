@@ -15,6 +15,7 @@ import (
 
 	"charm.land/log/v2"
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
@@ -686,7 +687,7 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	)
 	specs := testCacheOutputVolumeSpecs()
 	adapter := &Adapter{
-		launchSandboxVMFromRootFSFn: func(_ context.Context, sandboxID string, compiled *policy.CompiledPolicy, _ backend.FirecrackerConfig, sourceRootFSPath string, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+		launchSandboxVMFromRootFSFn: func(_ context.Context, sandboxID string, compiled *policy.CompiledPolicy, _ gatewayauth.ScopeMetadata, _ backend.FirecrackerConfig, sourceRootFSPath string, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			gotSandbox = sandboxID
 			gotPolicy = compiled
 			gotRootFS = sourceRootFSPath

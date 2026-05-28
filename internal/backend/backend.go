@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -263,6 +264,7 @@ type SandboxPortDialer interface {
 type ProvisionRequest struct {
 	SandboxID          string
 	Policy             *policy.CompiledPolicy
+	GatewayScope       gatewayauth.ScopeMetadata
 	CacheOutputVolumes []CacheOutputVolumeSpec
 	Progress           ProvisionProgressFunc
 	FirecrackerConfig
@@ -286,6 +288,7 @@ type ProvisionFromSnapshotRequest struct {
 	SnapshotID         string
 	StorageRef         string
 	Policy             *policy.CompiledPolicy
+	GatewayScope       gatewayauth.ScopeMetadata
 	CacheOutputVolumes []CacheOutputVolumeSpec
 	FirecrackerConfig
 }
@@ -379,6 +382,7 @@ type ExecutionRequest struct {
 	CacheOutputFileCaptures []CacheOutputFileCapture
 	OverlayCapture          *OverlayCapture
 	Policy                  *policy.CompiledPolicy
+	GatewayScope            gatewayauth.ScopeMetadata
 	NetworkStage            policy.NetworkStage
 	SkipDockerServiceStart  bool
 	FirecrackerConfig

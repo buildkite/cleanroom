@@ -269,10 +269,14 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 		nil,
 		log.New(io.Discard),
 		"  gateway.local  ",
+		true,
 	)
 
 	if !reflect.DeepEqual(cfg.ScopeTokenTrustedSourcePrefixes, want) {
 		t.Fatalf("unexpected trusted source prefixes: got %v want %v", cfg.ScopeTokenTrustedSourcePrefixes, want)
+	}
+	if !cfg.RequireOwner {
+		t.Fatal("expected gateway owner requirement to propagate")
 	}
 	if !cfg.AllowScopeTokenFromAnySource {
 		t.Fatal("expected allow-any-source fallback to be preserved in server config")

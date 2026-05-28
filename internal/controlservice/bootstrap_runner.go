@@ -58,6 +58,7 @@ func (s *Service) runPersistentSandboxCommandWithOptions(
 		CacheOutputFileCaptures: cloneCacheOutputFileCaptures(opts.CacheOutputFileCaptures),
 		OverlayCapture:          cloneOverlayCapture(opts.OverlayCapture),
 		Policy:                  compiled,
+		GatewayScope:            s.gatewayScopeForSandbox(sandboxID),
 		NetworkStage:            networkStage,
 		FirecrackerConfig:       withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
 	}, stream)

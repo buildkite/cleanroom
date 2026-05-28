@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -72,6 +73,50 @@ func TestAuthzEnforcesExactSandboxAndExecutionOwnership(t *testing.T) {
 	}
 }
 
+func TestAuthzPropagatesGatewayScopeToBackendRequests(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+	}
+	ctx := testAuthContext(t, "alice")
+
+	createResp, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		Backend:            "firecracker",
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.provisionReq.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("provision owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionReq.GatewayScope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
+		t.Fatalf("provision git auth mismatch: got %v want %v", got, want)
+	}
+	if got, want := adapter.provisionReq.GatewayScope.Authorization.OCIRepoPrefixes, []string{"ghcr.io/buildkite/cleanroom-base/alpine"}; !slices.Equal(got, want) {
+		t.Fatalf("provision OCI auth mismatch: got %v want %v", got, want)
+	}
+
+	execResp, err := svc.CreateExecution(ctx, &cleanroomv1.CreateExecutionRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		Command:   []string{"true"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	waitExecutionDone(t, svc, createResp.GetSandbox().GetSandboxId(), execResp.GetExecution().GetExecutionId())
+	if got, want := adapter.req.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("execution owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := adapter.req.GatewayScope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
+		t.Fatalf("execution git auth mismatch: got %v want %v", got, want)
+	}
+}
+
 func TestAuthzStampsAndEnforcesSnapshotOwnership(t *testing.T) {
 	store := newMemorySnapshotStore()
 	svc := &Service{
@@ -128,6 +173,43 @@ func TestAuthzStampsAndEnforcesSnapshotOwnership(t *testing.T) {
 		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: snapshotID},
 	}); !errors.Is(err, ErrAuthorizationDenied) {
 		t.Fatalf("restore as different principal error = %v, want authorization denied", err)
+	}
+}
+
+func TestAuthzPropagatesGatewayScopeToSnapshotProvision(t *testing.T) {
+	store := newMemorySnapshotStore()
+	record := snapshotstoreRecord("snap-owner")
+	record.Repository = testRepositoryCheckoutProto()
+	record.OwnerPrincipalID = "oidc:test:alice"
+	record.OwnerScope = "scope:alice"
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create snapshot record returned error: %v", err)
+	}
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{Firecracker: runtimeconfig.FirecrackerConfig{
+				Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "file"},
+			}},
+		},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+		SnapshotStore: store,
+	}
+
+	if _, err := svc.CreateSandbox(testAuthContext(t, "alice"), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: record.SnapshotID},
+	}); err != nil {
+		t.Fatalf("CreateSandbox from snapshot returned error: %v", err)
+	}
+
+	if got, want := adapter.provisionFromSnapshotReq.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("snapshot provision owner mismatch: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.GatewayScope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
+		t.Fatalf("snapshot provision git auth mismatch: got %v want %v", got, want)
 	}
 }
 

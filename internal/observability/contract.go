@@ -119,6 +119,7 @@ const (
 	ReasonCached                = "cached"
 	ReasonFallback              = "fallback"
 	ReasonRubyGemsUnavailable   = "rubygems_unavailable"
+	ReasonGatewayAuthDenied     = "gateway_auth_denied"
 
 	CacheStageRuntime    = "runtime"
 	CacheStageWorkspace  = "workspace"

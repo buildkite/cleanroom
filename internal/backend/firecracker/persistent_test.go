@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"go.opentelemetry.io/otel/trace"
@@ -26,7 +27,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ gatewayauth.ScopeMetadata, _ backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			if sandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox id %q", sandboxID)
 			}
@@ -63,7 +64,7 @@ func TestProvisionSandboxRejectsStageScopedNetworkPolicy(t *testing.T) {
 	t.Parallel()
 
 	adapter := &Adapter{
-		launchSandboxVMFn: func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(context.Context, string, *policy.CompiledPolicy, gatewayauth.ScopeMetadata, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			t.Fatal("launchSandboxVMFn should not be called")
 			return nil, nil
 		},
@@ -87,7 +88,7 @@ func TestProvisionSandboxForwardsCacheOutputVolumes(t *testing.T) {
 	specs := testCacheOutputVolumeSpecs()
 	var gotSpecs []backend.CacheOutputVolumeSpec
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ gatewayauth.ScopeMetadata, _ backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			if sandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox id %q", sandboxID)
 			}
@@ -625,8 +626,10 @@ func TestRunInSandboxClosedEnvSkipsGatewayEnv(t *testing.T) {
 
 type testGatewayRegistry struct{}
 
-func (testGatewayRegistry) Register(string, string, *policy.CompiledPolicy) error { return nil }
-func (testGatewayRegistry) Release(string)                                        {}
+func (testGatewayRegistry) Register(string, string, *policy.CompiledPolicy, ...gatewayauth.ScopeMetadata) error {
+	return nil
+}
+func (testGatewayRegistry) Release(string) {}
 func (testGatewayRegistry) SetActiveExecutionTrace(string, string, trace.SpanContext) {
 }
 func (testGatewayRegistry) ClearActiveExecutionTrace(string, string) {}

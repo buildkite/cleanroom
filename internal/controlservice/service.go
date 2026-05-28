@@ -767,6 +767,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 		SandboxID:          sandboxID,
 		Policy:             compiled,
+		GatewayScope:       gatewayScopeMetadata(owner, repository, compiled),
 		CacheOutputVolumes: appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes),
 		Progress:           provisionProgress,
 		FirecrackerConfig:  firecrackerCfg,
@@ -3553,6 +3554,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		Env:               append([]string(nil), ex.Env...),
 		TTY:               ex.TTY,
 		Policy:            sb.Policy,
+		GatewayScope:      gatewayScopeMetadata(sb.Owner, sb.Repository, sb.Policy),
 		NetworkStage:      networkStage,
 		FirecrackerConfig: firecrackerCfg,
 	}

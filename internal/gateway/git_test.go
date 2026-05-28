@@ -70,6 +70,23 @@ func TestGitHandlerHostNotAllowed(t *testing.T) {
 	}
 }
 
+func TestGitHandlerRequiresOwnerWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	h := newGitHandlerWithMirrors(nil, nil, nil, true)
+	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, gitTestScope())
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+	if got := w.Header().Get(reasonCodeHeader); got != reasonGatewayAuthDenied {
+		t.Fatalf("expected reason %s, got %q", reasonGatewayAuthDenied, got)
+	}
+}
+
 func TestGitHandlerReceivePackDenied(t *testing.T) {
 	t.Parallel()
 

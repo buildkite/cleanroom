@@ -20,13 +20,14 @@ type gitHostHandlerProvider interface {
 // upstream proxying, caching, and singleflight deduplication; this wrapper
 // handles sandbox scope validation and host allowlisting.
 type cachedGitHandler struct {
-	cache    gitHostHandlerProvider
-	fallback http.Handler
-	logger   *log.Logger
+	cache        gitHostHandlerProvider
+	fallback     http.Handler
+	logger       *log.Logger
+	requireOwner bool
 }
 
-func newCachedGitHandler(cache gitHostHandlerProvider, fallback http.Handler, logger *log.Logger) *cachedGitHandler {
-	return &cachedGitHandler{cache: cache, fallback: fallback, logger: logger}
+func newCachedGitHandler(cache gitHostHandlerProvider, fallback http.Handler, logger *log.Logger, requireOwner bool) *cachedGitHandler {
+	return &cachedGitHandler{cache: cache, fallback: fallback, logger: logger, requireOwner: requireOwner}
 }
 
 func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +40,13 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upstreamHost, repoPath, err := splitGitRequestPath(r.URL.Path)
 	if err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := authorizeGitGatewayRequest(scope, upstreamHost, repoPath, h.requireOwner); err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonGatewayAuthDenied)
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonGatewayAuthDenied)
+		writeReasonError(w, http.StatusForbidden, reasonGatewayAuthDenied, err.Error())
 		return
 	}
 
