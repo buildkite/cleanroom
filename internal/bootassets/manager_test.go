@@ -323,6 +323,61 @@ func TestResolveKernelPathRejectsUnsafeReleaseManifestPathComponents(t *testing.
 	}
 }
 
+func TestResolveKernelPathRejectsMalformedReleaseManifestWithStaticFallback(t *testing.T) {
+	t.Parallel()
+
+	const fallbackPayload = "static-kernel"
+	const imageName = "cleanroom-darwin-vz-minimal-rootfs-arm64-linux-6.1.155-Image"
+	const manifestName = "cleanroom-darwin-vz-minimal-rootfs-arm64-linux-6.1.155.manifest.json"
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/buildkite/cleanroom-kernels/releases/tags/v0.1.0":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{
+  "tag_name": "v1.2.3",
+  "assets": [
+    {"name": %q, "browser_download_url": %q},
+    {"name": %q, "browser_download_url": %q}
+  ]
+}`, manifestName, srv.URL+"/manifest.json", imageName, srv.URL+"/kernel")
+		case "/manifest.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{`))
+		case "/static-kernel":
+			_, _ = w.Write([]byte(fallbackPayload))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	tmpDir := t.TempDir()
+	mgr := New(Options{
+		HTTPClient: srv.Client(),
+		AssetsDir: func() (string, error) {
+			return filepath.Join(tmpDir, "assets"), nil
+		},
+		Specs: map[Selector]KernelSpec{
+			{Backend: "darwin-vz", GOOS: "darwin", GOARCH: "arm64"}: {
+				ID:       "static-darwin-vz-kernel",
+				Filename: "vmlinux-static",
+				URL:      srv.URL + "/static-kernel",
+				SHA256:   sha256Hex([]byte(fallbackPayload)),
+			},
+		},
+		GitHubAPIBase: srv.URL,
+	})
+
+	_, err := mgr.ResolveKernelPathWithVersion(context.Background(), "darwin-vz", "darwin", "arm64", "", "dev")
+	if err == nil {
+		t.Fatal("expected malformed release manifest to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid darwin-vz kernel manifest") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveKernelPathRejectsUnsafeStaticSpecPathComponents(t *testing.T) {
 	t.Parallel()
 

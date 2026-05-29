@@ -125,6 +125,27 @@ func TestExtractTarRejectsTooManyEntries(t *testing.T) {
 	}
 }
 
+func TestExtractTarCountsHardLinksAgainstContentLimit(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stream := tarStreamWithEntries(t,
+		tarEntry{Header: &tar.Header{Name: "base", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len("base"))}, Body: []byte("base")},
+		tarEntry{Header: &tar.Header{Name: "base-link", Typeflag: tar.TypeLink, Linkname: "base", Mode: 0o644}},
+	)
+
+	err := extractTarWithLimits(root, bytes.NewReader(stream), rootFSExtractionLimits{
+		MaxContentBytes: 7,
+		MaxEntries:      10,
+	})
+	if err == nil {
+		t.Fatal("expected hard link to count against rootfs content limit")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "base-link")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected rejected hard link not to be created, stat err=%v", statErr)
+	}
+}
+
 type tarEntry struct {
 	Header *tar.Header
 	Body   []byte

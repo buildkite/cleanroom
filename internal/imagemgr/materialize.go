@@ -208,6 +208,9 @@ func extractTarWithLimits(root string, stream io.Reader, limits rootFSExtraction
 			if err := ensureNoSymlinkPath(root, linkTarget, false); err != nil {
 				return err
 			}
+			if err := accountRootFSTarHardLink(hdr, linkTarget, limits, &contentBytes); err != nil {
+				return err
+			}
 			if err := ensureNoSymlinkPath(root, filepath.Dir(targetPath), true); err != nil {
 				return err
 			}
@@ -244,13 +247,34 @@ func accountRootFSTarEntry(hdr *tar.Header, limits rootFSExtractionLimits, entri
 	}
 	switch hdr.Typeflag {
 	case tar.TypeReg, tar.TypeRegA:
-		if limits.MaxContentBytes > 0 && hdr.Size > limits.MaxContentBytes-*contentBytes {
-			return fmt.Errorf("refusing rootfs archive: extracted file bytes would exceed limit %d", limits.MaxContentBytes)
+		if err := addRootFSTarContentBytes(limits, contentBytes, hdr.Size); err != nil {
+			return err
 		}
-		*contentBytes += hdr.Size
 	default:
 		return nil
 	}
+	return nil
+}
+
+func accountRootFSTarHardLink(hdr *tar.Header, linkTarget string, limits rootFSExtractionLimits, contentBytes *int64) error {
+	if limits.MaxContentBytes <= 0 {
+		return nil
+	}
+	info, err := os.Stat(linkTarget)
+	if err != nil {
+		return fmt.Errorf("inspect hard link target %q: %w", hdr.Linkname, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("refusing hard link %q -> %q to directory", hdr.Name, hdr.Linkname)
+	}
+	return addRootFSTarContentBytes(limits, contentBytes, info.Size())
+}
+
+func addRootFSTarContentBytes(limits rootFSExtractionLimits, contentBytes *int64, size int64) error {
+	if limits.MaxContentBytes > 0 && size > limits.MaxContentBytes-*contentBytes {
+		return fmt.Errorf("refusing rootfs archive: extracted file bytes would exceed limit %d", limits.MaxContentBytes)
+	}
+	*contentBytes += size
 	return nil
 }
 

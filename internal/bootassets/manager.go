@@ -23,6 +23,7 @@ import (
 var ErrNoManagedKernelAsset = errors.New("no managed kernel asset")
 
 var errKernelReleaseUnavailable = errors.New("kernel release manifest unavailable")
+var errDownloadedJSONInvalid = errors.New("downloaded JSON invalid")
 
 const (
 	defaultGitHubAPIBase                 = "https://api.github.com"
@@ -378,6 +379,9 @@ func (m *Manager) fetchDarwinVZReleaseKernelSpec(ctx context.Context, releaseSel
 
 	var manifest kernelReleaseManifest
 	if err := m.downloadJSON(metadataCtx, manifestAsset.BrowserDownloadURL, &manifest); err != nil {
+		if errors.Is(err, errDownloadedJSONInvalid) {
+			return KernelSpec{}, fmt.Errorf("invalid darwin-vz kernel manifest %q: %w", manifestAsset.Name, err)
+		}
 		return KernelSpec{}, fmt.Errorf("%w: download darwin-vz kernel manifest %q: %w", errKernelReleaseUnavailable, manifestAsset.Name, err)
 	}
 	if err := validateDarwinVZKernelManifest(manifest); err != nil {
@@ -422,7 +426,7 @@ func (m *Manager) downloadJSON(ctx context.Context, rawURL string, target any) e
 		return fmt.Errorf("download %s: unexpected status %d: %s", rawURL, res.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(target); err != nil {
-		return fmt.Errorf("decode %s: %w", rawURL, err)
+		return fmt.Errorf("%w: decode %s: %w", errDownloadedJSONInvalid, rawURL, err)
 	}
 	return nil
 }
