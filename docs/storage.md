@@ -47,6 +47,10 @@ This artifact is not sized from `minimum_rootfs_bytes` or
 `sandbox.resources.disk`. It only needs enough space for image contents and
 materialization headroom.
 
+Image rootfs materialization rejects archives with more than 32 GiB of regular
+file payload or more than 1,000,000 archive entries. These bounds apply before
+the host extracts the rootfs tar into temporary storage.
+
 ### Prepared Runtime RootFS
 
 The prepared runtime rootfs is a shared immutable image-derived artifact. On

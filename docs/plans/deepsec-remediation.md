@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 7 ready for review
+**Status:** Slice 8 ready for review
 **Last reviewed:** 2026-05-28
 
 ## Summary
@@ -242,6 +242,30 @@ Focused validation run on 2026-05-28:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/policy ./internal/controlservice ./internal/cli
+```
+
+Result: passed.
+
+Slice 8 is implemented and ready for review. OCI image rootfs materialization
+now rejects archives before extraction when regular file payload exceeds 32 GiB
+or archive entries exceed 1,000,000, preventing registry or import tar streams
+from growing an unbounded temporary rootfs tree on the host. Managed kernel
+asset cache paths now validate static specs and release-manifest `id` and asset
+names as single safe path components before joining them under the Cleanroom
+asset cache.
+
+Focused validation run on 2026-05-28:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/imagemgr ./internal/bootassets
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-28:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
 ```
 
 Result: passed.

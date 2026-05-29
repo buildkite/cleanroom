@@ -14,12 +14,18 @@ import (
 )
 
 const (
-	minimumRootFSSizeBytes = 512 << 20
-	rootFSHeadroomBytes    = 128 << 20
-	rootFSAlignBytes       = 4 << 20
+	minimumRootFSSizeBytes         = 512 << 20
+	rootFSHeadroomBytes            = 128 << 20
+	rootFSAlignBytes               = 4 << 20
+	defaultMaxRootFSContentBytes   = 32 << 30
+	defaultMaxRootFSArchiveEntries = 1_000_000
 )
 
 func materializeExt4(ctx context.Context, mkfsBinary string, tarStream io.Reader, outputPath string) (int64, error) {
+	return materializeExt4WithLimits(ctx, mkfsBinary, tarStream, outputPath, defaultRootFSExtractionLimits())
+}
+
+func materializeExt4WithLimits(ctx context.Context, mkfsBinary string, tarStream io.Reader, outputPath string, limits rootFSExtractionLimits) (int64, error) {
 	workDir, err := os.MkdirTemp("", "cleanroom-image-materialize-*")
 	if err != nil {
 		return 0, fmt.Errorf("create temporary rootfs materialisation directory: %w", err)
@@ -30,7 +36,7 @@ func materializeExt4(ctx context.Context, mkfsBinary string, tarStream io.Reader
 	if err := os.MkdirAll(rootFSDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create temporary rootfs extraction directory: %w", err)
 	}
-	if err := extractTar(rootFSDir, tarStream); err != nil {
+	if err := extractTarWithLimits(rootFSDir, tarStream, limits); err != nil {
 		return 0, err
 	}
 
@@ -113,7 +119,25 @@ func dirSize(root string) (int64, error) {
 }
 
 func extractTar(root string, stream io.Reader) error {
+	return extractTarWithLimits(root, stream, defaultRootFSExtractionLimits())
+}
+
+type rootFSExtractionLimits struct {
+	MaxContentBytes int64
+	MaxEntries      int64
+}
+
+func defaultRootFSExtractionLimits() rootFSExtractionLimits {
+	return rootFSExtractionLimits{
+		MaxContentBytes: defaultMaxRootFSContentBytes,
+		MaxEntries:      defaultMaxRootFSArchiveEntries,
+	}
+}
+
+func extractTarWithLimits(root string, stream io.Reader, limits rootFSExtractionLimits) error {
 	tr := tar.NewReader(stream)
+	var contentBytes int64
+	var entries int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -121,6 +145,9 @@ func extractTar(root string, stream io.Reader) error {
 		}
 		if err != nil {
 			return fmt.Errorf("read rootfs tar stream: %w", err)
+		}
+		if err := accountRootFSTarEntry(hdr, limits, &entries, &contentBytes); err != nil {
+			return err
 		}
 
 		targetPath, err := safeJoin(root, hdr.Name)
@@ -150,7 +177,7 @@ func extractTar(root string, stream io.Reader) error {
 			if err != nil {
 				return fmt.Errorf("create file %q from tar stream: %w", targetPath, err)
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			if _, err := io.CopyN(f, tr, hdr.Size); err != nil {
 				_ = f.Close()
 				return fmt.Errorf("write file %q from tar stream: %w", targetPath, err)
 			}
@@ -200,6 +227,31 @@ func extractTar(root string, stream io.Reader) error {
 			// Ignore unsupported tar entry kinds (for example device nodes); /dev is mounted at boot.
 		}
 	}
+}
+
+func accountRootFSTarEntry(hdr *tar.Header, limits rootFSExtractionLimits, entries, contentBytes *int64) error {
+	if hdr == nil {
+		return errors.New("refusing nil rootfs tar entry")
+	}
+	if hdr.Size < 0 {
+		return fmt.Errorf("refusing tar entry %q with negative size %d", hdr.Name, hdr.Size)
+	}
+	if limits.MaxEntries > 0 {
+		if *entries >= limits.MaxEntries {
+			return fmt.Errorf("refusing rootfs archive with more than %d entries", limits.MaxEntries)
+		}
+		*entries++
+	}
+	switch hdr.Typeflag {
+	case tar.TypeReg, tar.TypeRegA:
+		if limits.MaxContentBytes > 0 && hdr.Size > limits.MaxContentBytes-*contentBytes {
+			return fmt.Errorf("refusing rootfs archive: extracted file bytes would exceed limit %d", limits.MaxContentBytes)
+		}
+		*contentBytes += hdr.Size
+	default:
+		return nil
+	}
+	return nil
 }
 
 func safeJoin(root, name string) (string, error) {
