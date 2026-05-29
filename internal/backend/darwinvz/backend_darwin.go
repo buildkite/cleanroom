@@ -874,6 +874,19 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err != nil {
 		return nil, err
 	}
+	snapshotCleanupRef := ""
+	defer func() {
+		if retErr == nil || strings.TrimSpace(snapshotCleanupRef) == "" {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupErr := driver.DestroySnapshot(cleanupCtx, volumestore.DestroySnapshotRequest{SnapshotRef: snapshotCleanupRef})
+		cancel()
+		if cleanupErr != nil {
+			retErr = fmt.Errorf("%w (cleanup snapshot %q failed: %v)", retErr, snapshotCleanupRef, cleanupErr)
+		}
+	}()
+
 	helperRequest := a.helperRequestFn
 	if helperRequest == nil {
 		helperRequest = func(ctx context.Context, helper *helperSession, req helperControlRequest) (helperControlResponse, error) {
@@ -909,8 +922,16 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
 	}
+	snapshotStorageRef := strings.TrimSpace(snapshot.StorageRef)
+	snapshotCleanupRef = snapshotStorageRef
+	if snapshotCleanupRef == "" {
+		snapshotCleanupRef = strings.TrimSpace(snapshot.Ref)
+	}
+	if snapshotStorageRef == "" {
+		return nil, errors.New("snapshot storage returned empty storage_ref")
+	}
 
-	return &backend.SnapshotResult{StorageRef: snapshot.StorageRef}, nil
+	return &backend.SnapshotResult{StorageRef: snapshotStorageRef}, nil
 }
 
 func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {

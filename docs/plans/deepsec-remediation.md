@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 9 ready for review
+**Status:** Slice 10 ready for review
 **Last reviewed:** 2026-05-29
 
 ## Summary
@@ -283,6 +283,28 @@ rg -n "uses:\s*[^@\s]+@v[0-9]+\b|uses:\s*[^@\s]+@main\b|uses:\s*[^@\s]+@master\b
 ```
 
 Result: passed with no matches.
+
+Repository validation run on 2026-05-29:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Slice 10 is implemented and ready for review. darwin-vz snapshot creation now
+tracks the stored snapshot rootfs once persistence succeeds and removes it if a
+later error makes the API return failure. This specifically covers failed VM
+resume after snapshot persistence, where the caller would otherwise not record
+the snapshot while the stored rootfs remained on disk.
+
+Focused validation run on 2026-05-29:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz
+```
+
+Result: passed.
 
 Repository validation run on 2026-05-29:
 

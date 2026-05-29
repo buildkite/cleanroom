@@ -81,6 +81,65 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotCleansStoredRootFSWhenResumeFails(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("snapshot-bytes"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	adapter := &Adapter{
+		executeInSandboxFn: func(_ context.Context, _ context.Context, _ *sandboxInstance, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExitCode: 0}, nil
+		},
+		helperRequestFn: func(_ context.Context, _ *helperSession, req helperControlRequest) (helperControlResponse, error) {
+			switch req.Op {
+			case "PauseVM":
+				return helperControlResponse{OK: true}, nil
+			case "ResumeVM":
+				return helperControlResponse{}, fmt.Errorf("resume failed")
+			default:
+				t.Fatalf("unexpected helper op %q", req.Op)
+				return helperControlResponse{}, nil
+			}
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				Helper:       &helperSession{},
+				VMID:         "vm-test",
+				Policy:       &policy.CompiledPolicy{NetworkDefault: "deny"},
+				vmRootFSPath: rootfsPath,
+				exitedCh:     make(chan struct{}),
+			},
+		},
+	}
+
+	result, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when resume fails")
+	}
+	if result != nil {
+		t.Fatalf("expected no snapshot result, got %#v", result)
+	}
+	if got := err.Error(); !strings.Contains(got, "resume darwin-vz sandbox after snapshot") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	snapshotPath := filepath.Join(stateHome, "cleanroom", "snapshots", "darwin-vz", "snap-test", "rootfs.ext4")
+	if _, err := os.Stat(snapshotPath); !os.IsNotExist(err) {
+		t.Fatalf("expected stored snapshot rootfs to be removed, got err=%v", err)
+	}
+}
+
 func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	t.Parallel()
 
