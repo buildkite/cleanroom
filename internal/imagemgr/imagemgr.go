@@ -72,6 +72,8 @@ type Options struct {
 	ResolveAttempts         int
 	ResolveAttemptTimeout   time.Duration
 	RootFSStreamIdleTimeout time.Duration
+	MaxRootFSContentBytes   int64
+	MaxRootFSArchiveEntries int64
 }
 
 type pullImageFunc func(resolveCtx, streamCtx context.Context, ref string) (io.ReadCloser, OCIConfig, error)
@@ -87,6 +89,8 @@ type Manager struct {
 	resolveAttempts         int
 	resolveAttemptTimeout   time.Duration
 	rootFSStreamIdleTimeout time.Duration
+	maxRootFSContentBytes   int64
+	maxRootFSArchiveEntries int64
 
 	mu sync.Mutex
 }
@@ -138,6 +142,8 @@ func New(opts Options) (*Manager, error) {
 		resolveAttempts:         defaultResolveAttempts,
 		resolveAttemptTimeout:   defaultResolveAttemptTimeout,
 		rootFSStreamIdleTimeout: defaultRootFSStreamIdleLimit,
+		maxRootFSContentBytes:   defaultMaxRootFSContentBytes,
+		maxRootFSArchiveEntries: defaultMaxRootFSArchiveEntries,
 	}
 	if opts.ResolveAttempts > 0 {
 		manager.resolveAttempts = opts.ResolveAttempts
@@ -147,6 +153,12 @@ func New(opts Options) (*Manager, error) {
 	}
 	if opts.RootFSStreamIdleTimeout > 0 {
 		manager.rootFSStreamIdleTimeout = opts.RootFSStreamIdleTimeout
+	}
+	if opts.MaxRootFSContentBytes > 0 {
+		manager.maxRootFSContentBytes = opts.MaxRootFSContentBytes
+	}
+	if opts.MaxRootFSArchiveEntries > 0 {
+		manager.maxRootFSArchiveEntries = opts.MaxRootFSArchiveEntries
 	}
 	if opts.PullImage != nil {
 		manager.pullImage = func(_, streamCtx context.Context, ref string) (io.ReadCloser, OCIConfig, error) {
@@ -175,7 +187,11 @@ func New(opts Options) (*Manager, error) {
 		manager.materialize = opts.MaterializeRootFS
 	} else {
 		manager.materialize = func(ctx context.Context, tarStream io.Reader, outputPath string) (int64, error) {
-			return materializeExt4(ctx, manager.mkfsBinary, tarStream, outputPath)
+			limits := rootFSExtractionLimits{
+				MaxContentBytes: manager.maxRootFSContentBytes,
+				MaxEntries:      manager.maxRootFSArchiveEntries,
+			}
+			return materializeExt4WithLimits(ctx, manager.mkfsBinary, tarStream, outputPath, limits)
 		}
 	}
 

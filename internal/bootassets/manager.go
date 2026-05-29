@@ -22,6 +22,9 @@ import (
 
 var ErrNoManagedKernelAsset = errors.New("no managed kernel asset")
 
+var errKernelReleaseUnavailable = errors.New("kernel release manifest unavailable")
+var errDownloadedJSONInvalid = errors.New("downloaded JSON invalid")
+
 const (
 	defaultGitHubAPIBase                 = "https://api.github.com"
 	defaultKernelReleaseGitHubRepository = "buildkite/cleanroom-kernels"
@@ -173,7 +176,15 @@ func (m *Manager) kernelPathForSpec(spec KernelSpec) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve assets directory: %w", err)
 	}
-	return filepath.Join(base, "kernels", spec.ID, spec.Filename), nil
+	id, err := cachePathComponent("kernel asset id", spec.ID)
+	if err != nil {
+		return "", err
+	}
+	filename, err := cachePathComponent("kernel asset filename", spec.Filename)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "kernels", id, filename), nil
 }
 
 func (m *Manager) EnsureKernel(ctx context.Context, backendName, goos, goarch string) (EnsureResult, error) {
@@ -277,12 +288,19 @@ func (m *Manager) ResolveKernelPathWithVersion(ctx context.Context, backendName,
 }
 
 func (m *Manager) resolveKernelSpec(ctx context.Context, backendName, goos, goarch, appVersion string) (KernelSpec, error) {
-	if spec, ok, err := m.resolveDarwinVZReleaseKernelSpec(ctx, backendName, goos, goarch, appVersion); ok && err == nil {
-		return spec, nil
+	releaseSpec, releaseOK, releaseErr := m.resolveDarwinVZReleaseKernelSpec(ctx, backendName, goos, goarch, appVersion)
+	if releaseOK && releaseErr == nil {
+		return releaseSpec, nil
+	}
+	if releaseOK && releaseErr != nil && !errors.Is(releaseErr, errKernelReleaseUnavailable) {
+		return KernelSpec{}, releaseErr
 	}
 
 	if spec, ok := m.Lookup(backendName, goos, goarch); ok {
 		return spec, nil
+	}
+	if releaseOK && releaseErr != nil {
+		return KernelSpec{}, releaseErr
 	}
 	return KernelSpec{}, fmt.Errorf("%w for backend=%s host=%s/%s", ErrNoManagedKernelAsset, backendName, goos, goarch)
 }
@@ -351,31 +369,37 @@ func (m *Manager) fetchDarwinVZReleaseKernelSpec(ctx context.Context, releaseSel
 	releaseURL := m.releaseURL(releaseSelector)
 	var release githubRelease
 	if err := m.downloadJSON(metadataCtx, releaseURL, &release); err != nil {
-		return KernelSpec{}, err
+		return KernelSpec{}, fmt.Errorf("%w: %w", errKernelReleaseUnavailable, err)
 	}
 
 	manifestAsset, ok := findDarwinVZKernelManifestAsset(release.Assets)
 	if !ok {
-		return KernelSpec{}, fmt.Errorf("darwin-vz kernel manifest asset not found in kernel release %s", releaseSelector)
+		return KernelSpec{}, fmt.Errorf("%w: darwin-vz kernel manifest asset not found in kernel release %s", errKernelReleaseUnavailable, releaseSelector)
 	}
 
 	var manifest kernelReleaseManifest
 	if err := m.downloadJSON(metadataCtx, manifestAsset.BrowserDownloadURL, &manifest); err != nil {
-		return KernelSpec{}, fmt.Errorf("download darwin-vz kernel manifest %q: %w", manifestAsset.Name, err)
+		if errors.Is(err, errDownloadedJSONInvalid) {
+			return KernelSpec{}, fmt.Errorf("invalid darwin-vz kernel manifest %q: %w", manifestAsset.Name, err)
+		}
+		return KernelSpec{}, fmt.Errorf("%w: download darwin-vz kernel manifest %q: %w", errKernelReleaseUnavailable, manifestAsset.Name, err)
 	}
 	if err := validateDarwinVZKernelManifest(manifest); err != nil {
 		return KernelSpec{}, fmt.Errorf("invalid darwin-vz kernel manifest %q: %w", manifestAsset.Name, err)
 	}
+	specID, _ := cachePathComponent("id", manifest.ID)
+	imageName, _ := cachePathComponent("assets.image", manifest.Assets.Image)
+	imageSHA256 := strings.TrimSpace(manifest.SHA256)
 
-	imageAsset, ok := findReleaseAsset(release.Assets, manifest.Assets.Image)
+	imageAsset, ok := findReleaseAsset(release.Assets, imageName)
 	if !ok {
-		return KernelSpec{}, fmt.Errorf("darwin-vz kernel image asset %q not found in kernel release %s", manifest.Assets.Image, releaseSelector)
+		return KernelSpec{}, fmt.Errorf("darwin-vz kernel image asset %q not found in kernel release %s", imageName, releaseSelector)
 	}
 	return KernelSpec{
-		ID:       manifest.ID,
-		Filename: manifest.Assets.Image,
+		ID:       specID,
+		Filename: imageName,
 		URL:      imageAsset.BrowserDownloadURL,
-		SHA256:   manifest.SHA256,
+		SHA256:   imageSHA256,
 	}, nil
 }
 
@@ -402,7 +426,7 @@ func (m *Manager) downloadJSON(ctx context.Context, rawURL string, target any) e
 		return fmt.Errorf("download %s: unexpected status %d: %s", rawURL, res.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(target); err != nil {
-		return fmt.Errorf("decode %s: %w", rawURL, err)
+		return fmt.Errorf("%w: decode %s: %w", errDownloadedJSONInvalid, rawURL, err)
 	}
 	return nil
 }
@@ -426,22 +450,62 @@ func findReleaseAsset(assets []githubReleaseAsset, name string) (githubReleaseAs
 }
 
 func validateDarwinVZKernelManifest(manifest kernelReleaseManifest) error {
+	if _, err := cachePathComponent("id", manifest.ID); err != nil {
+		return err
+	}
+	if _, err := cachePathComponent("assets.image", manifest.Assets.Image); err != nil {
+		return err
+	}
+	for _, asset := range []struct {
+		field string
+		value string
+	}{
+		{field: "assets.config", value: manifest.Assets.Config},
+		{field: "assets.sha256", value: manifest.Assets.SHA256},
+		{field: "assets.manifest", value: manifest.Assets.Manifest},
+	} {
+		if strings.TrimSpace(asset.value) == "" {
+			continue
+		}
+		if _, err := cachePathComponent(asset.field, asset.value); err != nil {
+			return err
+		}
+	}
+
 	switch {
-	case strings.TrimSpace(manifest.ID) == "":
-		return errors.New("missing id")
 	case manifest.Backend != "darwin-vz":
 		return fmt.Errorf("unexpected backend %q", manifest.Backend)
 	case manifest.Profile != "rootfs":
 		return fmt.Errorf("unexpected profile %q", manifest.Profile)
 	case manifest.Arch != "arm64":
 		return fmt.Errorf("unexpected arch %q", manifest.Arch)
-	case strings.TrimSpace(manifest.Assets.Image) == "":
-		return errors.New("missing image asset name")
 	case strings.TrimSpace(manifest.SHA256) == "":
 		return errors.New("missing image sha256")
 	default:
 		return nil
 	}
+}
+
+func cachePathComponent(field, value string) (string, error) {
+	component := strings.TrimSpace(value)
+	if component == "" {
+		return "", fmt.Errorf("missing %s", field)
+	}
+	if component == "." || component == ".." {
+		return "", fmt.Errorf("unsafe %s path component %q", field, value)
+	}
+	if strings.ContainsAny(component, `/\`+"\x00") {
+		return "", fmt.Errorf("unsafe %s path component %q", field, value)
+	}
+	for _, r := range component {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("unsafe %s path component %q", field, value)
+		}
+	}
+	if filepath.Clean(component) != component || filepath.Base(component) != component {
+		return "", fmt.Errorf("unsafe %s path component %q", field, value)
+	}
+	return component, nil
 }
 
 func (m *Manager) downloadAndVerify(ctx context.Context, spec KernelSpec, tmpPath string) error {

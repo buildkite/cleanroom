@@ -87,6 +87,65 @@ func TestExtractTarAllowsAbsoluteInternalSymlinkTarget(t *testing.T) {
 	}
 }
 
+func TestExtractTarRejectsRootFSContentOverLimit(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stream := tarStreamWithEntries(t,
+		tarEntry{Header: &tar.Header{Name: "large", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len("large"))}, Body: []byte("large")},
+	)
+
+	err := extractTarWithLimits(root, bytes.NewReader(stream), rootFSExtractionLimits{
+		MaxContentBytes: 4,
+		MaxEntries:      10,
+	})
+	if err == nil {
+		t.Fatal("expected oversized rootfs tar to be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "large")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected oversized file not to be created, stat err=%v", statErr)
+	}
+}
+
+func TestExtractTarRejectsTooManyEntries(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stream := tarStreamWithEntries(t,
+		tarEntry{Header: &tar.Header{Name: "one", Typeflag: tar.TypeDir, Mode: 0o755}},
+		tarEntry{Header: &tar.Header{Name: "two", Typeflag: tar.TypeDir, Mode: 0o755}},
+	)
+
+	err := extractTarWithLimits(root, bytes.NewReader(stream), rootFSExtractionLimits{
+		MaxContentBytes: 1024,
+		MaxEntries:      1,
+	})
+	if err == nil {
+		t.Fatal("expected rootfs tar with too many entries to be rejected")
+	}
+}
+
+func TestExtractTarCountsHardLinksAgainstContentLimit(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stream := tarStreamWithEntries(t,
+		tarEntry{Header: &tar.Header{Name: "base", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len("base"))}, Body: []byte("base")},
+		tarEntry{Header: &tar.Header{Name: "base-link", Typeflag: tar.TypeLink, Linkname: "base", Mode: 0o644}},
+	)
+
+	err := extractTarWithLimits(root, bytes.NewReader(stream), rootFSExtractionLimits{
+		MaxContentBytes: 7,
+		MaxEntries:      10,
+	})
+	if err == nil {
+		t.Fatal("expected hard link to count against rootfs content limit")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "base-link")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected rejected hard link not to be created, stat err=%v", statErr)
+	}
+}
+
 type tarEntry struct {
 	Header *tar.Header
 	Body   []byte
