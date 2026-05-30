@@ -203,6 +203,41 @@ func TestGitFileDigestsAtCommitEmbeddedNewlines(t *testing.T) {
 	}
 }
 
+func TestGitFileDigestsHandlesPathWithNewline(t *testing.T) {
+	repoDir := t.TempDir()
+	runTestGit(t, repoDir, "init")
+	runTestGit(t, repoDir, "config", "user.email", "test@example.com")
+	runTestGit(t, repoDir, "config", "user.name", "Test User")
+
+	fileName := "line\nbreak.txt"
+	content := []byte("newline path content\n")
+	if err := os.WriteFile(filepath.Join(repoDir, fileName), content, 0o644); err != nil {
+		t.Fatalf("write newline path: %v", err)
+	}
+	runTestGit(t, repoDir, "add", ".")
+	runTestGit(t, repoDir, "commit", "-m", "init")
+	commitSHA := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD"))
+
+	sum := sha256.Sum256(content)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+
+	atCommit, err := gitFileDigestsAtCommit(context.Background(), repoDir, commitSHA, []string{fileName})
+	if err != nil {
+		t.Fatalf("gitFileDigestsAtCommit returned error: %v", err)
+	}
+	if got := atCommit[fileName]; got != want {
+		t.Fatalf("unexpected committed digest: got %q want %q", got, want)
+	}
+
+	inWorktree, err := gitFileDigestsInWorktree(context.Background(), repoDir, []string{fileName})
+	if err != nil {
+		t.Fatalf("gitFileDigestsInWorktree returned error: %v", err)
+	}
+	if got := inWorktree[fileName]; got != want {
+		t.Fatalf("unexpected worktree digest: got %q want %q", got, want)
+	}
+}
+
 func TestGitFileDigestsAtCommitMissingObject(t *testing.T) {
 	repoDir := t.TempDir()
 	runTestGit(t, repoDir, "init")

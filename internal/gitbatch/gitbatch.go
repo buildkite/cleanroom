@@ -14,8 +14,9 @@ import (
 )
 
 type TreeEntry struct {
-	Mode string
-	Type string
+	Mode     string
+	Type     string
+	ObjectID string
 }
 
 func TreeEntriesForFiles(ctx context.Context, repoDir, commitSHA string, files []string) (map[string]TreeEntry, error) {
@@ -43,18 +44,22 @@ func TreeEntriesForFiles(ctx context.Context, repoDir, commitSHA string, files [
 		if !ok {
 			return nil, fmt.Errorf("parse git tree entry %q", string(raw))
 		}
-		normalizedPath := path.Clean(strings.ReplaceAll(string(rawPath), "\\", "/"))
+		normalizedPath := normalizeGitPath(string(rawPath))
 		fields := strings.Fields(string(metadata))
 		if len(fields) < 3 {
 			return nil, fmt.Errorf("parse git tree entry %q", string(raw))
 		}
-		result[normalizedPath] = TreeEntry{Mode: fields[0], Type: fields[1]}
+		result[normalizedPath] = TreeEntry{Mode: fields[0], Type: fields[1], ObjectID: fields[2]}
 	}
 	return result, nil
 }
 
 func FileDigestsAtCommit(ctx context.Context, repoDir, commitSHA string, files []string) (map[string]string, error) {
-	return FileDigestsBatch(ctx, repoDir, files, func(f string) string {
+	entries, err := TreeEntriesForFiles(ctx, repoDir, commitSHA, files)
+	if err != nil {
+		return nil, err
+	}
+	return fileDigestsFromTreeEntries(ctx, repoDir, files, entries, func(f string) string {
 		return commitSHA + ":" + f
 	})
 }
@@ -84,7 +89,7 @@ func TreeEntriesForFilesInWorktree(ctx context.Context, repoDir string, files []
 		if !ok {
 			return nil, fmt.Errorf("parse git ls-files entry %q", string(raw))
 		}
-		normalizedPath := path.Clean(strings.ReplaceAll(string(rawPath), "\\", "/"))
+		normalizedPath := normalizeGitPath(string(rawPath))
 		fields := strings.Fields(string(metadata))
 		if len(fields) < 3 {
 			return nil, fmt.Errorf("parse git ls-files entry %q", string(raw))
@@ -94,19 +99,51 @@ func TreeEntriesForFilesInWorktree(ctx context.Context, repoDir string, files []
 		if mode == "160000" {
 			entryType = "commit"
 		}
-		result[normalizedPath] = TreeEntry{Mode: mode, Type: entryType}
+		result[normalizedPath] = TreeEntry{Mode: mode, Type: entryType, ObjectID: fields[1]}
 	}
 	return result, nil
 }
 
 func FileDigestsInWorktree(ctx context.Context, repoDir string, files []string) (map[string]string, error) {
-	return FileDigestsBatch(ctx, repoDir, files, func(f string) string {
+	entries, err := TreeEntriesForFilesInWorktree(ctx, repoDir, files)
+	if err != nil {
+		return nil, err
+	}
+	return fileDigestsFromTreeEntries(ctx, repoDir, files, entries, func(f string) string {
 		return ":" + f
 	})
 }
 
-func FileDigestsBatch(ctx context.Context, repoDir string, files []string, specFn func(string) string) (map[string]string, error) {
+type fileDigestRequest struct {
+	path     string
+	objectID string
+}
+
+func fileDigestsFromTreeEntries(ctx context.Context, repoDir string, files []string, entries map[string]TreeEntry, specFn func(string) string) (map[string]string, error) {
 	if len(files) == 0 {
+		return map[string]string{}, nil
+	}
+
+	requests := make([]fileDigestRequest, 0, len(files))
+	for _, f := range files {
+		entry, ok := entries[normalizeGitPath(f)]
+		if !ok {
+			return nil, fmt.Errorf("git cat-file reports %q is missing", specFn(f))
+		}
+		if entry.Type != "blob" {
+			return nil, fmt.Errorf("git cat-file reports %q is %s, not blob", specFn(f), entry.Type)
+		}
+		if entry.ObjectID == "" {
+			return nil, fmt.Errorf("git tree entry for %q has no object id", specFn(f))
+		}
+		requests = append(requests, fileDigestRequest{path: f, objectID: entry.ObjectID})
+	}
+
+	return fileDigestsBatch(ctx, repoDir, requests)
+}
+
+func fileDigestsBatch(ctx context.Context, repoDir string, requests []fileDigestRequest) (map[string]string, error) {
+	if len(requests) == 0 {
 		return map[string]string{}, nil
 	}
 
@@ -133,9 +170,9 @@ func FileDigestsBatch(ctx context.Context, repoDir string, files []string, specF
 
 	go func() {
 		var writeErr error
-		for _, f := range files {
-			if _, err := io.WriteString(stdin, specFn(f)+"\n"); err != nil {
-				writeErr = fmt.Errorf("write git cat-file spec for %q: %w", f, err)
+		for _, req := range requests {
+			if _, err := io.WriteString(stdin, req.objectID+"\n"); err != nil {
+				writeErr = fmt.Errorf("write git cat-file spec for %q: %w", req.path, err)
 				break
 			}
 		}
@@ -149,19 +186,19 @@ func FileDigestsBatch(ctx context.Context, repoDir string, files []string, specF
 			readerDone <- result{nil, err}
 		}
 
-		digests := make(map[string]string, len(files))
+		digests := make(map[string]string, len(requests))
 		buf := make([]byte, 32*1024)
 		reader := &bufferedReader{r: stdout, buf: make([]byte, 0, 64*1024)}
 
-		for _, f := range files {
-			header, err := reader.readLine()
+		for _, req := range requests {
+			header, err := reader.readUntil('\n')
 			if err != nil {
-				sendErr(fmt.Errorf("read git cat-file header for %q: %w", f, err))
+				sendErr(fmt.Errorf("read git cat-file header for %q: %w", req.path, err))
 				return
 			}
-			headerStr := strings.TrimRight(string(header), "\n")
+			headerStr := string(header)
 			if strings.HasSuffix(headerStr, " missing") {
-				sendErr(fmt.Errorf("git cat-file reports %q is missing", specFn(f)))
+				sendErr(fmt.Errorf("git cat-file reports %q is missing", req.objectID))
 				return
 			}
 			fields := strings.Fields(headerStr)
@@ -184,23 +221,23 @@ func FileDigestsBatch(ctx context.Context, repoDir string, files []string, specF
 				}
 				n, err := reader.read(buf[:toRead])
 				if err != nil && err != io.EOF {
-					sendErr(fmt.Errorf("read git cat-file content for %q: %w", f, err))
+					sendErr(fmt.Errorf("read git cat-file content for %q: %w", req.path, err))
 					return
 				}
 				h.Write(buf[:n])
 				remaining -= int64(n)
 				if err == io.EOF && remaining > 0 {
-					sendErr(fmt.Errorf("unexpected EOF reading git cat-file content for %q", f))
+					sendErr(fmt.Errorf("unexpected EOF reading git cat-file content for %q", req.path))
 					return
 				}
 			}
 
 			if _, err := reader.readByte(); err != nil {
-				sendErr(fmt.Errorf("read git cat-file trailing newline for %q: %w", f, err))
+				sendErr(fmt.Errorf("read git cat-file trailing newline for %q: %w", req.path, err))
 				return
 			}
 
-			digests[f] = "sha256:" + hex.EncodeToString(h.Sum(nil))
+			digests[req.path] = "sha256:" + hex.EncodeToString(h.Sum(nil))
 		}
 		readerDone <- result{digests, nil}
 	}()
@@ -218,6 +255,10 @@ func FileDigestsBatch(ctx context.Context, repoDir string, files []string, specF
 		return nil, readResult.err
 	}
 	return readResult.digests, nil
+}
+
+func normalizeGitPath(p string) string {
+	return path.Clean(strings.ReplaceAll(p, "\\", "/"))
 }
 
 type bufferedReader struct {
@@ -253,17 +294,17 @@ func (b *bufferedReader) readByte() (byte, error) {
 	return ch, nil
 }
 
-func (b *bufferedReader) readLine() ([]byte, error) {
+func (b *bufferedReader) readUntil(delim byte) ([]byte, error) {
 	var line []byte
 	for {
 		ch, err := b.readByte()
 		if err != nil {
 			return nil, err
 		}
-		line = append(line, ch)
-		if ch == '\n' {
+		if ch == delim {
 			return line, nil
 		}
+		line = append(line, ch)
 	}
 }
 

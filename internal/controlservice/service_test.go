@@ -6152,6 +6152,56 @@ func TestDependencyStageKeyFilesDigestExpandsGlobsDeterministically(t *testing.T
 	}
 }
 
+func TestFinalizeDependencyStagePlanExpandsPortableGlobKeyFilesForValidation(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+
+	policyProto := testRepositoryPortableDependencyPolicy()
+	policyProto.Dependencies.Blocks[0].Inputs.Files = []string{"go.*"}
+	compiled, err := policy.FromProto(policyProto)
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	plan, ok := dependencyStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected dependency stage plan")
+	}
+
+	svc := newTestService(&stubAdapter{})
+	svc.RepositoryStore = mirrors
+	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "workspace-base:test", "runtime-base:test", plan)
+	if err != nil {
+		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected finalized dependency stage plan")
+	}
+	if got, want := plan.KeyFiles, []string{"go.*"}; !slices.Equal(got, want) {
+		t.Fatalf("unexpected original key files: got %v want %v", got, want)
+	}
+	if got, want := plan.ExpandedKeyFiles, []string{"go.mod", "go.sum"}; !slices.Equal(got, want) {
+		t.Fatalf("unexpected expanded key files: got %v want %v", got, want)
+	}
+
+	command, err := dependencyStageKeyFilesDigestCommand(repository, plan.ExpandedKeyFiles)
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigestCommand returned error: %v", err)
+	}
+	script := strings.Join(command, "\n")
+	if strings.Contains(script, "go.*") {
+		t.Fatalf("expected validation command to use expanded key files, got %q", script)
+	}
+	for _, want := range []string{"go.mod", "go.sum"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected validation command to contain %q, got %q", want, script)
+		}
+	}
+}
+
 func TestDependencyStageKeyFilesDigestCommandHashesSymlinkTargets(t *testing.T) {
 	t.Parallel()
 
