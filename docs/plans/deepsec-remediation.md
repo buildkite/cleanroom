@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 14 ready for review
+**Status:** Slice 15 ready for review
 **Last reviewed:** 2026-05-30
 
 ## Summary
@@ -12,8 +12,9 @@ fixes. A post-merge re-check on 2026-05-30 scanned current `main`, processed one
 new candidate, and force-revalidated all 27 findings. That pass marked 22
 findings fixed and left 5 true positives. Slice 13 closed the 3 remaining
 remote control-plane auth findings from that set, and Slice 14 closes the
-cached Git pack authorization finding. One true positive remains: unbounded
-dynamic Git content-cache handler creation.
+cached Git pack authorization finding. Slice 15 closes the remaining dynamic
+Git content-cache handler growth finding. The 2026-05-30 DeepSec status now
+shows all 27 findings revalidated as fixed.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -488,6 +489,44 @@ Result: the cached Git pack authorization finding revalidated as fixed. The
 report now has 1 true positive remaining: unbounded dynamic Git handler
 creation.
 
+Slice 15 is implemented and ready for review. Scoped Git content-cache handlers
+now use the same lease-and-LRU pattern as OCI, fetch, and Go proxy handlers.
+The cache keeps a bounded set of scoped handlers, refreshes recency on reuse,
+evicts least-recently-used scopes when the bound is exceeded, and closes evicted
+handlers after in-flight requests release their leases. The non-Basic
+`git-upload-pack` fallback path now uses a direct Git proxy instead of the
+mirror-backed fallback, so bearer-token requests do not reuse mirror contents
+keyed only by repository URL.
+
+Focused validation run on 2026-05-30:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/Develop/cleanroom/mise.toml mise exec -- go test ./internal/gateway -run 'TestCachedGitHandler|TestGitHandlerForHost|TestContentCacheGitBasicAuthProvider|TestGitContentCacheUpstream'
+```
+
+Result: passed.
+
+Focused validation run on 2026-05-30:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/Develop/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-30:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom --force --filter internal/gateway/contentcache.go --min-severity MEDIUM --concurrency 1 --root /Users/lachlan/Develop/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec report --project-id cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom
+```
+
+Result: the dynamic Git handler creation finding revalidated as fixed. DeepSec
+status now reports 27/27 findings revalidated, with 0 true positives and 27
+fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -514,7 +553,7 @@ creation.
 | Release manifest fields are used as host cache path components | Medium | Needs fix | Slice 8: image and boot asset resource bounds |
 | Fetch cache hits can bypass per-sandbox redirect policy | Medium | Needs fix | Slice 6: gateway credential and cache authorization hardening |
 | Go proxy cache hits can bypass effective policy validation | Medium | Needs fix | Slice 6: gateway credential and cache authorization hardening |
-| Unbounded dynamic Git cache handlers can exhaust gateway memory | Medium | New true positive from re-check | Slice 15: bound dynamic Git handler creation |
+| Unbounded dynamic Git cache handlers can exhaust gateway memory | Medium | Fixed by Slice 15 | Slice 15: bound dynamic Git handler creation |
 | Snapshot storage can be orphaned when VM resume fails | Bug | Needs fix | Slice 10: darwin-vz lifecycle cleanup |
 | Portable dependency validation treats glob key files as literals | Bug | Needs fix | Slice 11: dependency validation correctness |
 | Newline-containing Git paths break batched digest calculation | Bug | Needs fix | Slice 11: dependency validation correctness |

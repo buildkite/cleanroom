@@ -185,7 +185,8 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 
 	cache := &ContentCache{
 		closer:         db,
-		gitHandlers:    make(map[string]http.Handler),
+		gitHandlers:    make(map[string]*gitHandlerEntry),
+		maxGitHandlers: defaultMaxGitHandlers,
 		ociHandlers:    make(map[string]*ociHandlerEntry),
 		maxOCIHandlers: defaultMaxOCIHandlers,
 		ociMirrorHosts: ociMirrorHosts(cfg.OCIRegistries),
@@ -262,28 +263,33 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	cache.resolveOCIRoute = func(prefix string) (ociRoute, error) {
 		return resolveOCIRegistryRoute(prefix, registryMappings)
 	}
-	cache.buildGitHandler = func(host, cacheScope string) (http.Handler, error) {
+	cache.buildGitHandler = func(host, cacheScope string) (gitHandlerEntry, error) {
 		host = strings.ToLower(strings.TrimSpace(host))
 		if host == "" {
-			return nil, fmt.Errorf("empty git host")
+			return gitHandlerEntry{}, fmt.Errorf("empty git host")
 		}
 		if len(allowedGitHosts) > 0 {
 			if _, ok := allowedGitHosts[host]; !ok {
-				return nil, fmt.Errorf("%w: %s", errGitHostNotConfiguredForCaching, host)
+				return gitHandlerEntry{}, fmt.Errorf("%w: %s", errGitHostNotConfiguredForCaching, host)
 			}
 		}
 		gitIndex, err := newScopedGitIndex(db, scopedMetadataPrefix("git:"+cacheScope))
 		if err != nil {
-			return nil, err
+			return gitHandlerEntry{}, err
 		}
-		return ccgit.NewHandler(
+		handler := ccgit.NewHandler(
 			gitIndex,
 			cafs,
 			ccgit.WithUpstream(newGitContentCacheUpstream(gitHTTPClient, logger, cfg.Credentials)),
 			ccgit.WithAllowedHosts([]string{host}),
 			ccgit.WithDownloader(dl),
 			ccgit.WithLogger(logger),
-		), nil
+		)
+		entry := gitHandlerEntry{handler: handler}
+		if closer, ok := any(handler).(interface{ Close() }); ok {
+			entry.closer = closeFunc(closer.Close)
+		}
+		return entry, nil
 	}
 	cache.buildOCIHandler = func(prefix string) (ociHandlerEntry, error) {
 		route, err := cache.resolveOCIRoute(prefix)

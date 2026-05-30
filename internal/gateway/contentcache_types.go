@@ -17,12 +17,13 @@ import (
 )
 
 const (
+	defaultMaxGitHandlers           = 32
 	defaultMaxGoProxyScopedHandlers = 32
 	defaultMaxFetchScopedHandlers   = 32
 	defaultMaxOCIHandlers           = 32
 )
 
-type gitHandlerFactory func(host, cacheScope string) (http.Handler, error)
+type gitHandlerFactory func(host, cacheScope string) (gitHandlerEntry, error)
 
 type ociHandlerFactory func(prefix string) (ociHandlerEntry, error)
 
@@ -37,6 +38,13 @@ type ociHandlerEntry struct {
 	closer       io.Closer
 	active       int
 	evicted      bool
+}
+
+type gitHandlerEntry struct {
+	handler http.Handler
+	closer  io.Closer
+	active  int
+	evicted bool
 }
 
 type goProxyScopedHandler struct {
@@ -100,7 +108,9 @@ type ContentCache struct {
 	closer io.Closer
 
 	gitMu           sync.Mutex
-	gitHandlers     map[string]http.Handler
+	gitHandlers     map[string]*gitHandlerEntry
+	gitOrder        []string
+	maxGitHandlers  int
 	buildGitHandler gitHandlerFactory
 
 	ociMu           sync.Mutex
@@ -123,8 +133,15 @@ func (c *ContentCache) Close() error {
 		return nil
 	}
 
+	closers := make([]io.Closer, 0, 4)
+	c.gitMu.Lock()
+	for _, entry := range c.gitHandlers {
+		if entry.closer != nil {
+			closers = append(closers, entry.closer)
+		}
+	}
+	c.gitMu.Unlock()
 	c.ociMu.Lock()
-	closers := make([]io.Closer, 0, len(c.ociHandlers)+4)
 	for _, entry := range c.ociHandlers {
 		if entry.closer != nil {
 			closers = append(closers, entry.closer)
@@ -170,36 +187,119 @@ func (c *ContentCache) HasGitHandler() bool {
 	return c != nil && c.buildGitHandler != nil
 }
 
-// GitHandlerForHost returns a git cache handler scoped to the requested host
-// and authorization scope.
-func (c *ContentCache) GitHandlerForHost(host, cacheScope string) (http.Handler, error) {
+// GitHandlerForHost returns a leased git cache handler scoped to the requested
+// host and authorization scope.
+func (c *ContentCache) GitHandlerForHost(host, cacheScope string) (http.Handler, func(), error) {
 	if c == nil || c.buildGitHandler == nil {
-		return nil, errors.New("git cache not configured")
+		return nil, nil, errors.New("git cache not configured")
 	}
 
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
-		return nil, errors.New("empty git host")
+		return nil, nil, errors.New("empty git host")
 	}
 	cacheScope = strings.TrimSpace(cacheScope)
 	if cacheScope == "" {
-		return nil, errors.New("empty git cache scope")
+		return nil, nil, errors.New("empty git cache scope")
 	}
 	cacheKey := host + "\x00" + cacheScope
 
 	c.gitMu.Lock()
-	defer c.gitMu.Unlock()
 
-	if handler, ok := c.gitHandlers[cacheKey]; ok {
-		return handler, nil
+	if entry, ok := c.gitHandlers[cacheKey]; ok {
+		entry.active++
+		c.touchGitHandlerLocked(cacheKey)
+		release := c.releaseGitHandler(entry)
+		c.gitMu.Unlock()
+		return entry.handler, release, nil
 	}
 
-	handler, err := c.buildGitHandler(host, cacheScope)
+	entryValue, err := c.buildGitHandler(host, cacheScope)
 	if err != nil {
-		return nil, err
+		c.gitMu.Unlock()
+		return nil, nil, err
 	}
-	c.gitHandlers[cacheKey] = handler
-	return handler, nil
+	if c.gitHandlers == nil {
+		c.gitHandlers = make(map[string]*gitHandlerEntry)
+	}
+	entry := &entryValue
+	entry.active = 1
+	c.gitHandlers[cacheKey] = entry
+	c.touchGitHandlerLocked(cacheKey)
+	evicted := c.evictGitHandlerLocked()
+	release := c.releaseGitHandler(entry)
+	c.gitMu.Unlock()
+	if evicted != nil {
+		_ = evicted.Close()
+	}
+	return entry.handler, release, nil
+}
+
+func (c *ContentCache) touchGitHandlerLocked(cacheKey string) {
+	for i, existing := range c.gitOrder {
+		if existing != cacheKey {
+			continue
+		}
+		copy(c.gitOrder[i:], c.gitOrder[i+1:])
+		c.gitOrder = c.gitOrder[:len(c.gitOrder)-1]
+		break
+	}
+	c.gitOrder = append(c.gitOrder, cacheKey)
+}
+
+func (c *ContentCache) evictGitHandlerLocked() io.Closer {
+	maxHandlers := c.maxGitHandlers
+	if maxHandlers <= 0 {
+		maxHandlers = defaultMaxGitHandlers
+	}
+	if len(c.gitOrder) <= maxHandlers {
+		return nil
+	}
+
+	evictedKey := c.gitOrder[0]
+	c.gitOrder = c.gitOrder[1:]
+	entry, ok := c.gitHandlers[evictedKey]
+	if !ok {
+		return nil
+	}
+	delete(c.gitHandlers, evictedKey)
+	if entry.active > 0 {
+		entry.evicted = true
+		return nil
+	}
+	return c.closeEvictedGitHandler(entry)
+}
+
+func (c *ContentCache) releaseGitHandler(entry *gitHandlerEntry) func() {
+	var once sync.Once
+	return func() {
+		var closer io.Closer
+		once.Do(func() {
+			c.gitMu.Lock()
+			if entry.active > 0 {
+				entry.active--
+			}
+			if entry.active == 0 && entry.evicted {
+				closer = c.closeEvictedGitHandler(entry)
+			}
+			c.gitMu.Unlock()
+		})
+		if closer != nil {
+			_ = closer.Close()
+		}
+	}
+}
+
+func (c *ContentCache) closeEvictedGitHandler(entry *gitHandlerEntry) io.Closer {
+	return closeFunc(func() {
+		c.gitMu.Lock()
+		handlerCloser := entry.closer
+		entry.closer = nil
+		c.gitMu.Unlock()
+		if handlerCloser != nil {
+			_ = handlerCloser.Close()
+		}
+	})
 }
 
 // HasOCIHandler reports whether OCI caching is configured.

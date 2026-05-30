@@ -32,13 +32,13 @@ func cachedGitOwnedScope(repoPrefixes ...string) *SandboxScope {
 	return scope
 }
 
-func (s *stubGitHostHandlerProvider) GitHandlerForHost(host, cacheScope string) (http.Handler, error) {
+func (s *stubGitHostHandlerProvider) GitHandlerForHost(host, cacheScope string) (http.Handler, func(), error) {
 	s.host = host
 	s.scope = cacheScope
 	if s.err != nil {
-		return nil, s.err
+		return nil, nil, s.err
 	}
-	return s.handler, nil
+	return s.handler, func() {}, nil
 }
 
 func cachedGitTestScope() *SandboxScope {
@@ -315,14 +315,17 @@ func TestCachedGitHandlerScopesCacheByCredentialAndOwnerAuthorization(t *testing
 	}
 }
 
-func TestCachedGitHandlerFallsBackForUploadPackWithNonBasicCredential(t *testing.T) {
+func TestCachedGitHandlerUsesDirectProxyForUploadPackWithNonBasicCredential(t *testing.T) {
 	t.Parallel()
 
-	var fallbackCalled bool
-	fallback := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fallbackCalled = true
+	fallback := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("mirror-backed fallback should not be used for non-Basic upload-pack credentials")
+	})
+	var directCalled bool
+	direct := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directCalled = true
 		if want := "/git/github.com/org/repo.git/git-upload-pack"; r.URL.Path != want {
-			t.Fatalf("expected fallback path %q, got %q", want, r.URL.Path)
+			t.Fatalf("expected direct path %q, got %q", want, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -331,7 +334,7 @@ func TestCachedGitHandlerFallsBackForUploadPackWithNonBasicCredential(t *testing
 			t.Fatal("cache handler should not be used for non-Basic upload-pack credentials")
 		}),
 	}
-	h := newCachedGitHandler(provider, fallback, nil, false, &staticCredentialProvider{headers: map[string]string{
+	h := newCachedGitHandlerWithDirectFallback(provider, fallback, direct, nil, false, &staticCredentialProvider{headers: map[string]string{
 		"https://github.com/org/repo.git": "Bearer host-token",
 	}})
 
@@ -344,13 +347,13 @@ func TestCachedGitHandlerFallsBackForUploadPackWithNonBasicCredential(t *testing
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if !fallbackCalled {
-		t.Fatal("expected fallback to be called")
+	if !directCalled {
+		t.Fatal("expected direct proxy to be called")
 	}
 	if provider.host != "" {
 		t.Fatalf("expected cache lookup to be skipped, got host %q", provider.host)
 	}
-	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonFallback)
+	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonProxied)
 }
 
 func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {

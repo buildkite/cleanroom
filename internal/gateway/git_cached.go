@@ -15,7 +15,7 @@ import (
 )
 
 type gitHostHandlerProvider interface {
-	GitHandlerForHost(host, cacheScope string) (http.Handler, error)
+	GitHandlerForHost(host, cacheScope string) (http.Handler, func(), error)
 }
 
 // cachedGitHandler wraps a content-cache git handler with cleanroom's
@@ -25,13 +25,18 @@ type gitHostHandlerProvider interface {
 type cachedGitHandler struct {
 	cache        gitHostHandlerProvider
 	fallback     http.Handler
+	direct       http.Handler
 	logger       *log.Logger
 	requireOwner bool
 	credentials  CredentialProvider
 }
 
 func newCachedGitHandler(cache gitHostHandlerProvider, fallback http.Handler, logger *log.Logger, requireOwner bool, credentials CredentialProvider) *cachedGitHandler {
-	return &cachedGitHandler{cache: cache, fallback: fallback, logger: logger, requireOwner: requireOwner, credentials: credentials}
+	return newCachedGitHandlerWithDirectFallback(cache, fallback, fallback, logger, requireOwner, credentials)
+}
+
+func newCachedGitHandlerWithDirectFallback(cache gitHostHandlerProvider, fallback, direct http.Handler, logger *log.Logger, requireOwner bool, credentials CredentialProvider) *cachedGitHandler {
+	return &cachedGitHandler{cache: cache, fallback: fallback, direct: direct, logger: logger, requireOwner: requireOwner, credentials: credentials}
 }
 
 func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -83,11 +88,11 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !cacheable {
-		h.serveFallback(w, r, scope, upstreamHost, repoPath, "git cache fallback is not configured for upload-pack requests without Basic upstream credentials")
+		h.serveDirect(w, r, scope, upstreamHost, repoPath, "direct git fallback is not configured for upload-pack requests without Basic upstream credentials")
 		return
 	}
 
-	cacheHandler, err := h.cache.GitHandlerForHost(upstreamHost, cacheScope)
+	cacheHandler, release, err := h.cache.GitHandlerForHost(upstreamHost, cacheScope)
 	if err != nil {
 		if errors.Is(err, errGitHostNotConfiguredForCaching) {
 			h.serveFallback(w, r, scope, upstreamHost, repoPath, fmt.Sprintf("git cache fallback is not configured for %s", upstreamHost))
@@ -97,6 +102,9 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, fmt.Sprintf("git cache handler unavailable for %s: %v", upstreamHost, err))
 		return
+	}
+	if release != nil {
+		defer release()
 	}
 	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
 	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonCached)
@@ -119,6 +127,18 @@ func (h *cachedGitHandler) serveFallback(w http.ResponseWriter, r *http.Request,
 	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonFallback)
 	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonFallback)
 	h.fallback.ServeHTTP(w, r)
+}
+
+func (h *cachedGitHandler) serveDirect(w http.ResponseWriter, r *http.Request, scope *SandboxScope, upstreamHost, repoPath, unavailableMessage string) {
+	if h.direct == nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
+		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, unavailableMessage)
+		return
+	}
+	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonProxied)
+	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonProxied)
+	h.direct.ServeHTTP(w, r)
 }
 
 func (h *cachedGitHandler) cacheScopeKey(ctx context.Context, scope *SandboxScope, upstreamHost, repoPath, requestType string) (string, bool, error) {
