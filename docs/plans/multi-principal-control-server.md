@@ -1,8 +1,8 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Slice 3B implemented; controlled sharing follow-ups next
-**Last reviewed:** 2026-05-28
+**Status:** Runtime exact-principal smoke implemented; controlled sharing follow-ups next
+**Last reviewed:** 2026-05-29
 
 ## Summary
 
@@ -66,6 +66,10 @@ Slice 2 is split into PR-sized enforcement work:
   issuer-level `required_claims` during OIDC validation, and updates examples
   to derive owner principal IDs from immutable provider claim IDs instead of
   reusable subject or slug strings.
+- A focused runtime smoke now starts an authenticated HTTPS control server with
+  real signed OIDC JWTs for two principals, creates one sandbox per principal,
+  and proves public CLI operations cannot cross the exact-principal boundary for
+  list, get, execute, file, and snapshot workflows.
 
 Focused validation run on 2026-05-25:
 
@@ -142,6 +146,22 @@ mise exec -- go test ./internal/runtimeconfig ./internal/authz ./internal/cli ./
 Result: passed.
 
 Slice 3B repository validation run on 2026-05-28:
+
+```text
+mise run check
+```
+
+Result: passed.
+
+Runtime exact-principal smoke validation run on 2026-05-29:
+
+```text
+mise exec -- go test ./internal/cli -run TestAuthRuntimeSmokeExactPrincipalIsolation -count=1
+```
+
+Result: passed.
+
+Runtime exact-principal repository validation run on 2026-05-29:
 
 ```text
 mise run check
@@ -855,7 +875,7 @@ CLI and integration tests:
 
 Runtime smoke test:
 
-- start a local HTTPS test server with two signed tokens
+- start a local authenticated HTTPS control server with two signed OIDC JWTs
 - create one sandbox per token
 - prove cross-principal list/get/execute/file/snapshot attempts are denied
 - prove same-principal operations still work
