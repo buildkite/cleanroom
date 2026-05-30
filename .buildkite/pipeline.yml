@@ -102,14 +102,36 @@ steps:
   - label: ":book: Examples (macOS)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
+      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
+          version: "2026.5.12"
+          install_args: gotestsum
+      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+          files: "tmp/test-engine/*.xml"
+          format: "junit"
     command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-examples-darwin-vz.sh
+    artifact_paths:
+      - "tmp/test-engine/*.xml"
+    env:
+      BUILDKITE_TEST_ENGINE_SUITE_SLUG: cleanroom-examples-darwin-vz
+      BUILDKITE_TEST_ENGINE_TEST_RUNNER: gotest
     agents:
       queue: cleanroom-mac
 
   - label: ":book: Examples (Linux)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
+      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
+          version: "2026.5.12"
+          install_args: gotestsum
+      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+          files: "tmp/test-engine/*.xml"
+          format: "junit"
     command: scripts/ci-with-host-lock.sh cleanroom-firecracker scripts/ci-examples-firecracker.sh
+    artifact_paths:
+      - "tmp/test-engine/*.xml"
+    env:
+      BUILDKITE_TEST_ENGINE_SUITE_SLUG: cleanroom-examples-firecracker
+      BUILDKITE_TEST_ENGINE_TEST_RUNNER: gotest
     agents:
       queue: cleanroom
 
