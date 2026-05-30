@@ -221,25 +221,27 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		return err
 	}
 	if opts.DryRun {
-		var files []repositorychangeset.File
+		_, patch, err := captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
+		if err != nil {
+			return err
+		}
+		patchPath, cleanupPatch, err := writeTemporaryWorkspaceCopyOutPatch(patch)
+		if err != nil {
+			return err
+		}
+		defer cleanupPatch()
+		files, err := trustedGitWorkspaceCopyOutFiles(opts.Repository.RootDir, checkout.CommitSHA, patchPath)
+		if err != nil {
+			return err
+		}
+		files, err = addGitWorkspaceCopyOutManifestReverts(opts.Repository.RootDir, checkout.CommitSHA, opts.Binding, files)
+		if err != nil {
+			return err
+		}
 		if opts.ForceCopyOut || useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
-			var patch []byte
-			files, patch, err = captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
-			if err != nil {
-				return err
-			}
-			files, err = addGitWorkspaceCopyOutManifestReverts(opts.Repository.RootDir, checkout.CommitSHA, opts.Binding, files)
-			if err != nil {
-				return err
-			}
 			if len(files) > 0 {
 				var obstaclePaths []string
 				var cleanupApply func()
-				patchPath, cleanup, err := writeTemporaryWorkspaceCopyOutPatch(patch)
-				if err != nil {
-					return err
-				}
-				defer cleanup()
 				if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files, opts.ForceCopyOut, opts.ForceOutHint); err != nil {
 					return err
 				}
@@ -259,19 +261,6 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 					return err
 				}
 			}
-		} else {
-			command := repositorychangeset.WorktreeNameStatusCommand(checkout)
-			if len(command) == 0 {
-				return errors.New("sandbox repository checkout is missing the information needed to plan workspace copy-out")
-			}
-			output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
-			if err != nil {
-				return err
-			}
-			files, err = parseGitNameStatusWorkspaceFiles(output)
-			if err != nil {
-				return err
-			}
 		}
 		entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
 		if err != nil {
@@ -280,7 +269,16 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		return printWorkspacePlan(workspacePlanOutput(ctx, opts), entries)
 	}
 
-	files, patch, err := captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
+	_, patch, err := captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
+	if err != nil {
+		return err
+	}
+	patchPath, cleanupPatch, err := writeTemporaryWorkspaceCopyOutPatch(patch)
+	if err != nil {
+		return err
+	}
+	defer cleanupPatch()
+	files, err := trustedGitWorkspaceCopyOutFiles(opts.Repository.RootDir, checkout.CommitSHA, patchPath)
 	if err != nil {
 		return err
 	}
@@ -291,11 +289,6 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	if len(files) == 0 {
 		return nil
 	}
-	patchPath, cleanupPatch, err := writeTemporaryWorkspaceCopyOutPatch(patch)
-	if err != nil {
-		return err
-	}
-	defer cleanupPatch()
 	if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files, opts.ForceCopyOut, opts.ForceOutHint); err != nil {
 		return err
 	}
@@ -836,6 +829,18 @@ func prepareGitWorkspaceCopyOutApplyPatchWithOmittedPaths(local *resolvedReposit
 		return nil, "", nil, fmt.Errorf("write workspace copy-out local apply patch: %w", err)
 	}
 	return applyFiles, patchPath, cleanup, nil
+}
+
+func trustedGitWorkspaceCopyOutFiles(localRoot, baseCommit, sandboxPatchPath string) ([]repositorychangeset.File, error) {
+	sandboxTree, err := gitWorkspaceSandboxTree(localRoot, baseCommit, sandboxPatchPath)
+	if err != nil {
+		return nil, err
+	}
+	nameStatus, err := gitOutputRaw(localRoot, nil, "diff", "--name-status", "--no-renames", "-z", strings.ToLower(strings.TrimSpace(baseCommit)), sandboxTree)
+	if err != nil {
+		return nil, fmt.Errorf("list sandbox workspace copy-out patch paths: %w", err)
+	}
+	return parseGitNameStatusWorkspaceFiles(nameStatus)
 }
 
 func resetGitWorkspaceCopyOutForceIndex(localRoot string, files []repositorychangeset.File, extraPaths []string) error {
