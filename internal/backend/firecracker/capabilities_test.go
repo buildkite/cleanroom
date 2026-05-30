@@ -28,3 +28,11 @@ func TestCapabilitiesDeclareNetworkSupport(t *testing.T) {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxPortDial)
 	}
 }
+
+func TestCapabilitiesForAdapterExposeSandboxSuspend(t *testing.T) {
+	caps := backend.CapabilitiesForAdapter(New())
+
+	if !caps[backend.CapabilitySandboxSuspend] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxSuspend)
+	}
+}

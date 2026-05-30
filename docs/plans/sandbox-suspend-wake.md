@@ -1,7 +1,7 @@
 # Transparent Sandbox Suspend And Wake Plan
 
 **Status:** Active
-**Last reviewed:** 2026-05-27
+**Last reviewed:** 2026-05-29
 **Spec references:** `docs/api.md`, `docs/snapshots.md`, `docs/backend/darwin-vz.md`
 **Related plans:** `docs/plans/system-storage-prune.md`, `docs/plans/layered-caching.md`
 
@@ -115,12 +115,19 @@ idle suspend worker when `idle_suspend_after_seconds` is positive, and
 transparent wake is bounded by `wake_timeout_seconds` or the sandbox launch
 timeout when unset.
 
-Slice 4 is implemented in this change: service metrics and logs cover backend
+Slice 4 has landed: service metrics and logs cover backend
 suspend and wake duration and outcome, and the `darwin-vz` E2E path now smokes
 manual suspend, transparent wake through command execution, file read, and local
 port exposure before terminating the sandbox.
 
-Firecracker support remains a follow-up slice.
+Slice 5 is implemented in this change: Firecracker implements same-host
+freeze/resume through its existing process pause and resume helpers, publishes
+the backend-neutral suspend capability, and the Firecracker E2E path smokes
+manual suspend, transparent wake through command execution, file read, local
+port exposure, deny-by-default egress after wake, and termination from a
+suspended state.
+
+Live hibernation and daemon-restart restore remain follow-up work.
 
 ## Target Lifecycle Model
 

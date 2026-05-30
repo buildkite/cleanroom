@@ -23,6 +23,9 @@ supported layered-cache path.
   active per-command egress rule updates.
 - Effective vCPUs are fixed at VM launch. Cleanroom reports the resolved CPU
   ceiling but does not hotplug CPUs into a running Firecracker microVM.
+- Persistent sandboxes support same-host suspend and wake by stopping and
+  continuing the Firecracker process. This is process freeze/resume, not memory
+  hibernation or daemon-restart recovery.
 - Route git egress through the shared host gateway, with embedded
   `content-cache` for Git and OCI transport caching.
 - Keep secret values out of guest env and policy files.
@@ -70,6 +73,7 @@ Current capability values (visible in `cleanroom doctor --json`):
 - `sandbox.path_remove=true`
 - `sandbox.archive_read=true`
 - `sandbox.archive_write=true`
+- `sandbox.suspend=true`
 - `network.default_deny=true`
 - `network.allowlist_egress=true`
 - `network.stage_scoped_egress=false`
