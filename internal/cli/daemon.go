@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -327,19 +326,7 @@ func validateDaemonInstallListenAuth(args []string, cfg runtimeconfig.Config) er
 	if err != nil {
 		return fmt.Errorf("validate daemon listen endpoint: %w", err)
 	}
-	if ep.Scheme == "unix" {
-		return nil
-	}
-	if cfg.Auth.Required {
-		if err := validateBearerAuthListenEndpoint(ep); err != nil {
-			return err
-		}
-		return nil
-	}
-	if daemonTCPEndpointIsLoopback(ep) {
-		return nil
-	}
-	return errors.New("daemon install with a non-loopback TCP listener requires auth.required=true; use a unix socket, loopback listener, or enable auth")
+	return validateControlPlaneListenAuth(ep, cfg, "daemon install")
 }
 
 func daemonServiceArgValue(args []string, name string) string {
@@ -349,20 +336,6 @@ func daemonServiceArgValue(args []string, name string) string {
 		}
 	}
 	return ""
-}
-
-func daemonTCPEndpointIsLoopback(ep endpoint.Endpoint) bool {
-	switch ep.Scheme {
-	case "http", "https":
-	default:
-		return false
-	}
-	parsed, err := url.Parse(strings.TrimSpace(ep.Address))
-	if err != nil {
-		return false
-	}
-	host := strings.TrimSpace(parsed.Hostname())
-	return host != "" && isLoopbackListenHost(host)
 }
 
 func (s *DaemonCommand) uninstallDaemon(ctx *runtimeContext) error {

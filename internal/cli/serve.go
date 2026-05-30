@@ -70,6 +70,9 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	if err := validateControlPlaneListenAuth(ep, ctx.Config, "cleanroom serve"); err != nil {
+		return err
+	}
 	pprofServer, err := startLocalPprofServer(s.PprofListen)
 	if err != nil {
 		return err
@@ -273,6 +276,25 @@ func (s *ServeCommand) authInterceptor(ctx *runtimeContext, ep endpoint.Endpoint
 	}.Interceptor(), nil
 }
 
+func validateControlPlaneListenAuth(ep endpoint.Endpoint, cfg runtimeconfig.Config, subject string) error {
+	if ep.Scheme == "unix" {
+		return nil
+	}
+	if cfg.Auth.Required {
+		if err := validateBearerAuthListenEndpoint(ep); err != nil {
+			return err
+		}
+		return nil
+	}
+	if tcpEndpointIsLoopback(ep) {
+		return nil
+	}
+	if strings.TrimSpace(subject) == "" {
+		subject = "control-plane listener"
+	}
+	return fmt.Errorf("%s with a non-loopback TCP listener requires auth.required=true; use a unix socket, loopback listener, or enable auth", subject)
+}
+
 func validateBearerAuthListenEndpoint(ep endpoint.Endpoint) error {
 	if ep.Scheme != "http" {
 		return nil
@@ -297,6 +319,20 @@ func isLoopbackListenHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func tcpEndpointIsLoopback(ep endpoint.Endpoint) bool {
+	switch ep.Scheme {
+	case "http", "https":
+	default:
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(ep.Address))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	return host != "" && isLoopbackListenHost(host)
 }
 
 func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, logger *log.Logger, darwinGatewayHost string, requireOwner bool) gateway.ServerConfig {
