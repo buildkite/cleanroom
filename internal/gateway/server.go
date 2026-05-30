@@ -217,10 +217,12 @@ func NewServer(cfg ServerConfig) *Server {
 
 	mux := http.NewServeMux()
 
-	// Git: prefer content-cache, fall back to mirror-backed proxy.
+	// Git: prefer content-cache, fall back to mirror-backed proxy. Upload-pack
+	// requests that cannot safely use the pack cache use a direct proxy.
 	fallbackGit := newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger, cfg.RequireOwner)
 	if cfg.ContentCache != nil && cfg.ContentCache.HasGitHandler() {
-		mux.Handle(RouteGit, newCachedGitHandler(cfg.ContentCache, fallbackGit, cfg.Logger, cfg.RequireOwner))
+		directGit := newGitHandlerWithMirrors(cfg.Credentials, nil, cfg.Logger, cfg.RequireOwner)
+		mux.Handle(RouteGit, newCachedGitHandlerWithDirectFallback(cfg.ContentCache, fallbackGit, directGit, cfg.Logger, cfg.RequireOwner, cfg.Credentials))
 	} else {
 		mux.Handle(RouteGit, fallbackGit)
 	}

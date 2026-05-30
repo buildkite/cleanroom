@@ -15,6 +15,7 @@ type stubGitHostHandlerProvider struct {
 	handler http.Handler
 	err     error
 	host    string
+	scope   string
 }
 
 func cachedGitOwnedScope(repoPrefixes ...string) *SandboxScope {
@@ -31,12 +32,13 @@ func cachedGitOwnedScope(repoPrefixes ...string) *SandboxScope {
 	return scope
 }
 
-func (s *stubGitHostHandlerProvider) GitHandlerForHost(host string) (http.Handler, error) {
+func (s *stubGitHostHandlerProvider) GitHandlerForHost(host, cacheScope string) (http.Handler, func(), error) {
 	s.host = host
+	s.scope = cacheScope
 	if s.err != nil {
-		return nil, s.err
+		return nil, nil, s.err
 	}
-	return s.handler, nil
+	return s.handler, func() {}, nil
 }
 
 func cachedGitTestScope() *SandboxScope {
@@ -79,7 +81,7 @@ func TestCachedGitHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for denied host")
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false, nil)
 
 	req := httptest.NewRequest("GET", "/git/evil.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -102,7 +104,7 @@ func TestCachedGitHandlerRejectsReceivePack(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for receive-pack")
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false, nil)
 
 	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-receive-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -122,7 +124,7 @@ func TestCachedGitHandlerNoScope(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called without scope")
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, false, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	w := httptest.NewRecorder()
@@ -139,7 +141,7 @@ func TestCachedGitHandlerRequiresOwnerWhenConfigured(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called without owner")
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, true)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, true, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -164,7 +166,7 @@ func TestCachedGitHandlerDeniesRepoOutsideGatewayEnvelope(t *testing.T) {
 			t.Fatal("backend should not be called for unauthorized repo")
 		}),
 	}
-	h := newCachedGitHandler(provider, nil, nil, true)
+	h := newCachedGitHandler(provider, nil, nil, true, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.com/buildkite/private.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitOwnedScope("github.com/buildkite/cleanroom"))
@@ -189,7 +191,7 @@ func TestCachedGitHandlerAllowsRepoInGatewayEnvelope(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, true)
+	h := newCachedGitHandler(&stubGitHostHandlerProvider{handler: backend}, nil, nil, true, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.com/buildkite/cleanroom.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitOwnedScope("github.com/buildkite/cleanroom"))
@@ -213,7 +215,7 @@ func TestCachedGitHandlerStripsGitPrefixAndDelegates(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	provider := &stubGitHostHandlerProvider{handler: backend}
-	h := newCachedGitHandler(provider, nil, nil, false)
+	h := newCachedGitHandler(provider, nil, nil, false, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -243,7 +245,7 @@ func TestCachedGitHandlerUploadPackDelegates(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	provider := &stubGitHostHandlerProvider{handler: backend}
-	h := newCachedGitHandler(provider, nil, nil, false)
+	h := newCachedGitHandler(provider, nil, nil, false, nil)
 
 	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
@@ -266,6 +268,94 @@ func TestCachedGitHandlerUploadPackDelegates(t *testing.T) {
 	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonCached)
 }
 
+func TestCachedGitHandlerScopesCacheByCredentialAndOwnerAuthorization(t *testing.T) {
+	t.Parallel()
+
+	h := newCachedGitHandler(nil, nil, nil, true, &staticCredentialProvider{headers: map[string]string{
+		"https://github.com/buildkite/cleanroom.git": "Basic dXNlcjpwYXNz",
+	}})
+	scopeA := cachedGitOwnedScope("github.com/buildkite/cleanroom")
+	scopeA.Policy.Hash = "policy-a"
+	keyA, cacheable, err := h.cacheScopeKey(context.Background(), scopeA, "github.com", "/buildkite/cleanroom.git/git-upload-pack", "upload-pack")
+	if err != nil {
+		t.Fatalf("cache scope A: %v", err)
+	}
+	if !cacheable {
+		t.Fatal("expected Basic credential to be cacheable")
+	}
+
+	h.credentials = &staticCredentialProvider{headers: map[string]string{
+		"https://github.com/buildkite/cleanroom.git": "Basic b3RoZXI6cGFzcw==",
+	}}
+	keyB, cacheable, err := h.cacheScopeKey(context.Background(), scopeA, "github.com", "/buildkite/cleanroom.git/git-upload-pack", "upload-pack")
+	if err != nil {
+		t.Fatalf("cache scope B: %v", err)
+	}
+	if !cacheable {
+		t.Fatal("expected second Basic credential to be cacheable")
+	}
+	if keyA == keyB {
+		t.Fatal("expected different credentials to use different git cache scopes")
+	}
+
+	h.credentials = &staticCredentialProvider{headers: map[string]string{
+		"https://github.com/buildkite/cleanroom.git": "Basic dXNlcjpwYXNz",
+	}}
+	scopeB := cachedGitOwnedScope("github.com/buildkite/")
+	scopeB.Policy.Hash = "policy-a"
+	keyC, cacheable, err := h.cacheScopeKey(context.Background(), scopeB, "github.com", "/buildkite/cleanroom.git/git-upload-pack", "upload-pack")
+	if err != nil {
+		t.Fatalf("cache scope C: %v", err)
+	}
+	if !cacheable {
+		t.Fatal("expected owner-authorized Basic credential to be cacheable")
+	}
+	if keyA == keyC {
+		t.Fatal("expected different owner authorization envelopes to use different git cache scopes")
+	}
+}
+
+func TestCachedGitHandlerUsesDirectProxyForUploadPackWithNonBasicCredential(t *testing.T) {
+	t.Parallel()
+
+	fallback := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("mirror-backed fallback should not be used for non-Basic upload-pack credentials")
+	})
+	var directCalled bool
+	direct := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directCalled = true
+		if want := "/git/github.com/org/repo.git/git-upload-pack"; r.URL.Path != want {
+			t.Fatalf("expected direct path %q, got %q", want, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	provider := &stubGitHostHandlerProvider{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("cache handler should not be used for non-Basic upload-pack credentials")
+		}),
+	}
+	h := newCachedGitHandlerWithDirectFallback(provider, fallback, direct, nil, false, &staticCredentialProvider{headers: map[string]string{
+		"https://github.com/org/repo.git": "Bearer host-token",
+	}})
+
+	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-upload-pack", nil)
+	req = withScope(req, cachedGitTestScope())
+	req, obs := withGatewayRequestObservability(req)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !directCalled {
+		t.Fatal("expected direct proxy to be called")
+	}
+	if provider.host != "" {
+		t.Fatalf("expected cache lookup to be skipped, got host %q", provider.host)
+	}
+	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonProxied)
+}
+
 func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {
 	t.Parallel()
 
@@ -278,7 +368,7 @@ func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {
 	provider := &stubGitHostHandlerProvider{
 		err: fmt.Errorf("%w: github.enterprise.test", errGitHostNotConfiguredForCaching),
 	}
-	h := newCachedGitHandler(provider, fallback, nil, false)
+	h := newCachedGitHandler(provider, fallback, nil, false, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.enterprise.test/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, &SandboxScope{
@@ -325,7 +415,7 @@ func TestCachedGitHandlerFallsBackForNonDotGitRemotes(t *testing.T) {
 			t.Fatal("cache handler should not be used for non-.git remotes")
 		}),
 	}
-	h := newCachedGitHandler(provider, fallback, nil, false)
+	h := newCachedGitHandler(provider, fallback, nil, false, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())

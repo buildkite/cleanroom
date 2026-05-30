@@ -24,7 +24,9 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
-type comparableHandler struct{}
+type comparableHandler struct {
+	id int
+}
 
 func (comparableHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
 
@@ -130,6 +132,101 @@ func TestContentCacheGitBasicAuthProviderIgnoresNonBasicCredential(t *testing.T)
 	if username != "" || password != "" {
 		t.Fatalf("expected non-Basic credential to be ignored, got (%q, %q)", username, password)
 	}
+}
+
+func TestGitHandlerForHostPartitionsByCacheScope(t *testing.T) {
+	t.Parallel()
+
+	cache := &ContentCache{
+		gitHandlers: make(map[string]*gitHandlerEntry),
+		buildGitHandler: func(host, cacheScope string) (gitHandlerEntry, error) {
+			return gitHandlerEntry{handler: &comparableHandler{}}, nil
+		},
+	}
+
+	handlerA, releaseA, err := cache.GitHandlerForHost("GitHub.COM", "scope-a")
+	if err != nil {
+		t.Fatalf("handler A: %v", err)
+	}
+	defer releaseA()
+	reusedA, releaseReusedA, err := cache.GitHandlerForHost("github.com", "scope-a")
+	if err != nil {
+		t.Fatalf("reused handler A: %v", err)
+	}
+	defer releaseReusedA()
+	handlerB, releaseB, err := cache.GitHandlerForHost("github.com", "scope-b")
+	if err != nil {
+		t.Fatalf("handler B: %v", err)
+	}
+	defer releaseB()
+
+	if reusedA != handlerA {
+		t.Fatal("expected same host and cache scope to reuse git handler")
+	}
+	if handlerB == handlerA {
+		t.Fatal("expected different cache scopes to use different git handlers")
+	}
+}
+
+func TestGitHandlerForHostEvictsLeastRecentlyUsedHandler(t *testing.T) {
+	t.Parallel()
+
+	var closed []string
+	cache := &ContentCache{
+		gitHandlers:    make(map[string]*gitHandlerEntry),
+		maxGitHandlers: 2,
+		buildGitHandler: func(host, cacheScope string) (gitHandlerEntry, error) {
+			scope := cacheScope
+			return gitHandlerEntry{
+				handler: &comparableHandler{},
+				closer: closeFunc(func() {
+					closed = append(closed, scope)
+				}),
+			}, nil
+		},
+	}
+
+	handlerA, releaseA, err := cache.GitHandlerForHost("github.com", "scope-a")
+	if err != nil {
+		t.Fatalf("handler A: %v", err)
+	}
+	_, releaseB, err := cache.GitHandlerForHost("github.com", "scope-b")
+	if err != nil {
+		t.Fatalf("handler B: %v", err)
+	}
+	reusedA, releaseReusedA, err := cache.GitHandlerForHost("github.com", "scope-a")
+	if err != nil {
+		t.Fatalf("reused handler A: %v", err)
+	}
+	if reusedA != handlerA {
+		t.Fatal("expected scope-a handler to be reused before eviction")
+	}
+	_, releaseC, err := cache.GitHandlerForHost("github.com", "scope-c")
+	if err != nil {
+		t.Fatalf("handler C: %v", err)
+	}
+
+	if got, want := len(cache.gitHandlers), 2; got != want {
+		t.Fatalf("expected %d cached handlers, got %d", want, got)
+	}
+	if _, ok := cache.gitHandlers["github.com\x00scope-a"]; !ok {
+		t.Fatal("expected scope-a to remain cached after recent reuse")
+	}
+	if _, ok := cache.gitHandlers["github.com\x00scope-c"]; !ok {
+		t.Fatal("expected scope-c to be cached")
+	}
+	if len(closed) != 0 {
+		t.Fatalf("expected active evicted handler not to close yet, got %v", closed)
+	}
+
+	releaseB()
+	if len(closed) != 1 || closed[0] != "scope-b" {
+		t.Fatalf("expected scope-b to close after release, got %v", closed)
+	}
+
+	releaseA()
+	releaseReusedA()
+	releaseC()
 }
 
 func TestGitContentCacheUpstreamFailsBeforeHTTPWhenCredentialsFail(t *testing.T) {

@@ -109,11 +109,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
 	rubyGemsHTTPClient := newRubyGemsContentCacheHTTPClient(cfg.Credentials)
 
-	packIdx, err := metadb.NewEnvelopeIndex(db, "git", "pack", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create git pack index: %w", err)
-	}
 	manifestIdx, err := metadb.NewEnvelopeIndex(db, "oci", "manifest", 24*time.Hour)
 	if err != nil {
 		_ = db.Close()
@@ -164,7 +159,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		return nil, fmt.Errorf("create rubygems gemspec index: %w", err)
 	}
 
-	gitIndex := ccgit.NewIndex(packIdx)
 	sumDBIndex := ccgoproxy.NewSumdbIndex(sumDBIdx)
 	ociIndex := ccoci.NewIndex(imageIdx, manifestIdx, blobIdx)
 	rubyGemsIndex := ccrubygems.NewIndex(
@@ -191,7 +185,8 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 
 	cache := &ContentCache{
 		closer:         db,
-		gitHandlers:    make(map[string]http.Handler),
+		gitHandlers:    make(map[string]*gitHandlerEntry),
+		maxGitHandlers: defaultMaxGitHandlers,
 		ociHandlers:    make(map[string]*ociHandlerEntry),
 		maxOCIHandlers: defaultMaxOCIHandlers,
 		ociMirrorHosts: ociMirrorHosts(cfg.OCIRegistries),
@@ -268,24 +263,33 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	cache.resolveOCIRoute = func(prefix string) (ociRoute, error) {
 		return resolveOCIRegistryRoute(prefix, registryMappings)
 	}
-	cache.buildGitHandler = func(host string) (http.Handler, error) {
+	cache.buildGitHandler = func(host, cacheScope string) (gitHandlerEntry, error) {
 		host = strings.ToLower(strings.TrimSpace(host))
 		if host == "" {
-			return nil, fmt.Errorf("empty git host")
+			return gitHandlerEntry{}, fmt.Errorf("empty git host")
 		}
 		if len(allowedGitHosts) > 0 {
 			if _, ok := allowedGitHosts[host]; !ok {
-				return nil, fmt.Errorf("%w: %s", errGitHostNotConfiguredForCaching, host)
+				return gitHandlerEntry{}, fmt.Errorf("%w: %s", errGitHostNotConfiguredForCaching, host)
 			}
 		}
-		return ccgit.NewHandler(
+		gitIndex, err := newScopedGitIndex(db, scopedMetadataPrefix("git:"+cacheScope))
+		if err != nil {
+			return gitHandlerEntry{}, err
+		}
+		handler := ccgit.NewHandler(
 			gitIndex,
 			cafs,
 			ccgit.WithUpstream(newGitContentCacheUpstream(gitHTTPClient, logger, cfg.Credentials)),
 			ccgit.WithAllowedHosts([]string{host}),
 			ccgit.WithDownloader(dl),
 			ccgit.WithLogger(logger),
-		), nil
+		)
+		entry := gitHandlerEntry{handler: handler}
+		if closer, ok := any(handler).(interface{ Close() }); ok {
+			entry.closer = closeFunc(closer.Close)
+		}
+		return entry, nil
 	}
 	cache.buildOCIHandler = func(prefix string) (ociHandlerEntry, error) {
 		route, err := cache.resolveOCIRoute(prefix)
@@ -412,6 +416,14 @@ func newScopedFetchIndex(db metadb.EnvelopeStore, policyPrefix string) (*ccfetch
 		return nil, fmt.Errorf("create scoped fetch resource index: %w", err)
 	}
 	return ccfetch.NewIndex(resourceIdx), nil
+}
+
+func newScopedGitIndex(db metadb.EnvelopeStore, scopePrefix string) (*ccgit.Index, error) {
+	packIdx, err := newScopedEnvelopeIndex(db, "git", "pack", scopePrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped git pack index: %w", err)
+	}
+	return ccgit.NewIndex(packIdx), nil
 }
 
 func newScopedEnvelopeIndex(db metadb.EnvelopeStore, protocol, kind, policyPrefix string, ttl time.Duration) (*metadb.EnvelopeIndex, error) {
