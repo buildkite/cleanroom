@@ -1,13 +1,17 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 12 ready for review
+**Status:** Slice 13 ready for review
 **Last reviewed:** 2026-05-30
 
 ## Summary
 
 DeepSec revalidated 26 findings against the Cleanroom checkout on 2026-05-27.
-All 26 are treated as true positives that need code, configuration, or CI fixes.
+All 26 were treated as true positives that needed code, configuration, or CI
+fixes. A post-merge re-check on 2026-05-30 scanned current `main`, processed one
+new candidate, and force-revalidated all 27 findings. That pass marked 22
+findings fixed and left 5 true positives; Slice 13 closes the 3 remaining
+remote control-plane auth findings from that set.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -186,8 +190,10 @@ Result: passed.
 Current `main` also includes owner-scoped gateway authorization for Git and OCI
 cache routes. Auth-required Git cache requests now require an authenticated
 sandbox owner and an authorized repository envelope before the gateway reaches
-content-cache or host Git credentials, closing the cached Git pack response
-authorization finding.
+content-cache or host Git credentials. The 2026-05-30 DeepSec re-check showed
+that this is only a partial fix for Git pack caching, because local/no-owner
+cache hits and empty or non-Basic credential cases can still cross authorization
+boundaries; Slice 14 tracks the remaining fix.
 
 Slice 6b is implemented and ready for review. OCI registry handler creation is
 now bounded by a small LRU cache, so request-controlled registry prefixes cannot
@@ -382,6 +388,67 @@ MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bo
 
 Result: passed.
 
+Post-merge DeepSec re-check from the main checkout on 2026-05-30:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec scan --project-id cleanroom --root /Users/lachlan/Develop/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec process --project-id cleanroom --concurrency 1
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom --force --concurrency 5 --root /Users/lachlan/Develop/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec report --project-id cleanroom
+```
+
+Result: scan tracked 63 files, the one new pending file produced the
+`Unbounded dynamic Git cache handlers can exhaust gateway memory` medium
+finding, and the force revalidation returned 5 true positives, 22 fixed,
+0 false positives, and 0 uncertain verdicts.
+
+Slice 13 is implemented and ready for review. Direct `cleanroom serve` now uses
+the same listener/auth guard as daemon installs: Unix sockets and loopback
+HTTP(S) listeners can remain unauthenticated, while non-loopback HTTP(S)
+control-plane listeners require `auth.required=true`. Non-loopback plain HTTP
+still remains invalid for bearer auth, so shared servers must use HTTPS plus
+OIDC bearer authentication. The remote-access docs and API endpoint model now
+state this requirement.
+
+Focused validation run on 2026-05-30:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/Develop/cleanroom/mise.toml mise exec -- go test ./internal/cli -run 'TestValidate(ControlPlaneListenAuth|BearerAuthListenEndpoint)|TestDaemonInstall(RejectsNonLoopbackTCPWithoutAuth|AllowsNonLoopbackHTTPSWithAuth|RejectsNonLoopbackHTTPWithAuth)|TestServeCommandRunServerStartsAndStopsOnContextCancel'
+```
+
+Result: passed.
+
+Focused validation run on 2026-05-30:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/Develop/cleanroom/mise.toml mise exec -- go test ./internal/cli
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-30:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/Develop/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-30:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom --force --filter internal/controlserver --min-severity HIGH --concurrency 2 --root /Users/lachlan/Develop/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom --force --filter proto/cleanroom/v1/control.proto --min-severity HIGH --concurrency 1 --root /Users/lachlan/Develop/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec report --project-id cleanroom
+```
+
+Result: the two `internal/controlserver` findings and the proto control-plane
+surface finding revalidated as fixed. The report now has 2 true positives
+remaining: cached Git pack authorization and unbounded dynamic Git handler
+creation.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -389,16 +456,16 @@ Result: passed.
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
-| Control-plane RPC handlers are reachable without authentication | High | Needs fix | Slice 3: multi-principal control-server enforcement |
-| Remote control-plane RPCs are exposed without authentication | High | Needs fix | Slice 3: multi-principal control-server enforcement |
-| Sandbox port dial RPC lacks caller authentication and authorization | High | Needs fix | Slice 3: multi-principal control-server enforcement |
+| Control-plane RPC handlers are reachable without authentication | High | Fixed by re-check slice | Slice 13: require auth for non-loopback serve listeners |
+| Remote control-plane RPCs are exposed without authentication | High | Fixed by re-check slice | Slice 13: require auth for non-loopback serve listeners |
+| Sandbox port dial RPC lacks caller authentication and authorization | High | Fixed by re-check slice | Slice 13: require auth for non-loopback serve listeners |
 | Network control-plane listeners do not enforce configured caller authentication | High | Needs fix | Slice 3: multi-principal control-server enforcement |
 | Daemon install can expose the unauthenticated control plane on TCP | High | Needs fix | Slice 4a: daemon install listener and argument hardening |
 | Newlines in daemon arguments can inject systemd unit directives | High | Needs fix | Slice 4a: daemon install listener and argument hardening |
 | Privileged DNS install writes and chowns certificate paths in a user-controlled directory without symlink checks | High | Needs fix | Slice 4b: DNS and exposure certificate path hardening |
 | Privileged certificate writes follow user-controlled symlinks | High | Needs fix | Slice 4b: DNS and exposure certificate path hardening |
 | Remote URL path can inject fields into git credential fill lookup | High | Needs fix | Slice 6: gateway credential and cache authorization hardening |
-| Cached Git pack responses are not scoped to current repo authorization | High | Needs fix | Slice 6: gateway credential and cache authorization hardening |
+| Cached Git pack responses are not scoped to current repo authorization | High | Still true positive after re-check | Slice 14: Git pack cache authorization binding |
 | Policy protobufs can request allow-all sandbox egress | High | Needs fix | Slice 7: policy compile and protobuf validation hardening |
 | Repository-controlled submodule URLs are mirrored by the host without policy validation | High | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Unbounded OCI handler creation from request-controlled registry prefixes | High bug | Needs fix | Slice 6: gateway credential and cache authorization hardening |
@@ -408,6 +475,7 @@ Result: passed.
 | Release manifest fields are used as host cache path components | Medium | Needs fix | Slice 8: image and boot asset resource bounds |
 | Fetch cache hits can bypass per-sandbox redirect policy | Medium | Needs fix | Slice 6: gateway credential and cache authorization hardening |
 | Go proxy cache hits can bypass effective policy validation | Medium | Needs fix | Slice 6: gateway credential and cache authorization hardening |
+| Unbounded dynamic Git cache handlers can exhaust gateway memory | Medium | New true positive from re-check | Slice 15: bound dynamic Git handler creation |
 | Snapshot storage can be orphaned when VM resume fails | Bug | Needs fix | Slice 10: darwin-vz lifecycle cleanup |
 | Portable dependency validation treats glob key files as literals | Bug | Needs fix | Slice 11: dependency validation correctness |
 | Newline-containing Git paths break batched digest calculation | Bug | Needs fix | Slice 11: dependency validation correctness |
@@ -427,6 +495,9 @@ Result: passed.
 10. Clean up darwin-vz snapshot storage when resume fails.
 11. Fix dependency and Git path validation edge cases.
 12. Apply guest workspace patches before trusting copy-out paths.
+13. Require auth for direct non-loopback `cleanroom serve` listeners.
+14. Finish Git pack cache authorization binding.
+15. Bound dynamic Git content-cache handler creation.
 
 ## Key Learnings From Pressure-Testing
 

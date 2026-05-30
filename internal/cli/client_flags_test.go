@@ -128,6 +128,69 @@ func TestValidateBearerAuthListenEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidateControlPlaneListenAuth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ep      endpoint.Endpoint
+		cfg     runtimeconfig.Config
+		wantErr string
+	}{
+		{
+			name: "unix without auth",
+			ep:   endpoint.Endpoint{Scheme: "unix", Address: "/tmp/cleanroom.sock"},
+		},
+		{
+			name: "loopback http without auth",
+			ep:   endpoint.Endpoint{Scheme: "http", Address: "http://127.0.0.1:7777"},
+		},
+		{
+			name: "loopback https without auth",
+			ep:   endpoint.Endpoint{Scheme: "https", Address: "https://localhost:7777"},
+		},
+		{
+			name:    "non-loopback https without auth",
+			ep:      endpoint.Endpoint{Scheme: "https", Address: "https://0.0.0.0:7777"},
+			wantErr: "requires auth.required=true",
+		},
+		{
+			name: "non-loopback https with auth",
+			ep:   endpoint.Endpoint{Scheme: "https", Address: "https://0.0.0.0:7777"},
+			cfg: runtimeconfig.Config{
+				Auth: runtimeconfig.AuthConfig{Required: true},
+			},
+		},
+		{
+			name: "non-loopback http with auth",
+			ep:   endpoint.Endpoint{Scheme: "http", Address: "http://0.0.0.0:7777"},
+			cfg: runtimeconfig.Config{
+				Auth: runtimeconfig.AuthConfig{Required: true},
+			},
+			wantErr: "non-loopback http listen endpoint",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateControlPlaneListenAuth(tt.ep, tt.cfg, "cleanroom serve")
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateControlPlaneListenAuth returned error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected endpoint validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateBearerAuthClientEndpoint(t *testing.T) {
 	t.Parallel()
 

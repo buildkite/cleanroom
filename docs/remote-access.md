@@ -4,14 +4,15 @@ The Cleanroom server supports HTTP and HTTPS listener modes for remote access.
 
 ## HTTP
 
-HTTP remote access is intended for trusted networks or local development.
+HTTP listeners are accepted only on loopback addresses. That remains true when
+bearer authentication is enabled, because bearer tokens are not accepted on
+non-loopback plain HTTP. Use HTTP for local development only.
 
 ```bash
-cleanroom serve --listen http://0.0.0.0:7777
+cleanroom serve --listen http://127.0.0.1:7777
 ```
 
-When `auth.required` is enabled, bearer-token authentication is only accepted
-on HTTPS or loopback HTTP listeners. Use HTTPS for shared servers.
+Use HTTPS plus `auth.required` for shared servers.
 
 ## HTTPS
 
@@ -22,6 +23,8 @@ cleanroom serve --listen https://0.0.0.0:7777 \
   --tls-cert /path/to/server.pem \
   --tls-key /path/to/server.key
 ```
+
+Non-loopback HTTPS listeners require `auth.required: true`.
 
 ## OIDC bearer authentication
 

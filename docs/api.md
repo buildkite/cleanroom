@@ -61,6 +61,9 @@ HTTP endpoints are also supported:
 - `http://host:port` for direct HTTP
 - `https://host:port` for TLS transport
 
+Non-loopback server listeners require `auth.required: true`; bearer
+authentication is only accepted over HTTPS or loopback HTTP.
+
 ## 4) API Surface (Minimal v1)
 
 Two services are sufficient.
