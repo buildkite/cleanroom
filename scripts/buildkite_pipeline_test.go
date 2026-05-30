@@ -47,6 +47,10 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
     command: go test ./...`,
+		`- label: ":closed_lock_with_key: Auth OIDC smoke"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: scripts/ci-auth-oidc-smoke.sh`,
 		`- label: ":apple: E2E (darwin-vz)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
@@ -94,6 +98,9 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 	if !strings.Contains(pipeline, "command: scripts/ci-buildkite-release.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the Buildkite release publish step")
 	}
+	if !strings.Contains(pipeline, "command: scripts/ci-auth-oidc-smoke.sh") {
+		t.Fatalf("expected .buildkite/pipeline.yml to include the Buildkite OIDC auth smoke step")
+	}
 	for _, needle := range []string{
 		".buildkite/hooks/pre-command",
 		"scripts/base-image-tag.sh",
@@ -101,6 +108,7 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		"scripts/e2e-observability.sh",
 		"scripts/ci-with-host-lock.sh",
 		"scripts/ci-go-test-engine.sh",
+		"scripts/ci-auth-oidc-smoke.sh",
 		"scripts/ci-example-smoke.sh",
 		"scripts/ci-examples-firecracker.sh",
 		"scripts/ci-examples-darwin-vz.sh",
@@ -202,6 +210,51 @@ func TestBuildkitePreCommandHookMintsTestEngineOIDCToken(t *testing.T) {
 	} {
 		if !strings.Contains(hook, needle) {
 			t.Fatalf("expected .buildkite/hooks/pre-command to contain %q", needle)
+		}
+	}
+}
+
+func TestBuildkiteAuthOIDCSmokeUsesRealBuildkiteToken(t *testing.T) {
+	t.Parallel()
+
+	info, err := os.Stat("ci-auth-oidc-smoke.sh")
+	if err != nil {
+		t.Fatalf("stat ci-auth-oidc-smoke.sh: %v", err)
+	}
+	if info.Mode()&0111 == 0 {
+		t.Fatalf("expected ci-auth-oidc-smoke.sh to be executable")
+	}
+
+	content, err := os.ReadFile("ci-auth-oidc-smoke.sh")
+	if err != nil {
+		t.Fatalf("read ci-auth-oidc-smoke.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`buildkite-agent oidc request-token`,
+		`--subject-claim pipeline_id`,
+		`--claim organization_id,pipeline_id`,
+		`https://agent.buildkite.com/.well-known/jwks`,
+		`required_claims:`,
+		`resource.owner.principal_id == principal.id`,
+		`resource.owner.scope == principal.scope`,
+		`expect_auth_check "allowed sandbox create" true`,
+		`expect_auth_check "denied sandbox create for another repository" false`,
+		`expect_auth_check "allowed same-owner sandbox get" true`,
+		`expect_auth_check "denied cross-principal sandbox get" false`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-auth-oidc-smoke.sh to contain %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		`cat "$token_path"`,
+		`echo "$token`,
+		`set -x`,
+	} {
+		if strings.Contains(script, needle) {
+			t.Fatalf("expected ci-auth-oidc-smoke.sh not to expose the token through %q", needle)
 		}
 	}
 }
@@ -335,6 +388,7 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 		"ci-cleanroom-e2e.sh",
 		"ci-with-host-lock.sh",
 		"ci-go-test-engine.sh",
+		"ci-auth-oidc-smoke.sh",
 		"ci-example-smoke.sh",
 		"ci-examples-firecracker.sh",
 		"ci-examples-darwin-vz.sh",
@@ -398,6 +452,7 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 		`scripts/e2e-observability.sh`,
 		`scripts/ci-with-host-lock.sh`,
 		`scripts/ci-go-test-engine.sh`,
+		`scripts/ci-auth-oidc-smoke.sh`,
 		`scripts/ci-example-smoke.sh`,
 		`scripts/ci-examples-firecracker.sh`,
 		`scripts/ci-examples-darwin-vz.sh`,

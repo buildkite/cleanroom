@@ -6,6 +6,7 @@ The public repo owns the pipeline definition and the product-facing CI scripts:
 
 - `.buildkite/pipeline.yml`
 - `scripts/ci-with-host-lock.sh`
+- `scripts/ci-auth-oidc-smoke.sh`
 - `scripts/ci-cleanroom-e2e.sh`
 - `scripts/ci-darwin-vz-e2e.sh`
 - `scripts/ci-darwin-vz-filehandle-e2e.sh`
@@ -23,6 +24,15 @@ default; set `CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT` or
 `BUILDKITE_LOCK_WAIT_TIMEOUT` to override that duration.
 CI agent configuration is responsible for giving concurrent jobs distinct
 checkout directories before the command wrapper starts.
+
+The auth OIDC smoke runs on hosted agents and requests a short-lived token from
+the Buildkite agent issuer. By default it derives the expected organization and
+pipeline IDs from the minted token, then validates the same token through
+`cleanroom auth check` using the live Buildkite JWKS. It also checks
+owner-scoped `sandbox.get` allow/deny decisions with supplied owner metadata.
+Set
+`CLEANROOM_AUTH_OIDC_ORGANIZATION_ID` or `CLEANROOM_AUTH_OIDC_PIPELINE_ID` if
+the pipeline should fail when those immutable IDs drift.
 
 Cleanroom no longer builds managed `darwin-vz` kernels during its release
 pipeline. The experimental Apple Silicon `darwin-vz` minimal rootfs-profile
