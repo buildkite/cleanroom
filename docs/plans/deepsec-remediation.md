@@ -1,8 +1,8 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 10 ready for review
-**Last reviewed:** 2026-05-29
+**Status:** Slice 11 ready for review
+**Last reviewed:** 2026-05-30
 
 ## Summary
 
@@ -307,6 +307,50 @@ MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bo
 Result: passed.
 
 Repository validation run on 2026-05-29:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Slice 11 is implemented and ready for review. Git file digest batching now
+resolves requested paths to blob object IDs through NUL-delimited `ls-tree` and
+`ls-files` output before streaming those object IDs through portable
+`git cat-file --batch` reads. Repository paths containing newlines are handled
+as single paths without depending on newer Git `cat-file -Z` support. Portable
+dependency-stage validation also records the expanded dependency key-file path
+list from the same host-side glob expansion used to build the cache key, then
+validates those concrete paths inside the restored sandbox instead of treating
+original glob patterns as literal files.
+
+Focused validation run on 2026-05-29:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/gitbatch ./internal/controlservice
+```
+
+Result: passed.
+
+Focused CI-regression validation run on 2026-05-30 after Buildkite Linux
+reported `git cat-file` EOFs:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/gitbatch ./internal/controlservice ./internal/repositorychangeset
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-29:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Repository validation rerun on 2026-05-30 after removing the newer Git
+`cat-file -Z` dependency:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
