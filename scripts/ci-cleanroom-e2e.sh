@@ -72,6 +72,19 @@ verify_helper_capabilities() {
   fi
 }
 
+choose_local_tcp_port() {
+  local port
+  for _ in $(seq 1 50); do
+    port=$((20000 + RANDOM % 20000))
+    if ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1; then
+      printf '%s\n' "$port"
+      return 0
+    fi
+  done
+  echo "could not find an available local tcp port" >&2
+  return 1
+}
+
 # purge_stale_cleanroom_resources removes TAP devices, iptables rules,
 # and firecracker processes left over from a previous run that crashed
 # before cleanup.
@@ -127,6 +140,10 @@ cleanup() {
     "./dist/cleanroom" \
     "${listen_endpoint:-}" \
     "${tmpdir:-}" || true
+  if [[ -n "${exposure_pid:-}" ]]; then
+    kill "$exposure_pid" >/dev/null 2>&1 || true
+    wait "$exposure_pid" >/dev/null 2>&1 || true
+  fi
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
     wait "$srv_pid" >/dev/null 2>&1 || true
@@ -288,6 +305,121 @@ if ! grep -q '^persisted-data$' "$tmpdir/persist-download.out"; then
   exit 1
 fi
 
+echo "--- :pause_button: Suspend/wake lifecycle smoke"
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$sandbox_id"
+./dist/cleanroom sandbox inspect --host "$listen_endpoint" "$sandbox_id" >"$tmpdir/suspend-inspect.out"
+if ! grep -q '^status: suspended$' "$tmpdir/suspend-inspect.out"; then
+  echo "expected sandbox to inspect as suspended" >&2
+  cat "$tmpdir/suspend-inspect.out" >&2 || true
+  exit 1
+fi
+
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'printf after-wake >/tmp/firecracker-suspend-wake.txt; echo command-after-wake' | tee "$tmpdir/wake-exec.out"
+if ! grep -q '^command-after-wake$' "$tmpdir/wake-exec.out"; then
+  echo "expected command-after-wake output missing" >&2
+  exit 1
+fi
+
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$sandbox_id"
+./dist/download-sandbox-file \
+  --host "$listen_endpoint" \
+  --sandbox-id "$sandbox_id" \
+  --path /tmp/firecracker-suspend-wake.txt \
+  --timeout 45s \
+  --max-bytes 4096 >"$tmpdir/wake-file-download.out"
+if ! grep -q '^after-wake$' "$tmpdir/wake-file-download.out"; then
+  echo "expected downloaded wake file content missing" >&2
+  cat "$tmpdir/wake-file-download.out" >&2 || true
+  exit 1
+fi
+
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$sandbox_id"
+# shellcheck disable=SC2016 # Guest-side script must keep $status for the guest shell.
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc '
+if ! command -v wget >/dev/null 2>&1; then
+  echo "guest image missing wget; cannot verify post-wake gateway deny" >&2
+  exit 2
+fi
+set +e
+http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 10 -q -O /dev/null https://buildkite.com
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "non-allowlisted egress succeeded after wake" >&2
+  exit 1
+fi
+echo gateway-deny-after-wake
+' | tee "$tmpdir/wake-gateway-deny.out"
+if ! grep -q '^gateway-deny-after-wake$' "$tmpdir/wake-gateway-deny.out"; then
+  echo "expected gateway deny confirmation after wake" >&2
+  cat "$tmpdir/wake-gateway-deny.out" >&2 || true
+  exit 1
+fi
+
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc "cat > /tmp/cleanroom-http-responder <<'EOF'
+#!/bin/sh
+printf 'HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nwake-exposure\n' | nc -l -p 18080
+EOF
+chmod +x /tmp/cleanroom-http-responder
+/tmp/cleanroom-http-responder >/tmp/cleanroom-nc-check.log 2>&1 &
+sleep 0.2
+wget -q -O - http://127.0.0.1:18080/
+/tmp/cleanroom-http-responder >/tmp/cleanroom-nc.log 2>&1 &" | tee "$tmpdir/exposure-guest.out"
+if ! grep -q '^wake-exposure$' "$tmpdir/exposure-guest.out"; then
+  echo "expected in-guest exposure response missing before suspend" >&2
+  cat "$tmpdir/exposure-guest.out" >&2 || true
+  exit 1
+fi
+
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$sandbox_id"
+exposure_port="$(choose_local_tcp_port)"
+./dist/cleanroom port-forward --host "$listen_endpoint" --in "$sandbox_id" "$exposure_port:18080" >"$tmpdir/exposure.out" 2>"$tmpdir/exposure.err" &
+exposure_pid=$!
+for _ in $(seq 1 40); do
+  if grep -q "tcp://127.0.0.1:$exposure_port" "$tmpdir/exposure.out"; then
+    break
+  fi
+  if ! kill -0 "$exposure_pid" >/dev/null 2>&1; then
+    echo "port-forward exited before registering exposure" >&2
+    cat "$tmpdir/exposure.out" >&2 || true
+    cat "$tmpdir/exposure.err" >&2 || true
+    dump_runtime_diagnostics 80
+    exit 1
+  fi
+  sleep 0.25
+done
+if ! grep -q "tcp://127.0.0.1:$exposure_port" "$tmpdir/exposure.out"; then
+  echo "timed out waiting for port-forward registration" >&2
+  cat "$tmpdir/exposure.out" >&2 || true
+  cat "$tmpdir/exposure.err" >&2 || true
+  dump_runtime_diagnostics 80
+  exit 1
+fi
+
+set +e
+curl --fail --max-time 20 --silent --show-error "http://127.0.0.1:$exposure_port/" | tee "$tmpdir/exposure-http.out"
+curl_status=${PIPESTATUS[0]}
+set -e
+if [[ "$curl_status" -ne 0 ]]; then
+  echo "local exposure request failed with status $curl_status" >&2
+  echo "port-forward stdout:" >&2
+  cat "$tmpdir/exposure.out" >&2 || true
+  echo "port-forward stderr:" >&2
+  cat "$tmpdir/exposure.err" >&2 || true
+  ./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'ps; wget -S -O - http://127.0.0.1:18080/ || true' >&2 || true
+  dump_runtime_diagnostics 80
+  exit 1
+fi
+if ! grep -q '^wake-exposure$' "$tmpdir/exposure-http.out"; then
+  echo "expected local exposure response missing" >&2
+  cat "$tmpdir/exposure-http.out" >&2 || true
+  exit 1
+fi
+kill "$exposure_pid" >/dev/null 2>&1 || true
+wait "$exposure_pid" >/dev/null 2>&1 || true
+unset exposure_pid
+
+./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$sandbox_id"
 ./dist/cleanroom sandbox rm --host "$listen_endpoint" "$sandbox_id" | tee "$tmpdir/sandbox-rm.out"
 if ! grep -q 'sandbox terminated' "$tmpdir/sandbox-rm.out"; then
   echo "expected sandbox terminate acknowledgement" >&2

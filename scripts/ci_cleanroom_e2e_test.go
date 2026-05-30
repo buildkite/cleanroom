@@ -127,6 +127,35 @@ func TestCiCleanroomE2EReusedSandboxExecOmitsChdir(t *testing.T) {
 	}
 }
 
+func TestCiCleanroomE2ESmokesSuspendWakeLifecycle(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-cleanroom-e2e.sh")
+	if err != nil {
+		t.Fatalf("read ci-cleanroom-e2e.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`choose_local_tcp_port()`,
+		`./dist/cleanroom sandbox suspend --host "$listen_endpoint" "$sandbox_id"`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'printf after-wake >/tmp/firecracker-suspend-wake.txt; echo command-after-wake'`,
+		`--path /tmp/firecracker-suspend-wake.txt`,
+		`guest image missing wget; cannot verify post-wake gateway deny`,
+		`http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 10 -q -O /dev/null https://buildkite.com`,
+		`gateway-deny-after-wake`,
+		`printf 'HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nwake-exposure\n' | nc -l -p 18080`,
+		`./dist/cleanroom port-forward --host "$listen_endpoint" --in "$sandbox_id" "$exposure_port:18080"`,
+		`curl_status=${PIPESTATUS[0]}`,
+		`curl --fail --max-time 20 --silent --show-error "http://127.0.0.1:$exposure_port/"`,
+		`kill "$exposure_pid" >/dev/null 2>&1 || true`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-cleanroom-e2e.sh to contain %q", needle)
+		}
+	}
+}
+
 func TestCiCleanroomE2EIsolatesCacheInTempDir(t *testing.T) {
 	t.Helper()
 

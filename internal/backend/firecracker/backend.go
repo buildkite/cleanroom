@@ -595,6 +595,34 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 	return nil
 }
 
+func (a *Adapter) SuspendSandbox(ctx context.Context, sandboxID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	instance, err := a.lookupRunningSandbox(sandboxID)
+	if err != nil {
+		return err
+	}
+	if err := pauseSandboxProcess(instance); err != nil {
+		return fmt.Errorf("freeze firecracker sandbox: %w", err)
+	}
+	return nil
+}
+
+func (a *Adapter) ResumeSandbox(ctx context.Context, sandboxID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	instance, err := a.lookupRunningSandbox(sandboxID)
+	if err != nil {
+		return err
+	}
+	if err := resumeSandboxProcess(instance); err != nil {
+		return fmt.Errorf("resume firecracker sandbox: %w", err)
+	}
+	return nil
+}
+
 func (a *Adapter) DialSandboxPort(ctx context.Context, sandboxID string, port int) (net.Conn, error) {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {

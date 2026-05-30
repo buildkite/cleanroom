@@ -7,10 +7,12 @@ import (
 	"errors"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -110,6 +112,49 @@ func TestProvisionSandboxForwardsCacheOutputVolumes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotSpecs, specs) {
 		t.Fatalf("unexpected cache output volume specs: got %#v want %#v", gotSpecs, specs)
+	}
+}
+
+func TestSuspendAndResumeSandboxSignalFirecrackerProcess(t *testing.T) {
+	var signals []syscall.Signal
+	prevSignal := sendProcessSignal
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		signals = append(signals, sig)
+		return nil
+	}
+	t.Cleanup(func() { sendProcessSignal = prevSignal })
+
+	adapter := &Adapter{
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID: "cr-test",
+				fcCmd:     &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:  make(chan struct{}),
+			},
+		},
+	}
+
+	if err := adapter.SuspendSandbox(context.Background(), "cr-test"); err != nil {
+		t.Fatalf("SuspendSandbox returned error: %v", err)
+	}
+	if err := adapter.ResumeSandbox(context.Background(), "cr-test"); err != nil {
+		t.Fatalf("ResumeSandbox returned error: %v", err)
+	}
+	if got, want := signals, []syscall.Signal{syscall.SIGSTOP, syscall.SIGCONT}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected signals: got %v want %v", got, want)
+	}
+}
+
+func TestSuspendSandboxRejectsUnknownSandbox(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	err := adapter.SuspendSandbox(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected SuspendSandbox to reject unknown sandbox")
+	}
+	if !strings.Contains(err.Error(), `unknown sandbox "missing"`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
