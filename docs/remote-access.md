@@ -31,25 +31,31 @@ Non-loopback HTTPS listeners require `auth.required: true`.
 Shared Cleanroom servers can require OIDC JWT bearer tokens for HTTP(S)
 control-plane calls:
 
+Buildkite Pipelines can request tokens from the Buildkite agent OIDC issuer and
+send them to Cleanroom. Configure the server to trust the Buildkite issuer and
+to bind immutable Buildkite IDs to Cleanroom principals:
+
 ```yaml
 auth:
   required: true
   oidc:
     issuers:
-      - name: github-actions
-        issuer: https://token.actions.githubusercontent.com
+      - name: buildkite
+        issuer: https://agent.buildkite.com
         audiences:
-          - cleanroom
-        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+          - https://cleanroom.example.com
+        jwks_url: https://agent.buildkite.com/.well-known/jwks
         required_claims:
-          repository_owner_id: "123456"
+          organization_id: "0184990a-477b-4fa8-9968-496074483k77"
   policy:
     bindings:
       - name: repo-bots
-        when: claims.repository_id == "987654"
+        when: >
+          token.issuer == "buildkite" &&
+          claims.pipeline_id == "0184990a-4782-42b5-afc1-16715b10b1l0"
         principal:
-          id: "oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}"
-          scope: "owner:${claims.repository_owner_id}"
+          id: "oidc:${token.issuer}:org:${claims.organization_id}:pipeline:${claims.pipeline_id}"
+          scope: "org:${claims.organization_id}"
         grants:
           - name: create-cleanroom-sandboxes
             actions:
@@ -63,13 +69,24 @@ auth:
             actions:
               - sandbox.get
               - sandbox.list
+              - sandbox.terminate
+              - sandbox.file.read
+              - sandbox.file.write
+              - sandbox.file.stat
               - execution.create
               - execution.get
               - execution.list
+              - execution.attach
+              - execution.inspect
+              - execution.stream
+              - execution.stdin.write
+              - execution.stdin.close
+              - execution.cancel
               - snapshot.create
               - snapshot.get
               - snapshot.list
               - snapshot.restore
+              - snapshot.delete
             resources:
               - sandbox
               - execution
@@ -77,17 +94,52 @@ auth:
 ```
 
 The inline policy maps trusted token claims to Cleanroom principals and grants.
-Use immutable provider claim IDs, not reusable slugs, for principal IDs. For
-large or generated policies, `auth.policy_file` can point at a separate YAML
-file with the same `bindings` shape; it is mutually exclusive with
+Use immutable Buildkite IDs, not reusable slugs, for principal IDs. Slugs and
+branches are still useful for additional grant conditions, but should not define
+ownership. For large or generated policies, `auth.policy_file` can point at a
+separate YAML file with the same `bindings` shape; it is mutually exclusive with
 `auth.policy`.
+
+In a Buildkite command step, request a short-lived token for the Cleanroom
+server audience and include the immutable claims used by the policy:
+
+```bash
+buildkite-agent oidc request-token \
+  --audience "https://cleanroom.example.com" \
+  --subject-claim pipeline_id \
+  --claim organization_id \
+  > /tmp/cleanroom.jwt
+```
 
 Clients send the token with either `CLEANROOM_AUTH_TOKEN`,
 `--auth-token-env`, or `--auth-token-file`:
 
 ```bash
-CLEANROOM_AUTH_TOKEN="$TOKEN" \
-  cleanroom sandbox create --host https://server.example.com:7777
+cleanroom sandbox create \
+  --host https://cleanroom.example.com \
+  --auth-token-file /tmp/cleanroom.jwt
+```
+
+Use `cleanroom auth check` before pointing a pipeline at a shared server. A
+create check needs a request fixture; existing-resource checks need the expected
+owner fields:
+
+```bash
+cleanroom auth check \
+  --config /etc/cleanroom/config.yaml \
+  --token-file /tmp/cleanroom.jwt \
+  --action sandbox.create \
+  --request create-request.json \
+  --json
+
+cleanroom auth check \
+  --config /etc/cleanroom/config.yaml \
+  --token-file /tmp/cleanroom.jwt \
+  --action sandbox.get \
+  --resource-id sbx_123 \
+  --owner-principal-id oidc:buildkite:org:0184990a-477b-4fa8-9968-496074483k77:pipeline:0184990a-4782-42b5-afc1-16715b10b1l0 \
+  --owner-scope org:0184990a-477b-4fa8-9968-496074483k77 \
+  --json
 ```
 
 With auth enabled, sandboxes, executions, snapshots, file operations, streams,

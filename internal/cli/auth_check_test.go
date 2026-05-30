@@ -41,7 +41,7 @@ func TestAuthCheckCommandReportsAllowedDecision(t *testing.T) {
 	if !decision.Allowed {
 		t.Fatalf("expected allowed decision, got %#v", decision)
 	}
-	if got, want := decision.Principal.ID, "oidc:github-actions:owner:123456:repo:987654"; got != want {
+	if got, want := decision.Principal.ID, "oidc:buildkite:org:org-uuid:pipeline:pipeline-uuid"; got != want {
 		t.Fatalf("unexpected principal ID: got %q want %q", got, want)
 	}
 	if got, want := decision.Binding, "cleanroom-repo-bots"; got != want {
@@ -56,23 +56,23 @@ auth:
   required: true
   oidc:
     issuers:
-      - name: github-actions
-        issuer: https://token.actions.githubusercontent.com
-        audiences: [cleanroom]
+      - name: buildkite
+        issuer: https://agent.buildkite.com
+        audiences: [https://cleanroom.example.com]
         jwks_url: ` + fixture.jwksURL + `
         required_claims:
-          repository_owner_id: "123456"
+          organization_id: "org-uuid"
         clock_skew_seconds: 60
         max_token_lifetime_seconds: 3600
   policy:
     bindings:
       - name: cleanroom-repo-bots
         when: >
-          token.issuer == "github-actions" &&
-          claims.repository_id == "987654"
+          token.issuer == "buildkite" &&
+          claims.pipeline_id == "pipeline-uuid"
         principal:
-          id: 'oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}'
-          scope: 'owner:${claims.repository_owner_id}'
+          id: 'oidc:${token.issuer}:org:${claims.organization_id}:pipeline:${claims.pipeline_id}'
+          scope: 'org:${claims.organization_id}'
         grants:
           - name: create-cleanroom-sandbox
             actions: [sandbox.create]
@@ -108,7 +108,7 @@ auth:
 	if !decision.Allowed {
 		t.Fatalf("expected allowed decision, got %#v", decision)
 	}
-	if got, want := decision.Principal.ID, "oidc:github-actions:owner:123456:repo:987654"; got != want {
+	if got, want := decision.Principal.ID, "oidc:buildkite:org:org-uuid:pipeline:pipeline-uuid"; got != want {
 		t.Fatalf("unexpected principal ID: got %q want %q", got, want)
 	}
 }
@@ -164,7 +164,7 @@ func TestAuthCheckCommandReportsBindingConditionError(t *testing.T) {
       - actions: [sandbox.create]
         resources: [sandbox]
   - name: fallback
-    when: 'token.issuer == "github-actions"'
+    when: 'token.issuer == "buildkite"'
     principal:
       id: 'oidc:${token.issuer}:${claims.sub}'
     grants:
@@ -248,12 +248,12 @@ auth:
   required: true
   oidc:
     issuers:
-      - name: github-actions
-        issuer: https://token.actions.githubusercontent.com
-        audiences: [cleanroom]
+      - name: buildkite
+        issuer: https://agent.buildkite.com
+        audiences: [https://cleanroom.example.com]
         jwks_url: ` + jwks.URL + `
         required_claims:
-          repository_owner_id: "123456"
+          organization_id: "org-uuid"
         clock_skew_seconds: 60
         max_token_lifetime_seconds: 3600
   policy_file: auth-policy.yaml
@@ -263,15 +263,16 @@ auth:
 	}
 	tokenPath := filepath.Join(dir, "token.jwt")
 	token := cliAuthSignToken(t, key, "kid-1", jwt.MapClaims{
-		"iss":                 "https://token.actions.githubusercontent.com",
-		"sub":                 "repo:buildkite/cleanroom:ref:refs/heads/main",
-		"aud":                 []string{"cleanroom"},
-		"iat":                 jwt.NewNumericDate(now.Add(-time.Minute)),
-		"nbf":                 jwt.NewNumericDate(now.Add(-time.Minute)),
-		"exp":                 jwt.NewNumericDate(now.Add(time.Minute)),
-		"repository":          "buildkite/cleanroom",
-		"repository_owner_id": "123456",
-		"repository_id":       "987654",
+		"iss":               "https://agent.buildkite.com",
+		"sub":               "pipeline-uuid",
+		"aud":               []string{"https://cleanroom.example.com"},
+		"iat":               jwt.NewNumericDate(now.Add(-time.Minute)),
+		"nbf":               jwt.NewNumericDate(now.Add(-time.Minute)),
+		"exp":               jwt.NewNumericDate(now.Add(time.Minute)),
+		"organization_id":   "org-uuid",
+		"organization_slug": "buildkite",
+		"pipeline_id":       "pipeline-uuid",
+		"pipeline_slug":     "cleanroom",
 	})
 	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
@@ -346,11 +347,11 @@ func cliAuthPolicyYAML() string {
 	return `bindings:
   - name: cleanroom-repo-bots
     when: >
-      token.issuer == "github-actions" &&
-      claims.repository_id == "987654"
+      token.issuer == "buildkite" &&
+      claims.pipeline_id == "pipeline-uuid"
     principal:
-      id: 'oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}'
-      scope: 'owner:${claims.repository_owner_id}'
+      id: 'oidc:${token.issuer}:org:${claims.organization_id}:pipeline:${claims.pipeline_id}'
+      scope: 'org:${claims.organization_id}'
     grants:
       - name: create-cleanroom-sandbox
         actions: [sandbox.create]

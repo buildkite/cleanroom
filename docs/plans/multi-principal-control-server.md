@@ -1,8 +1,8 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Runtime exact-principal smoke implemented; controlled sharing follow-ups next
-**Last reviewed:** 2026-05-29
+**Status:** Buildkite OIDC operator path documented; controlled sharing follow-ups next
+**Last reviewed:** 2026-05-30
 
 ## Summary
 
@@ -70,6 +70,10 @@ Slice 2 is split into PR-sized enforcement work:
   real signed OIDC JWTs for two principals, creates one sandbox per principal,
   and proves public CLI operations cannot cross the exact-principal boundary for
   list, get, execute, file, and snapshot workflows.
+- Remote access examples now use Buildkite OIDC as the first operator path:
+  trust `https://agent.buildkite.com`, require immutable Buildkite organization
+  and pipeline IDs, and treat slugs or branches as optional grant constraints
+  rather than ownership identity.
 
 Focused validation run on 2026-05-25:
 
@@ -274,22 +278,22 @@ auth:
   required: true
   oidc:
     issuers:
-      - name: github-actions
-        issuer: https://token.actions.githubusercontent.com
+      - name: buildkite
+        issuer: https://agent.buildkite.com
         audiences:
-          - cleanroom
-        jwks_url: https://token.actions.githubusercontent.com/.well-known/jwks
+          - https://cleanroom.example.com
+        jwks_url: https://agent.buildkite.com/.well-known/jwks
         required_claims:
-          repository_owner_id: "123456"
+          organization_id: "0184990a-477b-4fa8-9968-496074483k77"
   policy:
     bindings:
       - name: cleanroom-repo-bots
         when: >
-          token.issuer == "github-actions" &&
-          claims.repository_id == "987654"
+          token.issuer == "buildkite" &&
+          claims.pipeline_id == "0184990a-4782-42b5-afc1-16715b10b1l0"
         principal:
-          id: 'oidc:${token.issuer}:owner:${claims.repository_owner_id}:repo:${claims.repository_id}'
-          scope: 'owner:${claims.repository_owner_id}'
+          id: 'oidc:${token.issuer}:org:${claims.organization_id}:pipeline:${claims.pipeline_id}'
+          scope: 'org:${claims.organization_id}'
         grants:
           - name: create-cleanroom-sandboxes
             actions:
@@ -308,13 +312,23 @@ auth:
               - sandbox.get
               - sandbox.list
               - sandbox.terminate
+              - sandbox.file.stat
+              - sandbox.file.read
+              - sandbox.file.write
               - execution.create
               - execution.get
               - execution.list
+              - execution.inspect
               - execution.stream
+              - execution.attach
+              - snapshot.create
+              - snapshot.get
+              - snapshot.list
+              - snapshot.restore
             resources:
               - sandbox
               - execution
+              - snapshot
 ```
 
 The exact schema can change during implementation, but the ownership boundary
@@ -894,6 +908,8 @@ Runtime smoke test:
   `auth.policy_file` only as an escape hatch for generated or large policies.
 - Require examples to derive owner principal IDs from immutable provider claim
   IDs where the issuer exposes them.
+- Use Buildkite OIDC for the first documented operator path, with
+  `organization_id` and `pipeline_id` as the ownership inputs.
 
 ## Deferred Work
 
@@ -912,9 +928,6 @@ Runtime smoke test:
 - Should unix-socket callers remain local-trusted when remote auth is required?
   Recommended default: yes for the first implementation, with an explicit
   `auth.require_unix_socket` hardening option later.
-- Which OIDC issuer should the examples use first?
-  Recommended default: GitHub Actions because it is widely available and has
-  useful repository claims, while keeping the implementation generic.
 - Should stage-cache sharing ever be allowed at repo scope?
   Recommended default: no for the first auth-enabled version; exact-principal
   cache partitioning is simpler and avoids leaking private dependency outputs.
