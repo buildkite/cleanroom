@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-const miseBuildkitePluginRef = "github.com/lox/mise-buildkite-plugin#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2"
+const miseBuildkitePluginRef = "mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2"
 const miseBuildkitePluginVersion = "2026.5.12"
 const setupGoBuildkitePluginRef = "github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91"
+const testCollectorBuildkitePluginRef = "github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0"
 
 func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 	t.Parallel()
@@ -32,9 +33,16 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
           install_args: shellcheck
     command: shellcheck`,
 		`- label: ":test_tube: Test (Linux)"
+    parallelism: 4
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
-    command: go test ./...`,
+      - ` + miseBuildkitePluginRef + `:
+          version: "` + miseBuildkitePluginVersion + `"
+          install_args: gotestsum
+      - ` + testCollectorBuildkitePluginRef + `:
+          files: "tmp/test-engine/*.xml"
+          format: "junit"
+    command: scripts/ci-go-test-engine.sh`,
 		`- label: ":test_tube: Test (macOS)"
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
@@ -87,10 +95,12 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the Buildkite release publish step")
 	}
 	for _, needle := range []string{
+		".buildkite/hooks/pre-command",
 		"scripts/base-image-tag.sh",
 		"scripts/install-global.sh",
 		"scripts/e2e-observability.sh",
 		"scripts/ci-with-host-lock.sh",
+		"scripts/ci-go-test-engine.sh",
 		"scripts/ci-example-smoke.sh",
 		"scripts/ci-examples-firecracker.sh",
 		"scripts/ci-examples-darwin-vz.sh",
@@ -125,6 +135,19 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		t.Fatalf("expected .buildkite/pipeline.yml to set the darwin-vz vmnet helper bundle identifier")
 	}
 	for _, needle := range []string{
+		`BUILDKITE_TEST_ENGINE_SUITE_SLUG: cleanroom-go-linux`,
+		`BUILDKITE_TEST_ENGINE_TEST_RUNNER: gotest`,
+		`BUILDKITE_TEST_ENGINE_RETRY_COUNT: "1"`,
+		`artifact_paths:`,
+		`- "tmp/test-engine/*.xml"`,
+		`- "~/.cache/cleanroom/test-engine"`,
+		`install_args: gotestsum`,
+	} {
+		if !strings.Contains(pipeline, needle) {
+			t.Fatalf("expected .buildkite/pipeline.yml to configure Linux Test Engine with %q", needle)
+		}
+	}
+	for _, needle := range []string{
 		"concurrency_group: cleanroom-e2e",
 		"concurrency_group: cleanroom-darwin-vz-e2e",
 	} {
@@ -150,6 +173,71 @@ func TestBuildkiteCommandHookIsRemoved(t *testing.T) {
 	_, err := os.Stat("../.buildkite/hooks/command")
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected .buildkite/hooks/command to be removed, got err=%v", err)
+	}
+}
+
+func TestBuildkitePreCommandHookMintsTestEngineOIDCToken(t *testing.T) {
+	t.Parallel()
+
+	info, err := os.Stat("../.buildkite/hooks/pre-command")
+	if err != nil {
+		t.Fatalf("stat .buildkite/hooks/pre-command: %v", err)
+	}
+	if info.Mode()&0111 == 0 {
+		t.Fatalf("expected .buildkite/hooks/pre-command to be executable")
+	}
+
+	content, err := os.ReadFile("../.buildkite/hooks/pre-command")
+	if err != nil {
+		t.Fatalf("read .buildkite/hooks/pre-command: %v", err)
+	}
+
+	hook := string(content)
+	for _, needle := range []string{
+		`BUILDKITE_TEST_ENGINE_SUITE_SLUG`,
+		`BUILDKITE_ANALYTICS_TOKEN`,
+		`BUILDKITE_TEST_ENGINE_OIDC`,
+		`buildkite-agent oidc request-token --audience "$suite_url" --lifetime "$lifetime_seconds"`,
+		`https://buildkite.com/organizations/${organization_slug}/analytics/suites/${BUILDKITE_TEST_ENGINE_SUITE_SLUG}`,
+	} {
+		if !strings.Contains(hook, needle) {
+			t.Fatalf("expected .buildkite/hooks/pre-command to contain %q", needle)
+		}
+	}
+}
+
+func TestBuildkiteGoTestEngineScriptBootstrapsBktecAndRequiresGotestsum(t *testing.T) {
+	t.Parallel()
+
+	info, err := os.Stat("ci-go-test-engine.sh")
+	if err != nil {
+		t.Fatalf("stat ci-go-test-engine.sh: %v", err)
+	}
+	if info.Mode()&0111 == 0 {
+		t.Fatalf("expected ci-go-test-engine.sh to be executable")
+	}
+
+	content, err := os.ReadFile("ci-go-test-engine.sh")
+	if err != nil {
+		t.Fatalf("read ci-go-test-engine.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`BKTEC_VERSION="${BKTEC_VERSION:-2.6.0}"`,
+		`github.com/buildkite/test-engine-client/releases/download/v${BKTEC_VERSION}/${asset}`,
+		`BUILDKITE_TEST_ENGINE_RESULT_PATH="tmp/test-engine/gotest-${BUILDKITE_PARALLEL_JOB:-0}.xml"`,
+		`BUILDKITE_TEST_ENGINE_SUITE_SLUG is required`,
+		`command -v gotestsum`,
+		`gotestsum is required; install it with mise before running Test Engine`,
+		`bktec run`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-go-test-engine.sh to contain %q", needle)
+		}
+	}
+	if strings.Contains(script, `go install "gotest.tools/gotestsum`) {
+		t.Fatalf("expected ci-go-test-engine.sh to rely on mise-installed gotestsum")
 	}
 }
 
@@ -246,6 +334,7 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 	for _, path := range []string{
 		"ci-cleanroom-e2e.sh",
 		"ci-with-host-lock.sh",
+		"ci-go-test-engine.sh",
 		"ci-example-smoke.sh",
 		"ci-examples-firecracker.sh",
 		"ci-examples-darwin-vz.sh",
@@ -282,6 +371,9 @@ func TestMiseIncludesLinuxBootstrapTasks(t *testing.T) {
 		t.Fatalf("read mise.toml: %v", err)
 	}
 
+	if !strings.Contains(string(content), `gotestsum = "1.13.0"`) {
+		t.Fatalf("expected public mise.toml to pin gotestsum for Test Engine")
+	}
 	if strings.Contains(string(content), "ci-bootstrap-linux-ssm.sh") {
 		t.Fatalf("expected public mise.toml not to expose private bootstrap rerun tasks")
 	}
@@ -301,9 +393,11 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 	mise := string(content)
 	for _, needle := range []string{
 		`[tasks.lint-shell]`,
+		`.buildkite/hooks/pre-command`,
 		`scripts/base-image-tag.sh`,
 		`scripts/e2e-observability.sh`,
 		`scripts/ci-with-host-lock.sh`,
+		`scripts/ci-go-test-engine.sh`,
 		`scripts/ci-example-smoke.sh`,
 		`scripts/ci-examples-firecracker.sh`,
 		`scripts/ci-examples-darwin-vz.sh`,

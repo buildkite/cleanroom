@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${BUILDKITE_TEST_ENGINE_SUITE_SLUG:-}" ]]; then
+  exit 0
+fi
+
+if [[ -n "${BUILDKITE_ANALYTICS_TOKEN:-}" ]]; then
+  exit 0
+fi
+
+case "${BUILDKITE_TEST_ENGINE_OIDC:-true}" in
+  false | FALSE | 0 | off | OFF | no | NO)
+    exit 0
+    ;;
+esac
+
+if ! command -v buildkite-agent >/dev/null 2>&1; then
+  echo "buildkite-agent is required to mint the Test Engine analytics OIDC token" >&2
+  exit 127
+fi
+
+organization_slug="${BUILDKITE_ORGANIZATION_SLUG:-buildkite}"
+suite_url="${BUILDKITE_TEST_ENGINE_SUITE_URL:-https://buildkite.com/organizations/${organization_slug}/analytics/suites/${BUILDKITE_TEST_ENGINE_SUITE_SLUG}}"
+lifetime_seconds="${BUILDKITE_TEST_ENGINE_OIDC_LIFETIME_SECONDS:-7200}"
+
+export BUILDKITE_ANALYTICS_TOKEN
+BUILDKITE_ANALYTICS_TOKEN="$(buildkite-agent oidc request-token --audience "$suite_url" --lifetime "$lifetime_seconds")"

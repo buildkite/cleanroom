@@ -1,10 +1,10 @@
 steps:
   - label: ":shell: Shellcheck"
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
+      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: shellcheck
-    command: shellcheck -x scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh
+    command: shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-go-test-engine.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh
     cache:
       paths:
         - "~/.local/share/mise"
@@ -16,14 +16,28 @@ steps:
       queue: hosted
 
   - label: ":test_tube: Test (Linux)"
+    parallelism: 4
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: go test ./...
+      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
+          version: "2026.5.12"
+          install_args: gotestsum
+      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+          files: "tmp/test-engine/*.xml"
+          format: "junit"
+    command: scripts/ci-go-test-engine.sh
+    artifact_paths:
+      - "tmp/test-engine/*.xml"
+    env:
+      BUILDKITE_TEST_ENGINE_SUITE_SLUG: cleanroom-go-linux
+      BUILDKITE_TEST_ENGINE_TEST_RUNNER: gotest
+      BUILDKITE_TEST_ENGINE_RETRY_COUNT: "1"
     cache:
       paths:
         - "~/.local/share/mise"
         - "~/.cache/mise"
         - "~/.local/state/mise"
+        - "~/.cache/cleanroom/test-engine"
       size: "20g"
       name: "mise-cache"
     agents:
@@ -97,7 +111,7 @@ steps:
   - label: ":rocket: Publish release"
     if: build.tag != null
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
+      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
     command: scripts/ci-buildkite-release.sh
     cache:

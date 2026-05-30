@@ -1,5 +1,6 @@
 [tools]
 go = "1.26.3"
+gotestsum = "1.13.0"
 shellcheck = "0.11.0"
 hyperfine = "1.20.0"
 svu = "3.4.1"
@@ -14,7 +15,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh"
+run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-go-test-engine.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
