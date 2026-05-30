@@ -1,7 +1,7 @@
 # Multi-Principal Control Server Authorization Plan
 
 **Spec reference:** `docs/spec.md` sections 5.4, 6.1, and 6.2; `docs/api.md`; `docs/tls.md`
-**Status:** Buildkite OIDC operator path documented; controlled sharing follow-ups next
+**Status:** Buildkite OIDC CI smoke implemented; controlled sharing follow-ups next
 **Last reviewed:** 2026-05-30
 
 ## Summary
@@ -74,6 +74,10 @@ Slice 2 is split into PR-sized enforcement work:
   trust `https://agent.buildkite.com`, require immutable Buildkite organization
   and pipeline IDs, and treat slugs or branches as optional grant constraints
   rather than ownership identity.
+- Buildkite CI now has an OIDC auth smoke that requests a real Buildkite agent
+  token, validates it with the live Buildkite JWKS, and checks allow/deny
+  decisions for sandbox creation and owner-scoped existing-resource diagnostics
+  using `cleanroom auth check`.
 
 Focused validation run on 2026-05-25:
 
@@ -168,6 +172,15 @@ Result: passed.
 Runtime exact-principal repository validation run on 2026-05-29:
 
 ```text
+mise run check
+```
+
+Result: passed.
+
+Buildkite OIDC CI smoke validation run on 2026-05-30:
+
+```text
+mise exec -- go test ./scripts -count=1
 mise run check
 ```
 
