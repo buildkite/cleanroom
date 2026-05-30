@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 11 ready for review
+**Status:** Slice 12 ready for review
 **Last reviewed:** 2026-05-30
 
 ## Summary
@@ -351,6 +351,30 @@ Result: passed.
 
 Repository validation rerun on 2026-05-30 after removing the newer Git
 `cat-file -Z` dependency:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Slice 12 is implemented and ready for review. Workspace copy-out now writes the
+guest patch to a temporary file, applies it to a temporary index rooted at the
+sandbox baseline, and derives the trusted changed-path list from that resulting
+tree before conflict checks, forced obstacle handling, local patch generation,
+or plan output use any target paths. The guest-reported `name-status` payload is
+still parsed as part of the transport format, but it no longer decides which
+local paths are safe to overwrite or report.
+
+Focused validation run on 2026-05-30:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise exec -- go test ./internal/cli
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-30:
 
 ```text
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/deepsec-oci-handler-bounds/cleanroom/mise.toml mise run check
