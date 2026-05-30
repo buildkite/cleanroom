@@ -24,7 +24,9 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
-type comparableHandler struct{}
+type comparableHandler struct {
+	id int
+}
 
 func (comparableHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
 
@@ -129,6 +131,37 @@ func TestContentCacheGitBasicAuthProviderIgnoresNonBasicCredential(t *testing.T)
 	}
 	if username != "" || password != "" {
 		t.Fatalf("expected non-Basic credential to be ignored, got (%q, %q)", username, password)
+	}
+}
+
+func TestGitHandlerForHostPartitionsByCacheScope(t *testing.T) {
+	t.Parallel()
+
+	cache := &ContentCache{
+		gitHandlers: make(map[string]http.Handler),
+		buildGitHandler: func(host, cacheScope string) (http.Handler, error) {
+			return &comparableHandler{}, nil
+		},
+	}
+
+	handlerA, err := cache.GitHandlerForHost("GitHub.COM", "scope-a")
+	if err != nil {
+		t.Fatalf("handler A: %v", err)
+	}
+	reusedA, err := cache.GitHandlerForHost("github.com", "scope-a")
+	if err != nil {
+		t.Fatalf("reused handler A: %v", err)
+	}
+	handlerB, err := cache.GitHandlerForHost("github.com", "scope-b")
+	if err != nil {
+		t.Fatalf("handler B: %v", err)
+	}
+
+	if reusedA != handlerA {
+		t.Fatal("expected same host and cache scope to reuse git handler")
+	}
+	if handlerB == handlerA {
+		t.Fatal("expected different cache scopes to use different git handlers")
 	}
 }
 

@@ -22,7 +22,7 @@ const (
 	defaultMaxOCIHandlers           = 32
 )
 
-type gitHandlerFactory func(host string) (http.Handler, error)
+type gitHandlerFactory func(host, cacheScope string) (http.Handler, error)
 
 type ociHandlerFactory func(prefix string) (ociHandlerEntry, error)
 
@@ -170,8 +170,9 @@ func (c *ContentCache) HasGitHandler() bool {
 	return c != nil && c.buildGitHandler != nil
 }
 
-// GitHandlerForHost returns a git cache handler scoped to the requested host.
-func (c *ContentCache) GitHandlerForHost(host string) (http.Handler, error) {
+// GitHandlerForHost returns a git cache handler scoped to the requested host
+// and authorization scope.
+func (c *ContentCache) GitHandlerForHost(host, cacheScope string) (http.Handler, error) {
 	if c == nil || c.buildGitHandler == nil {
 		return nil, errors.New("git cache not configured")
 	}
@@ -180,19 +181,24 @@ func (c *ContentCache) GitHandlerForHost(host string) (http.Handler, error) {
 	if host == "" {
 		return nil, errors.New("empty git host")
 	}
+	cacheScope = strings.TrimSpace(cacheScope)
+	if cacheScope == "" {
+		return nil, errors.New("empty git cache scope")
+	}
+	cacheKey := host + "\x00" + cacheScope
 
 	c.gitMu.Lock()
 	defer c.gitMu.Unlock()
 
-	if handler, ok := c.gitHandlers[host]; ok {
+	if handler, ok := c.gitHandlers[cacheKey]; ok {
 		return handler, nil
 	}
 
-	handler, err := c.buildGitHandler(host)
+	handler, err := c.buildGitHandler(host, cacheScope)
 	if err != nil {
 		return nil, err
 	}
-	c.gitHandlers[host] = handler
+	c.gitHandlers[cacheKey] = handler
 	return handler, nil
 }
 

@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"charm.land/log/v2"
@@ -12,7 +15,7 @@ import (
 )
 
 type gitHostHandlerProvider interface {
-	GitHandlerForHost(host string) (http.Handler, error)
+	GitHandlerForHost(host, cacheScope string) (http.Handler, error)
 }
 
 // cachedGitHandler wraps a content-cache git handler with cleanroom's
@@ -24,10 +27,11 @@ type cachedGitHandler struct {
 	fallback     http.Handler
 	logger       *log.Logger
 	requireOwner bool
+	credentials  CredentialProvider
 }
 
-func newCachedGitHandler(cache gitHostHandlerProvider, fallback http.Handler, logger *log.Logger, requireOwner bool) *cachedGitHandler {
-	return &cachedGitHandler{cache: cache, fallback: fallback, logger: logger, requireOwner: requireOwner}
+func newCachedGitHandler(cache gitHostHandlerProvider, fallback http.Handler, logger *log.Logger, requireOwner bool, credentials CredentialProvider) *cachedGitHandler {
+	return &cachedGitHandler{cache: cache, fallback: fallback, logger: logger, requireOwner: requireOwner, credentials: credentials}
 }
 
 func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,13 +55,7 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !gitRequestUsesDotGit(repoPath) {
-		if h.fallback == nil {
-			setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
-			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "git cache fallback is not configured for non-.git remotes")
-			return
-		}
-		setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonFallback)
-		h.fallback.ServeHTTP(w, r)
+		h.serveFallback(w, r, scope, upstreamHost, repoPath, "git cache fallback is not configured for non-.git remotes")
 		return
 	}
 
@@ -69,25 +67,30 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Classify the request to reject pushes before hitting the cache layer.
-	if _, err := classifyGitRequest(r.Method, repoPath, r.URL.RawQuery); err != nil {
+	requestType, err := classifyGitRequest(r.Method, repoPath, r.URL.RawQuery)
+	if err != nil {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonMethodNotAllowed)
 		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonMethodNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonMethodNotAllowed, err.Error())
 		return
 	}
 
-	cacheHandler, err := h.cache.GitHandlerForHost(upstreamHost)
+	cacheScope, cacheable, err := h.cacheScopeKey(r.Context(), scope, upstreamHost, repoPath, requestType)
+	if err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
+		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, fmt.Sprintf("git cache authorization unavailable for %s%s: %v", upstreamHost, repoPath, err))
+		return
+	}
+	if !cacheable {
+		h.serveFallback(w, r, scope, upstreamHost, repoPath, "git cache fallback is not configured for upload-pack requests without Basic upstream credentials")
+		return
+	}
+
+	cacheHandler, err := h.cache.GitHandlerForHost(upstreamHost, cacheScope)
 	if err != nil {
 		if errors.Is(err, errGitHostNotConfiguredForCaching) {
-			if h.fallback == nil {
-				setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
-				h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
-				writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, fmt.Sprintf("git cache fallback is not configured for %s", upstreamHost))
-				return
-			}
-			setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonFallback)
-			h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonFallback)
-			h.fallback.ServeHTTP(w, r)
+			h.serveFallback(w, r, scope, upstreamHost, repoPath, fmt.Sprintf("git cache fallback is not configured for %s", upstreamHost))
 			return
 		}
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
@@ -104,6 +107,73 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/git")
 	r.URL.RawPath = ""
 	cacheHandler.ServeHTTP(w, r)
+}
+
+func (h *cachedGitHandler) serveFallback(w http.ResponseWriter, r *http.Request, scope *SandboxScope, upstreamHost, repoPath, unavailableMessage string) {
+	if h.fallback == nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
+		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, unavailableMessage)
+		return
+	}
+	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonFallback)
+	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonFallback)
+	h.fallback.ServeHTTP(w, r)
+}
+
+func (h *cachedGitHandler) cacheScopeKey(ctx context.Context, scope *SandboxScope, upstreamHost, repoPath, requestType string) (string, bool, error) {
+	credentialScope := "credential:anonymous"
+	if h.credentials != nil {
+		remoteURL, err := canonicalUpstreamRemoteURL(upstreamHost, repoPath)
+		if err != nil {
+			return "", false, err
+		}
+		header, err := h.credentials.Resolve(ctx, remoteURL)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve upstream credentials: %w", err)
+		}
+		header = strings.TrimSpace(header)
+		if header != "" {
+			_, _, basic, err := parseBasicAuthHeader(header)
+			if err != nil {
+				return "", false, err
+			}
+			if requestType == "upload-pack" && !basic {
+				return "", false, nil
+			}
+			credentialScope = "credential:" + digestString(header)
+		}
+	}
+
+	policyScope := "policy:nil"
+	if scope != nil && scope.Policy != nil {
+		policyScope = "policy:" + compiledPolicyCacheKey(scope.Policy)
+	}
+
+	ownerScope := "ownerless"
+	if scope != nil && scope.GatewayScope.HasOwner() {
+		prefixes := append([]string(nil), scope.GatewayScope.Authorization.GitRepoPrefixes...)
+		sort.Strings(prefixes)
+		ownerScope = strings.Join([]string{
+			"owner",
+			scope.GatewayScope.Owner.PrincipalID,
+			scope.GatewayScope.Owner.Scope,
+			strings.Join(prefixes, "\x00"),
+		}, "\x00")
+	}
+
+	return digestString(strings.Join([]string{
+		"git-cache-v2",
+		strings.ToLower(strings.TrimSpace(upstreamHost)),
+		policyScope,
+		ownerScope,
+		credentialScope,
+	}, "\x00")), true, nil
+}
+
+func digestString(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func (h *cachedGitHandler) auditLog(ctx context.Context, sandboxID, upstreamHost, repoPath, action, reason string) {
