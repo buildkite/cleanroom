@@ -66,7 +66,21 @@ func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repo
 func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repository *repositorycheckout.Checkout) error {
 	if commitSHA, ok := normalizeRepositoryCommitSHA(repository.CommitSHA); ok {
 		repository.CommitSHA = commitSHA
-		return nil
+		branch := strings.TrimSpace(repository.Branch)
+		if branch == "" {
+			return nil
+		}
+		hints := repositorystore.FetchHints{Branches: []string{branch}}
+		if err := s.RepositoryStore.Refresh(ctx, repository.RemoteURL, hints); err != nil {
+			return err
+		}
+		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, commitSHA, hints, func(repoDir string) error {
+			if err := validateRepositoryBranchContainsCommit(ctx, repoDir, branch, commitSHA); err != nil {
+				return err
+			}
+			repository.Branch = branch
+			return nil
+		})
 	}
 	if strings.TrimSpace(repository.CommitSHA) != "" {
 		return fmt.Errorf("repository commit_sha %q must be a full 40-character hexadecimal commit SHA", strings.TrimSpace(repository.CommitSHA))
@@ -180,6 +194,20 @@ func normalizeRepositoryCommitSHA(revision string) (string, bool) {
 func validateRepositoryBranch(ctx context.Context, repoDir, branch string) error {
 	if _, err := gitOutputContext(ctx, repoDir, "check-ref-format", "--branch", branch); err != nil {
 		return fmt.Errorf("invalid repository branch %q: %w", branch, err)
+	}
+	return nil
+}
+
+func validateRepositoryBranchContainsCommit(ctx context.Context, repoDir, branch, commitSHA string) error {
+	if err := validateRepositoryBranch(ctx, repoDir, branch); err != nil {
+		return err
+	}
+	branchCommit, err := gitOutputContext(ctx, repoDir, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve repository branch %q: %w", branch, err)
+	}
+	if _, err := gitOutputContext(ctx, repoDir, "merge-base", "--is-ancestor", commitSHA, branchCommit); err != nil {
+		return fmt.Errorf("repository commit %q is not reachable from branch %q", commitSHA, branch)
 	}
 	return nil
 }

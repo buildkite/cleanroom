@@ -2813,6 +2813,36 @@ func TestCreateSandboxRepositoryPolicyResolvesBranch(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxRepositoryPolicyRejectsCommitOutsideBranch(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/main", false, true),
+	})
+	baseBranch := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "--abbrev-ref", "HEAD"))
+	runTestGit(t, mirrors.mirrorPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", "feature.txt")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "feature commit")
+	featureCommit := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+	repositoryCheckout.CommitSha = featureCommit
+	repositoryCheckout.Branch = baseBranch
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not reachable from branch") {
+		t.Fatalf("CreateSandbox error = %v, want commit outside branch error", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("ProvisionSandbox calls = %d, want 0", got)
+	}
+}
+
 func TestCreateSandboxLoadsRepositoryPolicyFromCommitBundle(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{

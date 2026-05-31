@@ -325,15 +325,16 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 	}
 
 	matchedGrant := false
-	unknownGrant := false
+	deferredSourceGrant := false
 	var conditionErrorDecision *Decision
 	unknownPaths := repositoryPolicySourceUnknownPaths(req)
+	activation := grantActivation(req)
 	for _, grant := range b.binding.grants {
 		if !grant.matches(decision.Action, req.Resource.Kind) {
 			continue
 		}
 		matchedGrant = true
-		ok, known, err := grant.condition.evalPartial(grantActivation(req), unknownPaths...)
+		ok, known, err := grant.condition.evalPartial(activation, unknownPaths...)
 		if err != nil {
 			if conditionErrorDecision == nil {
 				errorDecision := decision
@@ -344,7 +345,9 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 			continue
 		}
 		if !known {
-			unknownGrant = true
+			if grant.condition.repositorySourceAuthorized(activation, unknownPaths...) {
+				deferredSourceGrant = true
+			}
 			continue
 		}
 		if !ok {
@@ -357,7 +360,7 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 		decision.Reason = ReasonAllowed
 		return decision, true
 	}
-	if unknownGrant {
+	if deferredSourceGrant {
 		return decision, false
 	}
 	if conditionErrorDecision != nil {
@@ -371,6 +374,8 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 
 func repositoryPolicySourceUnknownPaths(req DecisionRequest) []string {
 	paths := []string{
+		"request.repository.commit",
+		"request.repository.branch",
 		"request.image.ref",
 		"request.image.digest",
 		"request.policy.resources.vcpus",
@@ -384,11 +389,12 @@ func repositoryPolicySourceUnknownPaths(req DecisionRequest) []string {
 		"request.snapshot.id",
 	}
 	repository, _ := req.Request["repository"].(map[string]any)
-	if requestString(repository, "commit") == "" {
-		paths = append(paths, "request.repository.commit")
-	}
-	if requestString(repository, "branch") == "" {
-		paths = append(paths, "request.repository.branch")
+	changeset, _ := repository["changeset"].(map[string]any)
+	if changesetPresent, _ := changeset["present"].(bool); changesetPresent {
+		paths = append(paths,
+			"request.repository.changeset.digest",
+			"request.repository.changeset.tree_digest",
+		)
 	}
 	return paths
 }
