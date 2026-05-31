@@ -34,4 +34,4 @@ gotestsum \
   -run '^TestCIExampleSmoke$' \
   -count=1 \
   -timeout "$timeout" \
-  ./scripts
+  ./test/ci/examples
