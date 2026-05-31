@@ -19,6 +19,7 @@ func TestResolveHelperBinaryPathPrefersEnvOverride(t *testing.T) {
 
 	got, err := resolveHelperBinaryPathWith(
 		override,
+		false,
 		func(string) (string, error) { return "", errors.New("not found") },
 		func() (string, error) { return "", errors.New("no executable") },
 		func() (string, error) { return "", errors.New("no working directory") },
@@ -47,6 +48,7 @@ func TestResolveHelperBinaryPathUsesSiblingBeforePath(t *testing.T) {
 
 	got, err := resolveHelperBinaryPathWith(
 		"",
+		false,
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return self, nil },
 		func() (string, error) { return "", errors.New("no working directory") },
@@ -83,6 +85,7 @@ func TestResolveHelperBinaryPathPrefersSiblingAppBundleOverLooseBinary(t *testin
 
 	got, err := resolveHelperBinaryPathWith(
 		"",
+		false,
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return self, nil },
 		func() (string, error) { return "", errors.New("no working directory") },
@@ -111,6 +114,7 @@ func TestResolveHelperBinaryPathUsesAppBundleOverride(t *testing.T) {
 
 	got, err := resolveHelperBinaryPathWith(
 		appBundle,
+		false,
 		func(string) (string, error) { return "", errors.New("not found") },
 		func() (string, error) { return "", errors.New("no executable") },
 		func() (string, error) { return "", errors.New("no working directory") },
@@ -143,6 +147,7 @@ func TestResolveHelperBinaryPathUsesAncestorDistBeforePATH(t *testing.T) {
 
 	got, err := resolveHelperBinaryPathWith(
 		"",
+		true,
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return "", errors.New("no executable") },
 		func() (string, error) { return cwd, nil },
@@ -153,6 +158,39 @@ func TestResolveHelperBinaryPathUsesAncestorDistBeforePATH(t *testing.T) {
 	}
 	if got != prebuilt {
 		t.Fatalf("unexpected helper path: got %q want %q", got, prebuilt)
+	}
+}
+
+func TestResolveHelperBinaryPathSkipsAncestorDistUnlessAllowed(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := tmp + "/repo"
+	cwd := repoRoot + "/nested/workdir"
+	prebuilt := repoRoot + "/dist/cleanroom-darwin-vz"
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(repoRoot+"/dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(prebuilt, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write prebuilt helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		false,
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return cwd, nil },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != "/usr/local/bin/cleanroom-darwin-vz" {
+		t.Fatalf("unexpected helper path: got %q", got)
 	}
 }
 
@@ -176,6 +214,7 @@ func TestResolveHelperBinaryPathUsesAncestorDistAppBundleBeforePATH(t *testing.T
 
 	got, err := resolveHelperBinaryPathWith(
 		"",
+		true,
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return "", errors.New("no executable") },
 		func() (string, error) { return cwd, nil },
@@ -213,6 +252,7 @@ func TestResolveHelperBinaryPathPrefersAncestorDistAppBundleOverLooseBinary(t *t
 
 	got, err := resolveHelperBinaryPathWith(
 		"",
+		true,
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return "", errors.New("no executable") },
 		func() (string, error) { return cwd, nil },
@@ -257,6 +297,7 @@ func TestResolveHelperBinaryPathPrefersSiblingBeforeAncestorDist(t *testing.T) {
 
 	got, err := resolveHelperBinaryPathWith(
 		"",
+		true,
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return self, nil },
 		func() (string, error) { return cwd, nil },
@@ -275,6 +316,7 @@ func TestResolveHelperBinaryPathFallsBackToPATH(t *testing.T) {
 
 	got, err := resolveHelperBinaryPathWith(
 		"",
+		false,
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return "", errors.New("no executable") },
 		func() (string, error) { return "", errors.New("no working directory") },
@@ -293,6 +335,7 @@ func TestResolveHelperBinaryPathReturnsActionableError(t *testing.T) {
 
 	_, err := resolveHelperBinaryPathWith(
 		"",
+		false,
 		func(string) (string, error) { return "", errors.New("not found") },
 		func() (string, error) { return "", errors.New("no executable") },
 		func() (string, error) { return "", errors.New("no working directory") },
@@ -301,8 +344,25 @@ func TestResolveHelperBinaryPathReturnsActionableError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if got := err.Error(); got == "" || !strings.Contains(got, "cleanroom-darwin-vz") || !strings.Contains(got, "CLEANROOM_DARWIN_VZ_HELPER") || !strings.Contains(got, "mise run build") {
-		t.Fatalf("unexpected error: %v", err)
+	for _, want := range []string{"cleanroom-darwin-vz", "CLEANROOM_DARWIN_VZ_HELPER", "CLEANROOM_DARWIN_VZ_HELPER_ALLOW_CWD", "mise run build"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestHelperWorkdirLookupAllowedParsesExplicitOptIn(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on", " On "} {
+		if !helperWorkdirLookupAllowed(value) {
+			t.Fatalf("expected %q to enable workdir helper lookup", value)
+		}
+	}
+	for _, value := range []string{"", "0", "false", "no", "off", "random"} {
+		if helperWorkdirLookupAllowed(value) {
+			t.Fatalf("expected %q to disable workdir helper lookup", value)
+		}
 	}
 }
 

@@ -10,16 +10,25 @@ import (
 )
 
 const (
-	helperBinaryName = "cleanroom-darwin-vz"
-	helperEnvVar     = "CLEANROOM_DARWIN_VZ_HELPER"
+	helperBinaryName         = "cleanroom-darwin-vz"
+	helperEnvVar             = "CLEANROOM_DARWIN_VZ_HELPER"
+	helperAllowWorkdirEnvVar = "CLEANROOM_DARWIN_VZ_HELPER_ALLOW_CWD"
 )
 
 func resolveHelperBinaryPath() (string, error) {
-	return resolveHelperBinaryPathWith(os.Getenv(helperEnvVar), exec.LookPath, os.Executable, os.Getwd, os.Stat)
+	return resolveHelperBinaryPathWith(
+		os.Getenv(helperEnvVar),
+		helperWorkdirLookupAllowed(os.Getenv(helperAllowWorkdirEnvVar)),
+		exec.LookPath,
+		os.Executable,
+		os.Getwd,
+		os.Stat,
+	)
 }
 
 func resolveHelperBinaryPathWith(
 	envOverride string,
+	allowWorkdirLookup bool,
 	lookPath func(string) (string, error),
 	executable func() (string, error),
 	getwd func() (string, error),
@@ -44,7 +53,7 @@ func resolveHelperBinaryPathWith(
 		}
 	}
 
-	if getwd != nil {
+	if allowWorkdirLookup && getwd != nil {
 		if cwd, err := getwd(); err == nil {
 			if path, err := resolvePrebuiltBinaryPathFromWorkdir(cwd, helperBinaryName, stat); err == nil {
 				return path, nil
@@ -57,11 +66,21 @@ func resolveHelperBinaryPathWith(
 	}
 
 	return "", fmt.Errorf(
-		"%s helper binary was not found (set %s, build prebuilt binaries with `mise run build`, or install %s in PATH)",
+		"%s helper binary was not found (set %s, set %s=1 after building prebuilt binaries with `mise run build`, or install %s in PATH)",
 		helperBinaryName,
 		helperEnvVar,
+		helperAllowWorkdirEnvVar,
 		helperBinaryName,
 	)
+}
+
+func helperWorkdirLookupAllowed(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolvePrebuiltBinaryPathFromWorkdir(startDir, binaryName string, stat func(string) (os.FileInfo, error)) (string, error) {

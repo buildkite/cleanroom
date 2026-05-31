@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 16 ready for review
+**Status:** Slice 17 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -21,6 +21,8 @@ DeepSec was rerun against the v0.10.0 release on 2026-05-31. That run tracked
 v0.10.0 fixing slice is scoped to the two critical Git gateway port-smuggling
 findings because they share one root cause: route hosts were authorized as
 host:443 while outbound URL construction could preserve an embedded port.
+Slice 16 closed both critical findings in PR #491. Slice 17 is scoped to the
+HIGH darwin-vz helper resolution finding.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -577,12 +579,49 @@ buffering finding, which remains a true positive outside this slice. DeepSec
 status now reports 12/12 findings revalidated, with 10 true positives and
 2 fixed findings.
 
+Slice 17 is implemented and ready for review. The darwin-vz helper resolver
+now keeps explicit `CLEANROOM_DARWIN_VZ_HELPER`, installed sibling helper, and
+PATH discovery, but no longer searches the current working directory or
+ancestor `dist/` directories unless `CLEANROOM_DARWIN_VZ_HELPER_ALLOW_CWD=1`
+is explicitly set for local development. This keeps normal installed helper
+resolution working while removing the default repo-local helper execution path
+from untrusted working directories.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz -run 'TestResolveHelperBinaryPath|TestHelperWorkdirLookupAllowed|TestResolvePrebuiltBinaryPathFromWorkdirUsesAncestorDist'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/backend/darwinvz/helper_client.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the helper resolution finding revalidated as fixed. DeepSec status now
+reports 12/12 findings revalidated, with 9 true positives and 3 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
 | --- | --- | --- | --- |
 | Direct Git proxy allows SSRF via embedded port in upstream host | Critical | Fixed by Slice 16 | Slice 16: Git gateway route authority normalization |
 | Git cache route allows policy port bypass via port smuggling in upstream host | Critical | Fixed by Slice 16 | Slice 16: Git gateway route authority normalization |
+| Helper resolution can execute a repo-local binary on the host | High | Fixed by Slice 17 | Slice 17: gate darwin-vz CWD helper discovery |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -629,6 +668,7 @@ status now reports 12/12 findings revalidated, with 10 true positives and
 14. Finish Git pack cache authorization binding.
 15. Bound dynamic Git content-cache handler creation.
 16. Normalize Git gateway route authorities before policy checks or outbound URL construction.
+17. Gate darwin-vz current-working-directory helper discovery behind explicit local-development opt-in.
 
 ## Key Learnings From Pressure-Testing
 
