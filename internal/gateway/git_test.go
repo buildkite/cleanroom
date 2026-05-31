@@ -525,6 +525,33 @@ func TestServeMirrorUploadPackWritesCommandOutput(t *testing.T) {
 	}
 }
 
+func TestGitHandlerDoesNotAppendErrorAfterMirrorUploadPackStreamStarts(t *testing.T) {
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\ncat >/dev/null\nprintf 'partial-pack'\nprintf 'broken mirror\\n' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	handler := newGitHandler(nil, nil)
+	handler.mirrors = &staticMirrorStore{mirrorDir: t.TempDir()}
+
+	req := httptest.NewRequest(http.MethodPost, "/git/github.com/org/repo.git/git-upload-pack", strings.NewReader("request-payload"))
+	req = withScope(req, gitTestScope())
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if got, want := resp.Code, http.StatusOK; got != want {
+		t.Fatalf("unexpected response code after partial stream: got %d want %d", got, want)
+	}
+	if got, want := resp.Body.String(), "partial-pack"; got != want {
+		t.Fatalf("unexpected response body: got %q want %q", got, want)
+	}
+	if strings.Contains(resp.Body.String(), reasonUpstreamError) || strings.Contains(resp.Body.String(), "broken mirror") {
+		t.Fatalf("gateway error was appended to streamed pack response: %q", resp.Body.String())
+	}
+}
+
 type staticMirrorStore struct {
 	mirrorDir    string
 	gotRemoteURL string

@@ -906,12 +906,14 @@ responses now stream command stdout directly to the HTTP response writer instead
 of buffering the full packfile in memory before replying. The response writer
 flushes after writes when the server supports it, and upload-pack stderr is
 captured through a bounded error buffer so failure messages cannot grow without
-limit.
+limit. If upload-pack exits non-zero after response bytes have already streamed,
+the gateway records the upstream error but does not append a plaintext gateway
+error into the Git protocol response.
 
 Focused validation run on 2026-05-31:
 
 ```text
-MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway -run 'Test(ServeMirrorUploadPackWritesCommandOutput|LimitedOutputBuffer|GitHandlerServesMirrorToRealGitClient)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway -run 'Test(ServeMirrorUploadPackWritesCommandOutput|GitHandlerDoesNotAppendErrorAfterMirrorUploadPackStreamStarts|LimitedOutputBuffer|GitHandlerServesMirrorToRealGitClient)'
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway
 ```
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/log/v2"
@@ -46,6 +47,7 @@ const (
 var (
 	maxUploadPackRequestBytes    int64 = 32 << 20
 	errUploadPackRequestTooLarge       = errors.New("git-upload-pack request body too large")
+	errGitMirrorResponseStarted        = errors.New("git mirror response already started")
 )
 
 type gitHandler struct {
@@ -178,6 +180,9 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 			span.SetStatus(codes.Error, err.Error())
 			h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
+			if errors.Is(err, errGitMirrorResponseStarted) {
+				return
+			}
 			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, err.Error())
 			return
 		}
@@ -414,13 +419,18 @@ func serveMirrorUploadPack(r *http.Request, w http.ResponseWriter, mirrorDir str
 	cmd.Stdin = bytes.NewReader(body)
 
 	stderr := newLimitedOutputBuffer(maxGitCommandErrorOutputBytes)
-	cmd.Stdout = flushResponseWriter{w: w}
+	stdout := &flushResponseWriter{w: w}
+	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 	w.Header().Set("Cache-Control", "no-cache")
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git upload-pack --stateless-rpc: %s: %w", strings.TrimSpace(stderr.String()), err)
+		runErr := fmt.Errorf("git upload-pack --stateless-rpc: %s: %w", strings.TrimSpace(stderr.String()), err)
+		if stdout.Wrote() {
+			return fmt.Errorf("%w: %v", errGitMirrorResponseStarted, runErr)
+		}
+		return runErr
 	}
 	return nil
 }
@@ -458,15 +468,23 @@ func readUploadPackBodyWithLimit(r *http.Request, limit int64) ([]byte, error) {
 }
 
 type flushResponseWriter struct {
-	w http.ResponseWriter
+	w     http.ResponseWriter
+	wrote atomic.Bool
 }
 
-func (fw flushResponseWriter) Write(p []byte) (int, error) {
+func (fw *flushResponseWriter) Write(p []byte) (int, error) {
 	n, err := fw.w.Write(p)
+	if n > 0 {
+		fw.wrote.Store(true)
+	}
 	if flusher, ok := fw.w.(http.Flusher); ok {
 		flusher.Flush()
 	}
 	return n, err
+}
+
+func (fw *flushResponseWriter) Wrote() bool {
+	return fw != nil && fw.wrote.Load()
 }
 
 func uploadPackConfigArgs() []string {
