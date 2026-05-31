@@ -22,7 +22,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+      - test-collector#v1.11.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-go-test-engine.sh
@@ -56,7 +56,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+      - test-collector#v1.11.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-go-test-engine.sh
@@ -118,7 +118,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+      - test-collector#v1.11.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-examples-darwin-vz.sh
@@ -136,7 +136,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+      - test-collector#v1.11.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-with-host-lock.sh cleanroom-firecracker scripts/ci-examples-firecracker.sh
