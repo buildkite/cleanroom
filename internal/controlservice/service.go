@@ -528,7 +528,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := validateRepositoryChangesetForCheckout(repository, changeset); err != nil {
 		return nil, err
 	}
-	if err := validateRepositoryCommitBundleForCheckout(repository, commitBundle); err != nil {
+	if err := validateRepositoryCommitBundleForResolvedCheckout(repository, commitBundle, policySource); err != nil {
 		return nil, err
 	}
 	execOpts := executionOptions{}

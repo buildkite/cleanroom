@@ -2886,6 +2886,63 @@ func TestCreateSandboxLoadsRepositoryPolicyFromCommitBundle(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxLoadsDisabledRepositoryPolicyFromCommitBundle(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md":      "hello\n",
+		"cleanroom.yaml": testRepositoryPolicyYAML("/base", false, true),
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	disabledPolicy := strings.ReplaceAll(testRepositoryPolicyYAML("/bundle", false, true), "  path: /bundle\n  submodules: false", "  enabled: false")
+	if err := os.WriteFile(filepath.Join(localRepo, "cleanroom.yaml"), []byte(disabledPolicy), 0o644); err != nil {
+		t.Fatalf("WriteFile(cleanroom.yaml) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "cleanroom.yaml")
+	runTestGit(t, localRepo, "commit", "-m", "disable checkout")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+	repositoryCheckout.DestinationDir = ""
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		if strings.TrimSpace(commitSHA) != baseCommit {
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+		return nil
+	}
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+	if repository := resp.GetSandbox().GetRepositoryCheckout(); repository != nil {
+		t.Fatalf("expected repository bootstrap to be disabled, got %#v", repository)
+	}
+	if got := adapter.runCalls; got != 0 {
+		t.Fatalf("expected no repository bootstrap execution, got %d", got)
+	}
+}
+
 func TestCreateSandboxRepositoryPolicyHonorsDisabledRepositoryBootstrap(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{

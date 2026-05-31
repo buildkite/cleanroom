@@ -2,6 +2,7 @@ package controlservice
 
 import (
 	"errors"
+	"strings"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/repositorybundle"
@@ -33,4 +34,11 @@ func validateRepositoryCommitBundleForCheckout(repository *repositorycheckout.Ch
 		return err
 	}
 	return nil
+}
+
+func validateRepositoryCommitBundleForResolvedCheckout(repository *repositorycheckout.Checkout, bundle *repositorybundle.Bundle, policySource string) error {
+	if bundle != nil && repository == nil && strings.HasPrefix(strings.TrimSpace(policySource), "repository:") {
+		return nil
+	}
+	return validateRepositoryCommitBundleForCheckout(repository, bundle)
 }

@@ -155,6 +155,51 @@ func TestGitMirrorStoreRefreshMirrorFetchesWithinMaxAge(t *testing.T) {
 	}
 }
 
+func TestGitMirrorStoreRefreshMirrorUpdatesDefaultBranchHEAD(t *testing.T) {
+	t.Parallel()
+
+	workDir := t.TempDir()
+	originDir := filepath.Join(t.TempDir(), "origin.git")
+
+	runGitCommand(t, "", "init", "--bare", originDir)
+	runGitCommand(t, workDir, "init")
+	runGitCommand(t, workDir, "config", "user.email", "test@example.com")
+	runGitCommand(t, workDir, "config", "user.name", "Test")
+	runGitCommand(t, workDir, "branch", "-M", "main")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitCommand(t, workDir, "add", "README.md")
+	runGitCommand(t, workDir, "commit", "-m", "initial")
+	runGitCommand(t, workDir, "remote", "add", "origin", originDir)
+	runGitCommand(t, workDir, "push", "-u", "origin", "main")
+
+	store := NewGitMirrorStore(t.TempDir(), time.Hour, nil)
+	mirrorDir, err := store.EnsureMirror(context.Background(), "file://"+originDir)
+	if err != nil {
+		t.Fatalf("ensure mirror: %v", err)
+	}
+	if got, want := strings.TrimSpace(runGitCommand(t, mirrorDir, "symbolic-ref", "--short", "HEAD")), "main"; got != want {
+		t.Fatalf("unexpected initial mirror HEAD: got %q want %q", got, want)
+	}
+
+	runGitCommand(t, workDir, "checkout", "-b", "newdefault")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitCommand(t, workDir, "add", "README.md")
+	runGitCommand(t, workDir, "commit", "-m", "new default")
+	runGitCommand(t, workDir, "push", "-u", "origin", "newdefault")
+	runGitCommand(t, originDir, "symbolic-ref", "HEAD", "refs/heads/newdefault")
+
+	if _, err := store.RefreshMirror(context.Background(), "file://"+originDir); err != nil {
+		t.Fatalf("refresh mirror: %v", err)
+	}
+	if got, want := strings.TrimSpace(runGitCommand(t, mirrorDir, "symbolic-ref", "--short", "HEAD")), "newdefault"; got != want {
+		t.Fatalf("unexpected refreshed mirror HEAD: got %q want %q", got, want)
+	}
+}
+
 func TestGitMirrorStoreRefreshMirrorSerializesWithEnsureMirror(t *testing.T) {
 	t.Parallel()
 

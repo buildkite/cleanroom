@@ -147,7 +147,23 @@ func (s *mirrorBackedRepositoryStore) EnsureSubmoduleMirror(ctx context.Context,
 }
 
 func (s *mirrorBackedRepositoryStore) repositoryPath(ctx context.Context, remoteURL string) (string, error) {
+	if repoDir, err := s.cachedRepositoryPath(remoteURL); err == nil {
+		return repoDir, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
 	repoDir, err := s.mirrors.EnsureMirror(ctx, remoteURL)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := os.Stat(filepath.Join(repoDir, "HEAD")); statErr != nil {
+		return "", statErr
+	}
+	return repoDir, nil
+}
+
+func (s *mirrorBackedRepositoryStore) cachedRepositoryPath(remoteURL string) (string, error) {
+	repoDir, err := s.mirrors.MirrorPath(remoteURL)
 	if err != nil {
 		return "", err
 	}
