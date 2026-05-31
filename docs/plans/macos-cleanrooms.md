@@ -347,8 +347,20 @@ reusable helper/control-plane pieces, Tart proves the macOS VM plus guest-agent
 model works in practice, and the standalone macOS harness can compile and
 validate bundle metadata paths. The benchmark directory also has a local
 IPSW-to-bundle creator that installs macOS, writes VZ identity files, and emits
-the runner's `bundle.json` shape. No local IPSW or Cleanroom macOS guest agent
-is available in this worktree yet, so the live `sw_vers` smoke has not run.
+the runner's `bundle.json` shape.
+
+The worktree now has a minimal `darwin/arm64` macOS guest agent command,
+LaunchDaemon template, and offline prepare script that clones a base bundle,
+mounts the clone's APFS Data volume, installs the agent, marks setup complete,
+and updates `bundle.json`. The prepare script fails closed if it cannot set
+root ownership, with an explicit inspection-only override for rootless
+experiments. On the local macOS 26.5 build 25F71 bundle, metadata validation
+succeeds after rootless preparation, but the live `sw_vers` smoke still times
+out connecting to the guest vsock port. The rootless offline install cannot set
+root ownership on the agent or LaunchDaemon plist, and the guest did not create
+agent stdout/stderr logs during boot. The next validation step is a privileged
+package/install path, or an in-guest setup path, that produces launchd-accepted
+agent files before rerunning the live smoke.
 
 ## Delivery Strategy
 
@@ -421,6 +433,14 @@ Definition of done:
 - agent reports version and capability metadata to the host
 - unsupported operations return explicit errors rather than silent success
 
+Current status: `cmd/cleanroom-macos-guest-agent` builds for `darwin/arm64`,
+serves the existing newline-delimited exec stream over stdio for tests and
+Darwin AF_VSOCK in the guest, supports `ready`/`version` control requests, and
+streams stdout, stderr, stdin EOF, environment, working directory, and exit
+status. The LaunchDaemon template exists, but live launchd startup is not yet
+proved because the current offline install path cannot set root ownership in
+this non-sudo session.
+
 ### Slice 3: Image bundle creation and import
 
 Create the smallest image workflow needed to repeat the boot-and-exec smoke
@@ -442,6 +462,13 @@ local Apple Silicon IPSW, creates `disk.img`, `auxiliary.storage`,
 writes `bundle.json`. The tool intentionally stops short of claiming the bundle
 is command-runnable because the Cleanroom macOS guest agent still needs to be
 installed inside the guest.
+
+`prepare-agent-bundle.sh` now clones the base bundle, installs the local macOS
+guest agent into the clone's APFS Data volume, writes the LaunchDaemon plist,
+marks setup complete, and updates `bundle.json` to the installed agent version.
+It leaves the base bundle untouched and fails closed when root ownership cannot
+be set, unless the caller passes the inspection-only rootless override.
+Rootless offline installation has not produced a launchd-started agent yet.
 
 Definition of done:
 
@@ -586,6 +613,9 @@ the existing backend.
   Tart-created images is acceptable only as input to an importer or local
   bundle migration step.
 - Command transport: guest agent over virtio socket, not SSH.
+- First probe protocol: keep the existing `vsockexec` newline-delimited JSON
+  shape for exec, with small `ready` and `version` control requests for the
+  macOS agent.
 - Networking default: VZ NAT is acceptable for a local boot probe, but not for
   claimed Cleanroom parity.
 - Public shape: guest platform belongs in policy or request shape; backend
@@ -597,15 +627,10 @@ the existing backend.
 
 Questions that block Slice 1:
 
-- What prepared image should we use for the first local smoke? Recommended
-  default: start with any local Apple Silicon macOS VM bundle that can be
-  modified to include the Cleanroom guest agent, then normalize it into the
-  bundle contract.
-- Which guest-agent protocol should the first probe implement? Recommended
-  default: use the smallest custom exec protocol that exercises stdin,
-  stdout/stderr, exit status, readiness, and version reporting; move to gRPC
-  only if Swift/Go implementation cost is lower than maintaining custom
-  framing.
+- What installation path should make the LaunchDaemon acceptable to launchd?
+  Recommended default: build a package or image-finalization step that runs
+  with privileges inside the target guest or against the mounted Data volume,
+  sets root-owned metadata, and then reruns the existing `sw_vers` smoke.
 
 Questions before backend integration:
 

@@ -71,17 +71,19 @@ private struct ResolvedBundle {
 }
 
 private struct ExecRequest: Encodable {
-    let type: String
     let command: [String]
-    let environment: [String: String]
-    let workingDirectory: String?
+    let env: [String]
+    let dir: String?
 
     enum CodingKeys: String, CodingKey {
-        case type
         case command
-        case environment
-        case workingDirectory = "working_directory"
+        case env
+        case dir
     }
+}
+
+private struct ExecInputFrame: Encodable {
+    let type: String
 }
 
 private struct ExecFrame: Decodable {
@@ -522,9 +524,11 @@ private func connectVsock(handle: VMHandle, port: UInt32, timeoutSeconds: Double
 }
 
 private func writeExecRequest(connection: VZVirtioSocketConnection, command: [String]) throws {
-    let request = ExecRequest(type: "exec", command: command, environment: [:], workingDirectory: nil)
+    let request = ExecRequest(command: command, env: [], dir: nil)
     let encoded = try JSONEncoder().encode(request)
     try writeAll(fd: connection.fileDescriptor, bytes: Array(encoded) + [0x0A])
+    let eof = try JSONEncoder().encode(ExecInputFrame(type: "eof"))
+    try writeAll(fd: connection.fileDescriptor, bytes: Array(eof) + [0x0A])
 }
 
 private func runGuestCommand(connection: VZVirtioSocketConnection, command: [String], timeoutSeconds: Double) throws -> (Int, String?) {

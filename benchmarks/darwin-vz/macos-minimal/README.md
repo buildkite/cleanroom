@@ -84,6 +84,35 @@ agent inside the guest. Before the runner can execute commands, boot the bundle
 once, finish macOS setup, install the guest agent as a LaunchDaemon, then shut
 the guest down cleanly.
 
+## Prepare an agent bundle
+
+Build the minimal macOS guest agent:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/build-guest-agent.sh
+```
+
+Then clone a base bundle and install the agent into the clone's APFS Data
+volume:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/prepare-agent-bundle.sh \
+  --base /path/to/cleanroom-macos-base \
+  --out /path/to/cleanroom-macos-agent \
+  --force
+```
+
+The prepare script leaves the base bundle untouched. It installs
+`/usr/local/bin/cleanroom-macos-guest-agent`, writes
+`/Library/LaunchDaemons/com.buildkite.cleanroom.macos-guest-agent.plist`, and
+updates `bundle.json` with the installed agent version.
+
+When the script is run without root privileges, it may be unable to set
+root-owned metadata on the installed files. By default it fails in that case
+because launchd may reject the daemon. Use `--allow-unverified-ownership` only
+for inspecting the offline image flow; a bundle prepared that way is not
+command-runnable until the live smoke proves the agent starts.
+
 ## Validate metadata
 
 ```bash
@@ -112,7 +141,9 @@ exit code and writes timing metadata to the path provided by `--metrics`.
 The guest agent protocol is deliberately tiny for the probe:
 
 - host sends one newline-delimited JSON request:
-  `{"type":"exec","command":["/usr/bin/sw_vers"]}`
+  `{"command":["/usr/bin/sw_vers"]}`
+- host sends `{"type":"eof"}` immediately after the request because this
+  runner does not forward interactive stdin yet
 - guest sends newline-delimited JSON frames:
   `stdout`, `stderr`, and a final `exit` frame
 - `stdout` and `stderr` frame `data` values are base64-encoded bytes
