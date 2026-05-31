@@ -238,10 +238,11 @@ type jwksCache struct {
 	url        string
 	httpClient *http.Client
 
-	mu   sync.Mutex
-	keys map[string]any
-	at   time.Time
-	now  func() time.Time
+	mu     sync.Mutex
+	keys   map[string]any
+	at     time.Time
+	loaded bool
+	now    func() time.Time
 
 	maxAge time.Duration
 }
@@ -249,10 +250,13 @@ type jwksCache struct {
 func (c *jwksCache) key(ctx context.Context, kid string) (any, error) {
 	c.mu.Lock()
 	key, ok := c.keys[kid]
-	fresh := c.maxAge <= 0 || (!c.at.IsZero() && c.now().Sub(c.at) < c.maxAge)
+	fresh := c.loaded && (c.maxAge <= 0 || c.now().Sub(c.at) < c.maxAge)
 	c.mu.Unlock()
 	if ok && fresh {
 		return key, nil
+	}
+	if fresh {
+		return nil, fmt.Errorf("jwks key %q not found", kid)
 	}
 
 	if err := c.refresh(ctx); err != nil {
@@ -310,6 +314,7 @@ func (c *jwksCache) refresh(ctx context.Context) error {
 	c.mu.Lock()
 	c.keys = keys
 	c.at = c.now()
+	c.loaded = true
 	c.mu.Unlock()
 	return nil
 }
