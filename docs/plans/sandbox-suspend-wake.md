@@ -1,7 +1,7 @@
 # Transparent Sandbox Suspend And Wake Plan
 
-**Status:** Active
-**Last reviewed:** 2026-05-29
+**Status:** Landed
+**Last reviewed:** 2026-05-31
 **Spec references:** `docs/api.md`, `docs/snapshots.md`, `docs/backend/darwin-vz.md`
 **Related plans:** `docs/plans/system-storage-prune.md`, `docs/plans/layered-caching.md`
 
@@ -19,11 +19,11 @@ daemon while the VM is paused. Later live checkpoint or hibernation work can
 build on the lifecycle surface, but it needs a separate backend capability and
 stronger restore semantics.
 
-Start with `darwin-vz`, because the helper already exposes `PauseVM` and
-`ResumeVM`, and the backend already uses those operations internally while
-capturing filesystem snapshots. Firecracker can follow with a same-host freeze
-using its existing `SIGSTOP` / `SIGCONT` helpers, but that should be described
-as a CPU freeze until we prove memory reclamation or durable checkpointing.
+The implementation started with `darwin-vz`, because the helper already exposes
+`PauseVM` and `ResumeVM`, and the backend already uses those operations
+internally while capturing filesystem snapshots. Firecracker now supports
+same-host freeze/wake using its existing `SIGSTOP` / `SIGCONT` helpers; describe
+that as a CPU freeze until we prove memory reclamation or durable checkpointing.
 
 ## Problem
 
@@ -32,12 +32,12 @@ That is useful for fast repeated commands, long-lived service processes, and
 local port exposures, but it makes idle sandboxes consume host resources even
 when the user is not interacting with them.
 
-The current lifecycle model has no suspended state. `SandboxStatus` only
-distinguishes provisioning, ready, stopping, stopped, and failed. Control-service
-operations generally require `READY` before touching the guest, and the backend
-adapter interface only exposes provision, run, and terminate. That leaves no
-place to express "this sandbox still exists, but the VM must wake before the
-next guest operation."
+Before this work, the lifecycle model had no suspended state. `SandboxStatus`
+only distinguished provisioning, ready, stopping, stopped, and failed.
+Control-service operations generally required `READY` before touching the guest,
+and the backend adapter interface only exposed provision, run, and terminate.
+That left no place to express "this sandbox still exists, but the VM must wake
+before the next guest operation."
 
 The project already has filesystem snapshot semantics, but those are fresh-boot
 restore points. Reusing snapshot language for idle VM suspension would create
@@ -69,9 +69,10 @@ daemon restart durability.
 - Do not add a cross-machine VM fork or fan-out contract.
 - Do not silently terminate unsupported backend sandboxes to mimic suspension.
 
-## Current State
+## Starting State
 
-Relevant current behavior:
+This was the relevant behavior when the plan started; it is retained as context
+for why the lifecycle surface exists:
 
 - `docs/snapshots.md` says snapshots are filesystem savepoints, not live process
   or memory checkpoints.
@@ -120,14 +121,29 @@ suspend and wake duration and outcome, and the `darwin-vz` E2E path now smokes
 manual suspend, transparent wake through command execution, file read, and local
 port exposure before terminating the sandbox.
 
-Slice 5 is implemented in this change: Firecracker implements same-host
-freeze/resume through its existing process pause and resume helpers, publishes
-the backend-neutral suspend capability, and the Firecracker E2E path smokes
-manual suspend, transparent wake through command execution, file read, local
-port exposure, deny-by-default egress after wake, and termination from a
-suspended state.
+Slice 5 has landed: Firecracker implements same-host freeze/resume through its
+existing process pause and resume helpers, publishes the backend-neutral suspend
+capability, and the Firecracker E2E path smokes manual suspend, transparent wake
+through command execution, file read, local port exposure, deny-by-default
+egress after wake, and termination from a suspended state.
 
 Live hibernation and daemon-restart restore remain follow-up work.
+
+The feature shipped in Cleanroom `v0.10.0`, published on 2026-05-30.
+
+## Post-Release Follow-Up
+
+The implementation and GitHub release are complete. Remaining work is
+operational hardening, not a release blocker:
+
+- Prove installed-daemon behavior on rolled-out hosts, not only in-repo
+  execution: `doctor`, daemon status, manual suspend/wake, and a short
+  `sandbox_lifecycle.idle_suspend_after_seconds` smoke.
+- Decide whether installers or ops-managed hosts should set an idle timeout by
+  default. Until that decision is made, automatic idle suspend remains explicit
+  host runtime config.
+- Keep product and operator wording clear that Firecracker suspend is same-host
+  freeze/resume, not memory reclamation or durable hibernation.
 
 ## Target Lifecycle Model
 
@@ -209,7 +225,7 @@ guest port after the backend reports ready.
 ## Runtime Config
 
 Suspend policy belongs in runtime config because it is host resource management.
-The first implementation should add one host-level section:
+The implementation adds one host-level section:
 
 ```yaml
 sandbox_lifecycle:
@@ -225,9 +241,9 @@ Semantics:
   backend launch timeout when unset
 - the policy applies only to backends that report `sandbox.suspend=true`
 
-The first slice should implement the manual suspend/resume API and CLI before
-enabling the idle timer by default. Once the wake path is proven, automatic idle
-suspend can be turned on by config.
+The implementation added the manual suspend/resume API and CLI before the idle
+worker. Automatic idle suspend is available by config, but remains disabled by
+default.
 
 Avoid per-project fields in `cleanroom.yaml`. A repository should not decide how
 aggressively a developer or CI host reclaims idle VM resources.
@@ -524,7 +540,8 @@ CLEANROOM_DARWIN_VZ_E2E=1 mise exec -- go test ./internal/backend/darwinvz -run 
 scripts/ci-darwin-vz-e2e.sh
 ```
 
-Manual installed-daemon proof before enabling automatic idle suspend:
+Manual installed-daemon proof before recommending or enabling automatic idle
+suspend by default:
 
 ```bash
 /usr/local/bin/cleanroom doctor --backend darwin-vz --json
@@ -533,6 +550,19 @@ Manual installed-daemon proof before enabling automatic idle suspend:
 /usr/local/bin/cleanroom sandbox suspend <sandbox-id>
 /usr/local/bin/cleanroom exec --in <sandbox-id> -- uname -a
 /usr/local/bin/cleanroom sandbox inspect <sandbox-id>
+```
+
+Installed-daemon idle-suspend smoke:
+
+```bash
+cleanroom config validate
+# Set sandbox_lifecycle.idle_suspend_after_seconds to a small positive value
+# on a disposable host or isolated runtime config, then restart the daemon.
+cleanroom daemon restart
+cleanroom sandbox create --image ghcr.io/buildkite/cleanroom-base/alpine:latest
+sleep <idle threshold plus one poll interval>
+cleanroom sandbox inspect --last # status should be suspended
+cleanroom exec --in <sandbox-id> -- echo woke
 ```
 
 ## Key Learnings From Pressure-Testing
@@ -552,9 +582,11 @@ busy checks and backend calls separate: decide and mark lifecycle transitions
 under the service lock, perform backend work outside the lock, then re-check and
 publish final state.
 
-Automatic idle suspend is deliberately not the first behavior. Manual
-suspend/resume plus transparent wake gives a narrow correctness target before a
-daemon timer starts changing user-visible lifecycle behavior.
+Automatic idle suspend is deliberately opt-in even though the worker has landed.
+Manual suspend/resume plus transparent wake are the release-safe correctness
+target; a daemon timer should become a default only after installed-daemon and
+prod-host rollout proof shows the wake latency and support boundary are
+acceptable.
 
 ## Resolved Decisions
 
@@ -566,7 +598,10 @@ daemon timer starts changing user-visible lifecycle behavior.
 - Expose manual `sandbox suspend` and `sandbox resume` commands in the first PR
   so the lifecycle can be proven against an installed daemon before idle timers
   exist.
-- Treat Firecracker and hibernation as follow-up work.
+- Firecracker support is same-host freeze/resume only; hibernation remains
+  follow-up work.
+- Active local port dials hold a guest-interaction lease so the idle worker does
+  not suspend underneath an open tunnel.
 
 ## Deferred Questions
 
@@ -576,5 +611,3 @@ daemon timer starts changing user-visible lifecycle behavior.
   host config?
 - Can memory ballooning before `darwin-vz` pause materially reduce host memory
   pressure without adding surprising wake latency?
-- What is the right support boundary for suspended sandboxes with open local
-  exposure connections?
