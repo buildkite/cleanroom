@@ -111,7 +111,10 @@ func TestBuildkiteGoTestEngineScriptBootstrapsBktecAndRequiresGotestsum(t *testi
 	for _, needle := range []string{
 		`BKTEC_VERSION="${BKTEC_VERSION:-2.6.0}"`,
 		`github.com/buildkite/test-engine-client/releases/download/v${BKTEC_VERSION}/${asset}`,
-		`BUILDKITE_TEST_ENGINE_RESULT_PATH="tmp/test-engine/gotest-${BUILDKITE_PARALLEL_JOB:-0}.xml"`,
+		`if [[ "${BUILDKITE_PARALLEL_JOB_COUNT:-0}" == "0" ]]; then`,
+		`BUILDKITE_PARALLEL_JOB_COUNT=1`,
+		`goos="$(go env GOOS)"`,
+		`BUILDKITE_TEST_ENGINE_RESULT_PATH="tmp/test-engine/gotest-${goos}-${BUILDKITE_PARALLEL_JOB:-0}.xml"`,
 		`BUILDKITE_TEST_ENGINE_SUITE_SLUG is required`,
 		`command -v gotestsum`,
 		`gotestsum is required; install it with mise before running Test Engine`,
