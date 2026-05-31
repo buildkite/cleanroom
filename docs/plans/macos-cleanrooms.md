@@ -350,20 +350,27 @@ IPSW-to-bundle creator that installs macOS, writes VZ identity files, and emits
 the runner's `bundle.json` shape.
 
 The worktree now has a minimal `darwin/arm64` macOS guest agent command,
-LaunchDaemon template, package builder, and offline prepare script that clones
-a base bundle, mounts the clone's APFS Data volume, installs the agent, marks
-setup complete, and updates `bundle.json`. The prepare script fails closed if
-it cannot set root ownership, with an explicit inspection-only override for
-rootless experiments. On the local macOS 26.5 build 25F71 bundle, metadata
-validation succeeds after rootless preparation, but the live `sw_vers` smoke
-still times out connecting to the guest vsock port. The rootless offline
-install cannot set root ownership on the agent or LaunchDaemon plist, and the
-guest did not create agent stdout/stderr logs during boot. The package builder
-now produces `dist/cleanroom-macos-guest-agent.pkg` as a script-only installer:
-its postinstall runs inside the guest as root, writes the agent and
-LaunchDaemon plist as `root:wheel`, and bootstraps the LaunchDaemon when the
-target is the running system. The next validation step is a setup boot or
-privileged in-guest install that runs that package, then reruns the live smoke.
+LaunchDaemon template, package builder, setup viewer, and offline prepare
+script that clones a base bundle, mounts the clone's APFS Data volume, installs
+the agent, marks setup complete, and updates `bundle.json`. The prepare script
+fails closed if it cannot set root ownership, with an explicit inspection-only
+override for rootless experiments. On the local macOS 26.5 build 25F71 bundle,
+metadata validation succeeds after rootless preparation, but the live
+`sw_vers` smoke still times out connecting to the guest vsock port. The
+rootless offline install cannot set root ownership on the agent or LaunchDaemon
+plist, and the guest did not create agent stdout/stderr logs during boot.
+
+The package builder now produces `dist/cleanroom-macos-guest-agent.pkg` as a
+script-only installer: its postinstall runs inside the guest as root, writes the
+agent and LaunchDaemon plist as `root:wheel`, and bootstraps the LaunchDaemon
+when the target is the running system. A host-side attempt to apply that package
+to a mounted clone's Data volume blocked in `installerauthagent`, so this is
+not a noninteractive host-finalization path without administrator
+authorization. The setup viewer boots a bundle in a `VZVirtualMachineView`
+window and can expose `dist/` through the macOS guest automount tag so the
+package is available at `/Volumes/My Shared Files/cleanroom-macos-guest-agent.pkg`.
+The next validation step is to run that package during a setup boot or other
+privileged in-guest finalization step, then rerun the live smoke.
 
 ## Delivery Strategy
 
@@ -378,14 +385,19 @@ Expected files:
 - `benchmarks/darwin-vz/macos-minimal/README.md`
 - `benchmarks/darwin-vz/macos-minimal/runner.swift`
 - `benchmarks/darwin-vz/macos-minimal/build-runner.sh`
+- `benchmarks/darwin-vz/macos-minimal/viewer.swift`
+- `benchmarks/darwin-vz/macos-minimal/build-viewer.sh`
 - `benchmarks/darwin-vz/macos-minimal/example-bundle.json`
 
 Current status: these files exist. The runner builds and signs as
 `dist/darwin-vz-macos-minimal`, `--help` works, and validation fails closed
 when the example bundle points at missing artifacts or invalid
-Virtualization.framework identity data. The repository Go suite also passes
-locally with this harness present. Live VM validation is pending a prepared
-macOS bundle with the guest agent installed.
+Virtualization.framework identity data. The viewer builds and signs as
+`dist/darwin-vz-macos-viewer`; `--help` and invalid bundle errors work, and it
+can validate and attach a read-only VirtioFS directory share for setup-time
+package access. The repository Go suite also passes locally with this harness
+present. Live VM validation is pending a prepared macOS bundle with the guest
+agent installed.
 
 Scope:
 
@@ -394,6 +406,7 @@ Scope:
   `VZMacPlatformConfiguration`, storage, socket device, and minimal console
   devices
 - sign the runner with the existing virtualization entitlement
+- provide a viewer path for setup and manual image finalization
 - start the VM without invoking `tart`
 - connect to the guest agent over virtio socket
 - run `/usr/bin/sw_vers` by default, with a flag for an arbitrary command
@@ -475,7 +488,9 @@ Rootless offline installation has not produced a launchd-started agent yet.
 `build-guest-agent-pkg.sh` creates a script-only installer package for an
 in-guest finalization path. The package avoids host-side AppleDouble payload
 entries and uses postinstall to write root-owned files, then tries to bootstrap
-and kickstart the LaunchDaemon.
+and kickstart the LaunchDaemon. `build-viewer.sh`/`viewer.swift` provide the
+manual setup boot path for that package by showing the VM and exposing a host
+directory with VirtioFS.
 
 Definition of done:
 

@@ -53,6 +53,17 @@ benchmarks/darwin-vz/macos-minimal/build-runner.sh
 The script writes `dist/darwin-vz-macos-minimal` and signs it with
 `cmd/cleanroom-darwin-vz/entitlements.plist` by default.
 
+For setup or manual image finalization, build the viewer:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/build-viewer.sh
+```
+
+The viewer writes `dist/darwin-vz-macos-viewer`. It boots the same bundle in a
+`VZVirtualMachineView` window and can expose one host directory read-only using
+the macOS guest automount tag. Pass `--validate-only` to check the bundle and
+share configuration without starting the VM.
+
 ## Create a local bundle from an IPSW
 
 ```bash
@@ -125,6 +136,21 @@ For a setup boot or manual guest finalization, copy
 
 ```bash
 sudo installer -pkg /path/to/cleanroom-macos-guest-agent.pkg -target /
+```
+
+One local way to make the package available to the guest is to boot the bundle
+with the viewer and share `dist/`:
+
+```bash
+dist/darwin-vz-macos-viewer \
+  --bundle /path/to/cleanroom-macos-agent \
+  --shared-directory dist
+```
+
+Inside the guest, the package is available at:
+
+```bash
+/Volumes/My Shared Files/cleanroom-macos-guest-agent.pkg
 ```
 
 The package is script-only so it does not archive host-side AppleDouble
