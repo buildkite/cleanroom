@@ -18,6 +18,7 @@ type stubRegistryPrefixHandlerProvider struct {
 	upstreamPort int
 	err          error
 	prefix       string
+	cacheScope   string
 	handlerCalls int
 	lookupCalls  int
 }
@@ -31,8 +32,9 @@ func (s *stubRegistryPrefixHandlerProvider) OCIUpstreamForPrefix(prefix string) 
 	return s.policyHost, s.policyPort, s.upstreamHost, s.upstreamPort, nil
 }
 
-func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, func(), error) {
+func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix, cacheScope string) (http.Handler, func(), error) {
 	s.prefix = prefix
+	s.cacheScope = cacheScope
 	s.handlerCalls++
 	if s.err != nil {
 		return nil, nil, s.err
@@ -275,6 +277,35 @@ func TestCachedRegistryHandlerAllowsRepoInGatewayEnvelope(t *testing.T) {
 	}
 	if capturedPath == "" {
 		t.Fatal("expected cache handler to be called")
+	}
+}
+
+func TestCachedRegistryHandlerScopesCacheToAuthorizedRepoAndOwner(t *testing.T) {
+	t.Parallel()
+
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	provider := &stubRegistryPrefixHandlerProvider{
+		handler:      backend,
+		policyHost:   "ghcr.io",
+		policyPort:   443,
+		upstreamHost: "ghcr.io",
+		upstreamPort: 443,
+	}
+	h := newCachedRegistryHandler(provider, nil, true)
+
+	req := httptest.NewRequest("GET", "/registry/ghcr.io/buildkite/cleanroom-base/alpine/blobs/sha256:abc123", nil)
+	req = withScope(req, registryOwnedScope([]string{"ghcr.io/buildkite/cleanroom-base/alpine"}, "ghcr.io"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	want := "owner:oidc:test:alice\x00scope:repo:buildkite/cleanroom\x00oci:ghcr.io/buildkite/cleanroom-base/alpine"
+	if provider.cacheScope != want {
+		t.Fatalf("unexpected cache scope: got %q want %q", provider.cacheScope, want)
 	}
 }
 

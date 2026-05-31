@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 19 ready for review
+**Status:** Slice 20 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -22,10 +22,15 @@ v0.10.0 fixing slice is scoped to the two critical Git gateway port-smuggling
 findings because they share one root cause: route hosts were authorized as
 host:443 while outbound URL construction could preserve an embedded port.
 Slice 16 closed both critical findings in PR #491. Slice 17 closed the HIGH
-darwin-vz helper resolution finding. Slice 18 closes the HIGH
-execution-scoped gateway credential cleanup finding for Firecracker sandboxes.
-Slice 19 closes the HIGH DNS exfiltration finding by enforcing DNS policy before
-forwarding queries upstream.
+darwin-vz helper resolution finding in PR #492. Slice 18 closed the HIGH
+execution-scoped gateway credential cleanup finding in PR #493. Slice 19 closed
+the HIGH DNS exfiltration finding in PR #494.
+
+After PR #494 merged, the live `cleanroom-v0.10.0` DeepSec export shows 7
+unresolved true positives: OCI digest cache authorization, unknown OIDC `kid`
+JWKS fetch amplification, persistent darwin-vz file-handle policy lifetime, Git
+proxy environment port preservation, two Git mirror resource-exhaustion paths,
+and retained execution output UTF-8 handling.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -706,6 +711,43 @@ Result: the DNS query exfiltration finding revalidated as fixed. DeepSec status
 now reports 12/12 findings revalidated, with 7 true positives and 5 fixed
 findings.
 
+Slice 20 is implemented and ready for review. OCI content-cache handlers are
+now leased by registry prefix plus an authorization cache scope derived from
+the requested OCI repository and authenticated sandbox owner when available.
+Each scoped handler builds its own OCI tag, manifest, and blob indexes and its
+own singleflight downloader. This preserves cache reuse inside the same
+authorized repo scope while preventing digest manifest, blob, and in-flight
+download hits from crossing into another repo or owner envelope.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway -run 'Test(CachedRegistryHandler|DockerHubMirrorHandler|OCIHandlerForPrefix|ScopedOCIIndex)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/gateway/oci_cached.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the OCI digest cache authorization finding revalidated as fixed.
+DeepSec status now reports 12/12 findings revalidated, with 6 true positives
+and 6 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -715,6 +757,7 @@ findings.
 | Helper resolution can execute a repo-local binary on the host | High | Fixed by Slice 17 | Slice 17: gate darwin-vz CWD helper discovery |
 | Execution-scoped gateway credential authorization persists after execution | High | Fixed by Slice 18 | Slice 18: restore gateway scope after execution |
 | Denied workloads can still exfiltrate data through DNS queries | High | Fixed by Slice 19 | Slice 19: DNS pre-query policy gate |
+| OCI digest cache can bypass repository-level authorization | High | Fixed by Slice 20 | Slice 20: OCI cache scope binding |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -764,6 +807,7 @@ findings.
 17. Gate darwin-vz current-working-directory helper discovery behind explicit local-development opt-in.
 18. Restore registered gateway authorization when Firecracker execution scopes end.
 19. Gate DNS queries against sandbox policy before forwarding to upstream resolvers.
+20. Bind OCI digest cache entries to the authorized repo and owner scope.
 
 ## Key Learnings From Pressure-Testing
 

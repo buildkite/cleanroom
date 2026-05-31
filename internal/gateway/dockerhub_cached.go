@@ -93,7 +93,8 @@ func (h *dockerHubMirrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	cacheHandler, releaseHandler, err := h.cache.OCIHandlerForPrefix(dockerHubMirrorPrefix)
+	cacheScope := ociCacheScope(scope, dockerHubMirrorPrefix, rest)
+	cacheHandler, releaseHandler, err := h.cache.OCIHandlerForPrefix(dockerHubMirrorPrefix, cacheScope)
 	if err != nil {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUnknownRegistryPrefix)
 		span.RecordError(err)
