@@ -104,6 +104,57 @@ func TestGitMirrorStoreEnsureMirrorContainsFetchesRequestedCommit(t *testing.T) 
 	}
 }
 
+func TestGitMirrorStoreRefreshMirrorFetchesWithinMaxAge(t *testing.T) {
+	t.Parallel()
+
+	workDir := t.TempDir()
+	originDir := filepath.Join(t.TempDir(), "origin.git")
+
+	runGitCommand(t, "", "init", "--bare", originDir)
+	runGitCommand(t, workDir, "init")
+	runGitCommand(t, workDir, "config", "user.email", "test@example.com")
+	runGitCommand(t, workDir, "config", "user.name", "Test")
+	runGitCommand(t, workDir, "branch", "-M", "main")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitCommand(t, workDir, "add", "README.md")
+	runGitCommand(t, workDir, "commit", "-m", "initial")
+	runGitCommand(t, workDir, "remote", "add", "origin", originDir)
+	runGitCommand(t, workDir, "push", "-u", "origin", "main")
+
+	store := NewGitMirrorStore(t.TempDir(), time.Hour, nil)
+	mirrorDir, err := store.EnsureMirror(context.Background(), "file://"+originDir)
+	if err != nil {
+		t.Fatalf("ensure mirror: %v", err)
+	}
+	head1 := gitRevParse(t, mirrorDir, "refs/heads/main")
+
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitCommand(t, workDir, "add", "README.md")
+	runGitCommand(t, workDir, "commit", "-m", "second")
+	runGitCommand(t, workDir, "push", "origin", "main")
+	head2 := strings.TrimSpace(runGitCommand(t, workDir, "rev-parse", "HEAD"))
+	if head2 == head1 {
+		t.Fatalf("expected a new commit after second push")
+	}
+
+	mirrorDir2, err := store.RefreshMirror(context.Background(), "file://"+originDir)
+	if err != nil {
+		t.Fatalf("refresh mirror: %v", err)
+	}
+	if mirrorDir2 != mirrorDir {
+		t.Fatalf("mirror directory changed: got %q want %q", mirrorDir2, mirrorDir)
+	}
+
+	got := gitRevParse(t, mirrorDir, "refs/heads/main")
+	if got != head2 {
+		t.Fatalf("expected mirror head %q after refresh, got %q", head2, got)
+	}
+}
+
 func runGitCommand(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 

@@ -366,6 +366,8 @@ type stubRepositoryMirrorStore struct {
 	mirrorPathErr             error
 	ensureMirrorCalls         int
 	ensureMirrorErr           error
+	refreshCalls              int
+	refreshErr                error
 	ensureSubmoduleMirrorFunc func(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error)
 }
 
@@ -402,6 +404,22 @@ func (s *stubRepositoryMirrorStore) EnsureMirror(_ context.Context, remoteURL st
 	s.ensureMirrorCalls++
 	if s.ensureMirrorErr != nil {
 		return "", s.ensureMirrorErr
+	}
+	return s.mirrorPath, nil
+}
+
+func (s *stubRepositoryMirrorStore) Refresh(_ context.Context, remoteURL string, _ repositorystore.FetchHints) error {
+	s.remoteURL = remoteURL
+	s.refreshCalls++
+	if s.refreshErr != nil {
+		return s.refreshErr
+	}
+	return nil
+}
+
+func (s *stubRepositoryMirrorStore) RefreshMirror(ctx context.Context, remoteURL string) (string, error) {
+	if err := s.Refresh(ctx, remoteURL, repositorystore.FetchHints{}); err != nil {
+		return "", err
 	}
 	return s.mirrorPath, nil
 }
@@ -2786,6 +2804,82 @@ func TestCreateSandboxRepositoryPolicyResolvesBranch(t *testing.T) {
 	}
 	if got := repository.GetDestinationDir(); got != "/feature" {
 		t.Fatalf("unexpected destination dir: got %q", got)
+	}
+	if got := mirrors.refreshCalls; got != 1 {
+		t.Fatalf("expected one mirror refresh before resolving branch, got %d", got)
+	}
+}
+
+func TestCreateSandboxLoadsRepositoryPolicyFromCommitBundle(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md":      "hello\n",
+		"cleanroom.yaml": testRepositoryPolicyYAML("/base", false, true),
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "cleanroom.yaml"), []byte(testRepositoryPolicyYAML("/bundle", true, true)), 0o644); err != nil {
+		t.Fatalf("WriteFile(cleanroom.yaml) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "cleanroom.yaml")
+	runTestGit(t, localRepo, "commit", "-m", "local policy")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+	repositoryCheckout.DestinationDir = ""
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		switch strings.TrimSpace(commitSHA) {
+		case baseCommit:
+			return nil
+		case localCommit:
+			return errors.New("local-only commit should be supplied by commit bundle")
+		default:
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+	}
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+	repository := resp.GetSandbox().GetRepositoryCheckout()
+	if repository == nil {
+		t.Fatal("expected repository checkout on sandbox")
+	}
+	if got := repository.GetCommitSha(); got != localCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, localCommit)
+	}
+	if got := repository.GetDestinationDir(); got != "/bundle" {
+		t.Fatalf("unexpected destination dir: got %q", got)
+	}
+	if !repository.GetSubmodules() {
+		t.Fatal("expected repository submodules to come from bundled policy")
+	}
+	if !slices.Contains(mirrors.commitSHAs, baseCommit) {
+		t.Fatalf("expected bundle prerequisite %q to be ensured, got %v", baseCommit, mirrors.commitSHAs)
+	}
+	if slices.Contains(mirrors.commitSHAs, localCommit) {
+		t.Fatalf("expected local-only commit %q to avoid direct mirror ensure, got %v", localCommit, mirrors.commitSHAs)
 	}
 }
 

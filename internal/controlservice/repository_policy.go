@@ -11,11 +11,12 @@ import (
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
 )
 
-func (s *Service) resolveCreateSandboxPolicy(ctx context.Context, pb *cleanroomv1.Policy, repository *repositorycheckout.Checkout) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, error) {
+func (s *Service) resolveCreateSandboxPolicy(ctx context.Context, pb *cleanroomv1.Policy, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, error) {
 	if pb != nil {
 		compiled, err := policy.FromCreateRequestProto(pb)
 		if err != nil {
@@ -26,10 +27,10 @@ func (s *Service) resolveCreateSandboxPolicy(ctx context.Context, pb *cleanroomv
 	if repository == nil {
 		return nil, "", nil, errors.New("missing policy")
 	}
-	return s.resolveRepositoryCreateSandboxPolicy(ctx, repository)
+	return s.resolveRepositoryCreateSandboxPolicy(ctx, repository, commitBundle)
 }
 
-func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repository *repositorycheckout.Checkout) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, error) {
+func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, error) {
 	if s.RepositoryStore == nil {
 		return nil, "", nil, errors.New("repository checkout without policy requires repository store")
 	}
@@ -37,11 +38,17 @@ func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repo
 	if _, err := resolvedRepository.NormalizeRemoteURL(); err != nil {
 		return nil, "", nil, err
 	}
+	if commitBundle != nil && strings.TrimSpace(resolvedRepository.CommitSHA) == "" {
+		resolvedRepository.CommitSHA = strings.ToLower(strings.TrimSpace(commitBundle.TargetCommitSHA))
+	}
 	if err := s.resolveRepositoryCheckoutCommit(ctx, resolvedRepository); err != nil {
 		return nil, "", nil, err
 	}
+	if err := validateRepositoryCommitBundleForCheckout(resolvedRepository, commitBundle); err != nil {
+		return nil, "", nil, err
+	}
 
-	compiled, source, repositoryConfig, err := s.loadRepositoryPolicyAtCommit(ctx, resolvedRepository)
+	compiled, source, repositoryConfig, err := s.loadRepositoryPolicy(ctx, resolvedRepository, commitBundle)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -64,8 +71,15 @@ func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repositor
 	if strings.TrimSpace(repository.CommitSHA) != "" {
 		return fmt.Errorf("repository commit_sha %q must be a full 40-character hexadecimal commit SHA", strings.TrimSpace(repository.CommitSHA))
 	}
-	return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, "", repositorystore.FetchHints{}, func(repoDir string) error {
-		branch := strings.TrimSpace(repository.Branch)
+	branch := strings.TrimSpace(repository.Branch)
+	hints := repositorystore.FetchHints{}
+	if branch != "" {
+		hints.Branches = []string{branch}
+	}
+	if err := s.RepositoryStore.Refresh(ctx, repository.RemoteURL, hints); err != nil {
+		return err
+	}
+	return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, "", hints, func(repoDir string) error {
 		if branch != "" {
 			if err := validateRepositoryBranch(ctx, repoDir, branch); err != nil {
 				return err
@@ -91,9 +105,48 @@ func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repositor
 	})
 }
 
+func (s *Service) loadRepositoryPolicy(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, policy.RepositoryConfig, error) {
+	if commitBundle != nil {
+		return s.loadRepositoryPolicyFromCommitBundle(ctx, repository, commitBundle)
+	}
+	return s.loadRepositoryPolicyAtCommit(ctx, repository)
+}
+
 func (s *Service) loadRepositoryPolicyAtCommit(ctx context.Context, repository *repositorycheckout.Checkout) (*policy.CompiledPolicy, string, policy.RepositoryConfig, error) {
+	return loadRepositoryPolicyFiles(func(path string) ([]byte, error) {
+		return s.RepositoryStore.ReadFileAtCommit(ctx, repository.RemoteURL, repository.CommitSHA, path)
+	}, repositoryPolicyNotFoundError(repository))
+}
+
+func (s *Service) loadRepositoryPolicyFromCommitBundle(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, policy.RepositoryConfig, error) {
+	prerequisiteCommit, err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle)
+	if err != nil {
+		return nil, "", policy.RepositoryConfig{}, err
+	}
+
+	var (
+		compiled         *policy.CompiledPolicy
+		source           string
+		repositoryConfig policy.RepositoryConfig
+	)
+	err = s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, prerequisiteCommit, repositorystore.FetchHints{}, func(repoDir string) error {
+		return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
+			var err error
+			compiled, source, repositoryConfig, err = loadRepositoryPolicyFiles(func(path string) ([]byte, error) {
+				return gitShowFileAtCommit(ctx, bundleRepoDir, commitBundle.TargetCommitSHA, path)
+			}, repositoryPolicyNotFoundError(repository))
+			return err
+		})
+	})
+	if err != nil {
+		return nil, "", policy.RepositoryConfig{}, err
+	}
+	return compiled, source, repositoryConfig, nil
+}
+
+func loadRepositoryPolicyFiles(readFile func(path string) ([]byte, error), notFound error) (*policy.CompiledPolicy, string, policy.RepositoryConfig, error) {
 	for _, path := range []string{policy.PrimaryPolicyPath, policy.FallbackPolicyPath} {
-		content, err := s.RepositoryStore.ReadFileAtCommit(ctx, repository.RemoteURL, repository.CommitSHA, path)
+		content, err := readFile(path)
 		if err != nil {
 			if isRepositoryFileMissingError(err) {
 				continue
@@ -106,7 +159,11 @@ func (s *Service) loadRepositoryPolicyAtCommit(ctx context.Context, repository *
 		}
 		return compiled, path, repositoryConfig, nil
 	}
-	return nil, "", policy.RepositoryConfig{}, fmt.Errorf("%w: expected %s or %s in repository %s at %s", policy.ErrPolicyNotFound, policy.PrimaryPolicyPath, policy.FallbackPolicyPath, repository.RemoteURL, repository.CommitSHA)
+	return nil, "", policy.RepositoryConfig{}, notFound
+}
+
+func repositoryPolicyNotFoundError(repository *repositorycheckout.Checkout) error {
+	return fmt.Errorf("%w: expected %s or %s in repository %s at %s", policy.ErrPolicyNotFound, policy.PrimaryPolicyPath, policy.FallbackPolicyPath, repository.RemoteURL, repository.CommitSHA)
 }
 
 func normalizeRepositoryCommitSHA(revision string) (string, bool) {
@@ -125,6 +182,20 @@ func validateRepositoryBranch(ctx context.Context, repoDir, branch string) error
 		return fmt.Errorf("invalid repository branch %q: %w", branch, err)
 	}
 	return nil
+}
+
+func gitShowFileAtCommit(ctx context.Context, repoDir, commitSHA, path string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show", strings.TrimSpace(commitSHA)+":"+path)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("git show %s:%s: %s", strings.TrimSpace(commitSHA), path, message)
+	}
+	return output, nil
 }
 
 func gitOutputContext(ctx context.Context, repoDir string, args ...string) (string, error) {

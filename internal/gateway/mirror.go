@@ -26,6 +26,7 @@ const defaultGitMirrorMaxAge = 30 * time.Second
 type GitMirrorStore interface {
 	MirrorPath(remoteURL string) (string, error)
 	EnsureMirror(ctx context.Context, remoteURL string) (string, error)
+	RefreshMirror(ctx context.Context, remoteURL string) (string, error)
 	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }
 
@@ -91,6 +92,36 @@ func (s *gitMirrorStore) EnsureMirror(ctx context.Context, remoteURL string) (st
 			if err := s.fetchMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
 				return "", err
 			}
+		}
+		return mirrorDir, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
+}
+
+func (s *gitMirrorStore) RefreshMirror(ctx context.Context, remoteURL string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("mirror store is nil")
+	}
+	parsed, err := normalizeMirrorRemoteURL(remoteURL)
+	if err != nil {
+		return "", err
+	}
+	canonicalRemoteURL := parsed.String()
+	mirrorDir := s.mirrorPath(canonicalRemoteURL)
+	key := canonicalRemoteURL + "#refresh"
+
+	result, err, _ := s.group.Do(key, func() (any, error) {
+		if _, statErr := os.Stat(filepath.Join(mirrorDir, "HEAD")); os.IsNotExist(statErr) {
+			if err := s.cloneMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
+				return "", err
+			}
+			return mirrorDir, nil
+		}
+		if err := s.fetchMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
+			return "", err
 		}
 		return mirrorDir, nil
 	})

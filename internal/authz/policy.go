@@ -299,6 +299,110 @@ func (b BoundPrincipal) Authorize(req DecisionRequest) Decision {
 	return decision
 }
 
+// AuthorizeRepositoryPolicySource evaluates the part of a sandbox.create request
+// that is known before a repository policy is loaded. The boolean return value is
+// false when matching grants depend on policy/image/cache fields that are not
+// available yet, so callers should defer the final decision until after policy
+// resolution.
+func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (Decision, bool) {
+	req.Principal = b.Principal
+	if req.Claims == nil {
+		req.Claims = b.Claims
+	}
+	req.Action = strings.TrimSpace(req.Action)
+	req.Resource.Kind = strings.TrimSpace(req.Resource.Kind)
+	decision := Decision{
+		Allowed:   false,
+		Principal: b.Principal,
+		Action:    req.Action,
+		Resource:  req.Resource,
+		Binding:   b.Binding,
+		Reason:    ReasonNoGrant,
+	}
+	if b.binding == nil {
+		decision.Reason = ReasonNoBinding
+		return decision, true
+	}
+
+	matchedGrant := false
+	skippedUnavailableGrant := false
+	var conditionErrorDecision *Decision
+	for _, grant := range b.binding.grants {
+		if !grant.matches(decision.Action, req.Resource.Kind) {
+			continue
+		}
+		if repositoryPolicySourceGrantNeedsLoadedPolicy(grant) {
+			skippedUnavailableGrant = true
+			continue
+		}
+		matchedGrant = true
+		ok, err := grant.condition.eval(grantActivation(req))
+		if err != nil {
+			if conditionErrorDecision == nil {
+				errorDecision := decision
+				errorDecision.Grant = grant.name
+				errorDecision.Reason = ReasonConditionError
+				conditionErrorDecision = &errorDecision
+			}
+			continue
+		}
+		if !ok {
+			decision.Grant = grant.name
+			decision.Reason = ReasonConditionFalse
+			continue
+		}
+		decision.Allowed = true
+		decision.Grant = grant.name
+		decision.Reason = ReasonAllowed
+		return decision, true
+	}
+	if skippedUnavailableGrant {
+		return decision, false
+	}
+	if conditionErrorDecision != nil {
+		return *conditionErrorDecision, true
+	}
+	if matchedGrant && decision.Reason == ReasonNoGrant {
+		decision.Reason = ReasonConditionFalse
+	}
+	return decision, true
+}
+
+func repositoryPolicySourceGrantNeedsLoadedPolicy(grant compiledGrant) bool {
+	if grant.condition == nil {
+		return false
+	}
+	source := grant.condition.source
+	unavailablePrefixes := []string{
+		"request.image",
+		"request.policy",
+		"request.cache",
+		"request.snapshot",
+	}
+	for i := 0; i < len(source); {
+		if source[i] == '"' || source[i] == '\'' {
+			next, err := skipQuoted(source, i)
+			if err != nil {
+				return true
+			}
+			i = next
+			continue
+		}
+		if !isIdentStart(rune(source[i])) || (i > 0 && source[i-1] == '.') {
+			i++
+			continue
+		}
+		path, next := readPath(source, i)
+		i = next
+		for _, prefix := range unavailablePrefixes {
+			if path == prefix || strings.HasPrefix(path, prefix+".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func grantActivation(req DecisionRequest) map[string]any {
 	return map[string]any{
 		"principal": map[string]any{

@@ -121,7 +121,7 @@ func TestMirrorBackedRepositoryStoreWithRepositoryEnsuresMissingMirrorPath(t *te
 	}
 }
 
-func TestMirrorBackedRepositoryStoreWithRepositoryRefreshesExistingMirror(t *testing.T) {
+func TestMirrorBackedRepositoryStoreRefreshesExistingMirror(t *testing.T) {
 	t.Parallel()
 
 	mirrorDir := filepath.Join(t.TempDir(), "mirror.git")
@@ -134,17 +134,11 @@ func TestMirrorBackedRepositoryStoreWithRepositoryRefreshesExistingMirror(t *tes
 	mock := &mockMirrorSource{mirrorPath: mirrorDir}
 	store := NewMirrorBacked(mock)
 
-	err := store.WithRepository(context.Background(), "https://github.com/buildkite/cleanroom.git", "", FetchHints{}, func(repoDir string) error {
-		if repoDir != mirrorDir {
-			t.Fatalf("unexpected repo dir: got %q want %q", repoDir, mirrorDir)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WithRepository returned error: %v", err)
+	if err := store.Refresh(context.Background(), "https://github.com/buildkite/cleanroom.git", FetchHints{}); err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
 	}
-	if mock.ensureMirrorCalls != 1 {
-		t.Fatalf("expected EnsureMirror to be called once, got %d", mock.ensureMirrorCalls)
+	if mock.refreshMirrorCalls != 1 {
+		t.Fatalf("expected RefreshMirror to be called once, got %d", mock.refreshMirrorCalls)
 	}
 }
 
@@ -196,6 +190,7 @@ type mockMirrorSource struct {
 	ensureMirrorContainsSHA string
 	mirrorPathURL           string
 	ensureMirrorCalls       int
+	refreshMirrorCalls      int
 	ensureMirrorFunc        func(context.Context, string) (string, error)
 }
 
@@ -209,6 +204,11 @@ func (m *mockMirrorSource) EnsureMirror(ctx context.Context, remoteURL string) (
 	if m.ensureMirrorFunc != nil {
 		return m.ensureMirrorFunc(ctx, remoteURL)
 	}
+	return m.mirrorPath, nil
+}
+
+func (m *mockMirrorSource) RefreshMirror(_ context.Context, remoteURL string) (string, error) {
+	m.refreshMirrorCalls++
 	return m.mirrorPath, nil
 }
 

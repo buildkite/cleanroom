@@ -567,6 +567,11 @@ func (s *staticMirrorStore) EnsureMirror(_ context.Context, remoteURL string) (s
 	return s.mirrorDir, nil
 }
 
+func (s *staticMirrorStore) RefreshMirror(_ context.Context, remoteURL string) (string, error) {
+	s.gotRemoteURL = remoteURL
+	return s.mirrorDir, nil
+}
+
 func (s *staticMirrorStore) EnsureMirrorContains(_ context.Context, remoteURL, _ string) error {
 	s.gotRemoteURL = remoteURL
 	return nil
