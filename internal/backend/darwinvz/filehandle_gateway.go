@@ -487,6 +487,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			Name:      gateway.GuestGatewayHostname,
 			Addresses: staticGatewayAddrs,
 		}},
+		BlockDisallowedQueries: true,
 	})
 	dnsUDPServer := &mdns.Server{
 		PacketConn: udpConn,

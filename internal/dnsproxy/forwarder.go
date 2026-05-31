@@ -33,27 +33,29 @@ type StaticRecord struct {
 
 // ForwarderConfig configures a DNS forwarding handler.
 type ForwarderConfig struct {
-	Runtime       *Runtime
-	UpstreamAddr  string
-	ScopeResolver ScopeResolver
-	Client        DNSClient
-	Now           func() time.Time
-	OnObserve     ObserveHook
-	OnDeny        DenyHook
-	StaticRecords []StaticRecord
+	Runtime                *Runtime
+	UpstreamAddr           string
+	ScopeResolver          ScopeResolver
+	Client                 DNSClient
+	Now                    func() time.Time
+	OnObserve              ObserveHook
+	OnDeny                 DenyHook
+	StaticRecords          []StaticRecord
+	BlockDisallowedQueries bool
 }
 
 // Forwarder forwards DNS requests to an upstream resolver and records the
 // answers in the runtime when the caller is mapped to a sandbox scope.
 type Forwarder struct {
-	runtime       *Runtime
-	upstreamAddr  string
-	scopeResolver ScopeResolver
-	client        DNSClient
-	now           func() time.Time
-	onObserve     ObserveHook
-	onDeny        DenyHook
-	staticRecords map[string][]netip.Addr
+	runtime                *Runtime
+	upstreamAddr           string
+	scopeResolver          ScopeResolver
+	client                 DNSClient
+	now                    func() time.Time
+	onObserve              ObserveHook
+	onDeny                 DenyHook
+	staticRecords          map[string][]netip.Addr
+	blockDisallowedQueries bool
 }
 
 // NewForwarder creates a DNS forwarding handler backed by miekg/dns.
@@ -67,14 +69,15 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Forwarder{
-		runtime:       cfg.Runtime,
-		upstreamAddr:  cfg.UpstreamAddr,
-		scopeResolver: cfg.ScopeResolver,
-		client:        client,
-		now:           now,
-		onObserve:     cfg.OnObserve,
-		onDeny:        cfg.OnDeny,
-		staticRecords: normalizeStaticRecords(cfg.StaticRecords),
+		runtime:                cfg.Runtime,
+		upstreamAddr:           cfg.UpstreamAddr,
+		scopeResolver:          cfg.ScopeResolver,
+		client:                 client,
+		now:                    now,
+		onObserve:              cfg.OnObserve,
+		onDeny:                 cfg.OnDeny,
+		staticRecords:          normalizeStaticRecords(cfg.StaticRecords),
+		blockDisallowedQueries: cfg.BlockDisallowedQueries,
 	}
 }
 
@@ -92,8 +95,18 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		_ = writeServerFailure(w, req)
 		return
 	}
+	if f.blockDisallowedQueries && !f.queryAllowedByPolicy(w.RemoteAddr(), req) {
+		_ = writeRefused(w, req)
+		return
+	}
 
-	resp, _, err := f.client.Exchange(req.Copy(), f.upstreamAddr)
+	upstreamReq := req.Copy()
+	if f.blockDisallowedQueries {
+		upstreamReq.Answer = nil
+		upstreamReq.Ns = nil
+		upstreamReq.Extra = nil
+	}
+	resp, _, err := f.client.Exchange(upstreamReq, f.upstreamAddr)
 	if err != nil || resp == nil {
 		_ = writeServerFailure(w, req)
 		return
@@ -103,6 +116,33 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 	f.observeScopedResponse(w.RemoteAddr(), resp)
+}
+
+func (f *Forwarder) queryAllowedByPolicy(remoteAddr net.Addr, req *dns.Msg) bool {
+	if f.runtime == nil || f.scopeResolver == nil || req == nil || len(req.Question) == 0 {
+		return false
+	}
+	sourceIP, ok := addrFromNetAddr(remoteAddr)
+	if !ok {
+		return false
+	}
+	sandboxID, ok := f.scopeResolver(sourceIP)
+	if !ok {
+		return false
+	}
+
+	allowed := true
+	for _, question := range req.Question {
+		name := normalizeName(question.Name)
+		if name != "" && f.runtime.HostAllowedByPolicy(sandboxID, name) {
+			continue
+		}
+		allowed = false
+		if f.onDeny != nil && name != "" {
+			f.onDeny(sandboxID, name)
+		}
+	}
+	return allowed
 }
 
 func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
@@ -171,6 +211,17 @@ func writeServerFailure(w dns.ResponseWriter, req *dns.Msg) error {
 		msg.SetRcode(req, dns.RcodeServerFailure)
 	} else {
 		msg.MsgHdr.Rcode = dns.RcodeServerFailure
+		msg.Response = true
+	}
+	return w.WriteMsg(msg)
+}
+
+func writeRefused(w dns.ResponseWriter, req *dns.Msg) error {
+	msg := new(dns.Msg)
+	if req != nil {
+		msg.SetRcode(req, dns.RcodeRefused)
+	} else {
+		msg.MsgHdr.Rcode = dns.RcodeRefused
 		msg.Response = true
 	}
 	return w.WriteMsg(msg)
