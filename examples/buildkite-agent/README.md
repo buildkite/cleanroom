@@ -50,9 +50,16 @@ agent token and `buildkite-agent start` flags.
 
 ## Network Allow List
 
-The `cleanroom.yaml` policy allows egress to the minimum set of hosts
-needed for the explicit `mise exec -- go mod download` dependency bootstrap and
-Go module resolution:
+The `cleanroom.yaml` policy allows egress to the minimum set of hosts needed
+for repository checkout, the explicit `mise exec -- go mod download`
+dependency bootstrap, and Go module resolution.
+
+This section is still current with GitHub App support. GitHub App credentials
+are host-side gateway credentials; they authenticate upstream Git requests for
+matching repositories. They do not replace the sandbox network allow-list. A
+private GitHub checkout still needs `github.com:443` in policy, while the
+server runtime config decides whether the gateway authenticates with a GitHub
+App, a token, or no credential.
 
 | Host | Why |
 |---|---|
@@ -86,3 +93,5 @@ Go module resolution:
 - `ruby.compile=false` avoids source-building Ruby during the dependency stage while still allowing `mise install` to satisfy the repo's current tool declarations
 - Use `mise x -- go ...` for execution commands so the installed Go toolchain is placed on `PATH`
 - `go test -p 1` avoids OOM kills on constrained guest memory
+- For the broader flow from local install to shared Buildkite usage, see
+  [Getting started](../../docs/getting-started.md).

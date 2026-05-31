@@ -1,5 +1,8 @@
 # Cleanroom Minimal API (ConnectRPC)
 
+For an operator-oriented explanation of the client/server control plane,
+ownership, and gateway boundaries, see [Control plane](control-plane.md).
+
 ## 1) Goal
 
 Define a minimal, functional control API for creating and managing Cleanroom sandboxes with durable execution streaming and interactive execution bootstrap.
