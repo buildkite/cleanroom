@@ -10331,6 +10331,41 @@ func TestAppendRetainedOutputTruncatesOnUTF8Boundary(t *testing.T) {
 	}
 }
 
+func TestAppendRetainedOutputBytesPreservesSplitUTF8(t *testing.T) {
+	var pending []byte
+	got, pending := appendRetainedOutputBytes("", pending, []byte{0xe2}, 32)
+	if got != "" {
+		t.Fatalf("expected incomplete rune to stay pending, got %q", got)
+	}
+	if want := []byte{0xe2}; !bytes.Equal(pending, want) {
+		t.Fatalf("unexpected pending bytes: got %v want %v", pending, want)
+	}
+
+	got, pending = appendRetainedOutputBytes(got, pending, []byte{0x82, 0xac}, 32)
+	if len(pending) != 0 {
+		t.Fatalf("expected pending bytes to be consumed, got %v", pending)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected retained output to be valid UTF-8, got %q", got)
+	}
+	if want := "\u20AC"; got != want {
+		t.Fatalf("unexpected retained output: got %q want %q", got, want)
+	}
+}
+
+func TestFlushRetainedOutputPendingSanitizesIncompleteUTF8(t *testing.T) {
+	got, pending := flushRetainedOutputPending("er", []byte{0xe2, 0x82}, 32)
+	if len(pending) != 0 {
+		t.Fatalf("expected pending bytes to be cleared, got %v", pending)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected retained output to be valid UTF-8, got %q", got)
+	}
+	if want := "er\uFFFD"; got != want {
+		t.Fatalf("unexpected retained output: got %q want %q", got, want)
+	}
+}
+
 func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 	svc := newTestService(&stubAdapter{})
 	retention := testRetentionPolicy()
@@ -10717,6 +10752,8 @@ func TestExecutionRetentionSanitizesInvalidUTF8Output(t *testing.T) {
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte{'o', 0xff, 'k'})
+				stream.OnStdout([]byte{' ', 0xe2})
+				stream.OnStdout([]byte{0x82, 0xac})
 			}
 			if stream.OnStderr != nil {
 				stream.OnStderr([]byte{'e', 'r', 0xe2, 0x82})
@@ -10760,7 +10797,7 @@ func TestExecutionRetentionSanitizesInvalidUTF8Output(t *testing.T) {
 	if !utf8.ValidString(inspect.GetStdout()) || !utf8.ValidString(inspect.GetStderr()) {
 		t.Fatalf("expected retained output to be valid UTF-8, stdout=%q stderr=%q", inspect.GetStdout(), inspect.GetStderr())
 	}
-	if got, want := inspect.GetStdout(), "o\uFFFDk"; got != want {
+	if got, want := inspect.GetStdout(), "o\uFFFDk \u20AC"; got != want {
 		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
 	}
 	if got, want := inspect.GetStderr(), "er\uFFFD"; got != want {

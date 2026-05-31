@@ -150,7 +150,9 @@ type executionState struct {
 	FinishedAt        *time.Time
 	Message           string
 	Stdout            string
+	StdoutPendingUTF8 []byte
 	Stderr            string
+	StderrPendingUTF8 []byte
 	LaunchedVM        bool
 	PlanPath          string
 	RunDir            string
@@ -4186,7 +4188,7 @@ func (s *Service) appendExecutionStdoutLocked(ex *executionState, status cleanro
 	if ex == nil || len(chunk) == 0 {
 		return
 	}
-	ex.Stdout = appendRetainedOutput(ex.Stdout, string(chunk), s.retention().maxRetainedExecutionOutputBytes)
+	ex.Stdout, ex.StdoutPendingUTF8 = appendRetainedOutputBytes(ex.Stdout, ex.StdoutPendingUTF8, chunk, s.retention().maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
@@ -4200,7 +4202,7 @@ func (s *Service) appendExecutionStderrLocked(ex *executionState, status cleanro
 	if ex == nil || len(chunk) == 0 {
 		return
 	}
-	ex.Stderr = appendRetainedOutput(ex.Stderr, string(chunk), s.retention().maxRetainedExecutionOutputBytes)
+	ex.Stderr, ex.StderrPendingUTF8 = appendRetainedOutputBytes(ex.Stderr, ex.StderrPendingUTF8, chunk, s.retention().maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
@@ -4812,6 +4814,7 @@ func (s *Service) finalizeExecutionInternalLocked(ex *executionState, status cle
 	if ex == nil {
 		return
 	}
+	s.flushExecutionOutputUTF8Locked(ex)
 	if finished.IsZero() {
 		finished = s.clock().Now()
 	}
@@ -4838,4 +4841,13 @@ func (s *Service) finalizeExecutionInternalLocked(ex *executionState, status cle
 	if prune {
 		s.pruneStateLocked(finished)
 	}
+}
+
+func (s *Service) flushExecutionOutputUTF8Locked(ex *executionState) {
+	if ex == nil {
+		return
+	}
+	limit := s.retention().maxRetainedExecutionOutputBytes
+	ex.Stdout, ex.StdoutPendingUTF8 = flushRetainedOutputPending(ex.Stdout, ex.StdoutPendingUTF8, limit)
+	ex.Stderr, ex.StderrPendingUTF8 = flushRetainedOutputPending(ex.Stderr, ex.StderrPendingUTF8, limit)
 }

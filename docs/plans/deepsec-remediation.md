@@ -826,17 +826,19 @@ fixed. DeepSec status now reports 12/12 findings revalidated, with 4 true
 positives and 8 fixed findings.
 
 Slice 23 is implemented and ready for review. Retained execution stdout and
-stderr are now sanitized with `strings.ToValidUTF8` before being stored in
-snapshot strings, and tail truncation advances to a UTF-8 rune boundary before
-cloning the retained bytes. This keeps `InspectExecutionResponse` protobuf
-string fields valid even when a workload emits invalid bytes or a byte limit
-lands in the middle of a multi-byte rune. Raw stream events still carry the
-original bytes.
+stderr now carry a tiny per-stream pending UTF-8 tail between chunks, store only
+valid UTF-8 in snapshot strings, and flush any incomplete final sequence as a
+replacement character when execution finishes. Tail truncation advances to a
+UTF-8 rune boundary before cloning the retained bytes. This keeps
+`InspectExecutionResponse` protobuf string fields valid even when a workload
+emits invalid bytes, a valid multi-byte rune is split across output chunks, or a
+byte limit lands in the middle of a multi-byte rune. Raw stream events still
+carry the original bytes.
 
 Focused validation run on 2026-05-31:
 
 ```text
-MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/controlservice -run 'Test(AppendRetainedOutput(ClonesTailSlice|SanitizesInvalidUTF8|TruncatesOnUTF8Boundary)|ExecutionRetention(BoundsOutput|SanitizesInvalidUTF8Output))'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/controlservice -run 'Test(AppendRetainedOutput(ClonesTailSlice|SanitizesInvalidUTF8|TruncatesOnUTF8Boundary)|AppendRetainedOutputBytesPreservesSplitUTF8|FlushRetainedOutputPendingSanitizesIncompleteUTF8|ExecutionRetention(BoundsOutput|SanitizesInvalidUTF8Output))'
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/controlservice
 ```
 
