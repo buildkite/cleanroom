@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 24 ready for review
+**Status:** Slice 25 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -29,10 +29,11 @@ digest cache authorization finding in PR #495. Slice 21 closed the unknown
 OIDC `kid` JWKS fetch amplification finding in PR #496. Slice 22 closed the
 Git proxy environment port-preservation finding in PR #497. Slice 23 closes the
 retained execution output UTF-8 handling bug. Slice 24 closes the persistent
-darwin-vz file-handle network policy lifetime finding.
+darwin-vz file-handle network policy lifetime finding. Slice 25 closes the Git
+mirror upload-pack response buffering finding.
 
-After Slice 24 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
-2 unresolved true positives: the two Git mirror resource-exhaustion paths.
+After Slice 25 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
+1 unresolved true positive: Git mirror command-output buffering.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -900,6 +901,45 @@ Result: the persistent darwin-vz file-handle network policy lifetime finding
 revalidated as fixed. DeepSec status now reports 12/12 findings revalidated,
 with 2 true positives and 10 fixed findings.
 
+Slice 25 is implemented and ready for review. Mirror-backed `git-upload-pack`
+responses now stream command stdout directly to the HTTP response writer instead
+of buffering the full packfile in memory before replying. The response writer
+flushes after writes when the server supports it, and upload-pack stderr is
+captured through a bounded error buffer so failure messages cannot grow without
+limit. If upload-pack exits non-zero after response bytes have already streamed,
+the gateway records the upstream error but does not append a plaintext gateway
+error into the Git protocol response.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway -run 'Test(ServeMirrorUploadPackWritesCommandOutput|GitHandlerDoesNotAppendErrorAfterMirrorUploadPackStreamStarts|LimitedOutputBuffer|GitHandlerServesMirrorToRealGitClient)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/gateway/git.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the mirror upload-pack buffering finding revalidated as fixed. The
+forced `internal/gateway/git.go` run also rechecked the already-fixed critical
+port-smuggling finding in that file. DeepSec status now reports 12/12 findings
+revalidated, with 1 true positive and 11 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -914,7 +954,7 @@ with 2 true positives and 10 fixed findings.
 | Git proxy rewrites can preserve embedded ports from policy hosts | Medium | Fixed by Slice 22 | Slice 22: policy host authority validation |
 | Retained execution output can become invalid UTF-8 | Bug | Fixed by Slice 23 | Slice 23: retained output UTF-8 sanitization |
 | Persistent VM network policy remains active after an execution exits | Medium | Fixed by Slice 24 | Slice 24: darwin-vz file-handle policy cleanup |
-| Mirror upload-pack buffers unbounded pack responses in memory | Medium | Needs fix | Slice 25: stream or bound Git upload-pack responses |
+| Mirror upload-pack buffers unbounded pack responses in memory | Medium | Fixed by Slice 25 | Slice 25: stream Git upload-pack responses |
 | Git mirror operations buffer unbounded command output | Medium | Needs fix | Slice 26: bound Git mirror command output |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
