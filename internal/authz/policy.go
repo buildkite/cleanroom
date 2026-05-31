@@ -384,7 +384,6 @@ func repositoryPolicySourceUnknownPaths(req DecisionRequest) []string {
 		"request.policy.network.hosts",
 		"request.policy.network.ports",
 		"request.cache.reuse",
-		"request.snapshot.id",
 	}
 	repository, _ := req.Request["repository"].(map[string]any)
 	if requestString(repository, "commit") == "" {

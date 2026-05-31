@@ -265,7 +265,7 @@ func referencesCELPath(source, target string) bool {
 			continue
 		}
 		path, next := readPath(source, i)
-		if path == target {
+		if path == target || strings.HasPrefix(path, target+".") {
 			return true
 		}
 		i = next

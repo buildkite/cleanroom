@@ -2835,11 +2835,36 @@ func TestCreateSandboxRepositoryPolicyRejectsCommitOutsideBranch(t *testing.T) {
 	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		RepositoryCheckout: repositoryCheckout,
 	})
-	if err == nil || !strings.Contains(err.Error(), "is not reachable from branch") {
+	if err == nil || !strings.Contains(err.Error(), "does not contain any candidate commit") {
 		t.Fatalf("CreateSandbox error = %v, want commit outside branch error", err)
 	}
 	if got := adapter.provisionCalls; got != 0 {
 		t.Fatalf("ProvisionSandbox calls = %d, want 0", got)
+	}
+}
+
+func TestValidateRepositoryBranchContainsAnyCommitAcceptsReachableCandidate(t *testing.T) {
+	repoDir := t.TempDir()
+	runTestGit(t, repoDir, "init")
+	runTestGit(t, repoDir, "config", "user.email", "test@example.com")
+	runTestGit(t, repoDir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runTestGit(t, repoDir, "add", "README.md")
+	runTestGit(t, repoDir, "commit", "-m", "base")
+	mainBranch := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "--abbrev-ref", "HEAD"))
+	mainCommit := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD"))
+	runTestGit(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	runTestGit(t, repoDir, "add", "feature.txt")
+	runTestGit(t, repoDir, "commit", "-m", "feature")
+	featureCommit := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD"))
+
+	if err := validateRepositoryBranchContainsAnyCommit(context.Background(), repoDir, mainBranch, []string{featureCommit, mainCommit}); err != nil {
+		t.Fatalf("validateRepositoryBranchContainsAnyCommit returned error: %v", err)
 	}
 }
 

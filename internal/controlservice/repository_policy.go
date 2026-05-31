@@ -16,42 +16,43 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorystore"
 )
 
-func (s *Service) resolveCreateSandboxPolicy(ctx context.Context, pb *cleanroomv1.Policy, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, error) {
+func (s *Service) resolveCreateSandboxPolicy(ctx context.Context, pb *cleanroomv1.Policy, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, *repositorycheckout.Checkout, error) {
 	if pb != nil {
 		compiled, err := policy.FromCreateRequestProto(pb)
 		if err != nil {
-			return nil, "", nil, fmt.Errorf("invalid policy: %w", err)
+			return nil, "", nil, nil, fmt.Errorf("invalid policy: %w", err)
 		}
-		return compiled, "", repository, nil
+		return compiled, "", repository, repository, nil
 	}
 	if repository == nil {
-		return nil, "", nil, errors.New("missing policy")
+		return nil, "", nil, nil, errors.New("missing policy")
 	}
 	return s.resolveRepositoryCreateSandboxPolicy(ctx, repository, commitBundle)
 }
 
-func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, error) {
+func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, *repositorycheckout.Checkout, *repositorycheckout.Checkout, error) {
 	if s.RepositoryStore == nil {
-		return nil, "", nil, errors.New("repository checkout without policy requires repository store")
+		return nil, "", nil, nil, errors.New("repository checkout without policy requires repository store")
 	}
 	resolvedRepository := cloneRepositoryCheckout(repository)
 	if _, err := resolvedRepository.NormalizeRemoteURL(); err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, nil, err
 	}
 	if commitBundle != nil && strings.TrimSpace(resolvedRepository.CommitSHA) == "" {
 		resolvedRepository.CommitSHA = strings.ToLower(strings.TrimSpace(commitBundle.TargetCommitSHA))
 	}
 	if err := s.resolveRepositoryCheckoutCommit(ctx, resolvedRepository, commitBundle); err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, nil, err
 	}
 	if err := validateRepositoryCommitBundleForCheckout(resolvedRepository, commitBundle); err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, nil, err
 	}
 
 	compiled, source, repositoryConfig, err := s.loadRepositoryPolicy(ctx, resolvedRepository, commitBundle)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, nil, err
 	}
+	authorizationRepository := cloneRepositoryCheckout(resolvedRepository)
 	if repositoryConfig.Enabled() {
 		if strings.TrimSpace(repositoryConfig.Path) != "" {
 			resolvedRepository.DestinationDir = repositoryConfig.Path
@@ -60,7 +61,7 @@ func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repo
 	} else {
 		resolvedRepository = nil
 	}
-	return compiled, "repository:" + source, resolvedRepository, nil
+	return compiled, "repository:" + source, resolvedRepository, authorizationRepository, nil
 }
 
 func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) error {
@@ -70,7 +71,7 @@ func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repositor
 		if branch == "" {
 			return nil
 		}
-		branchValidationCommit, err := repositoryBranchValidationCommit(commitSHA, commitBundle)
+		branchValidationCommits, err := repositoryBranchValidationCommits(commitSHA, commitBundle)
 		if err != nil {
 			return err
 		}
@@ -78,8 +79,13 @@ func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repositor
 		if err := s.RepositoryStore.Refresh(ctx, repository.RemoteURL, hints); err != nil {
 			return err
 		}
-		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, branchValidationCommit, hints, func(repoDir string) error {
-			if err := validateRepositoryBranchContainsCommit(ctx, repoDir, branch, branchValidationCommit); err != nil {
+		for _, branchValidationCommit := range branchValidationCommits {
+			if err := s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, branchValidationCommit, hints); err != nil {
+				return err
+			}
+		}
+		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, branchValidationCommits[0], hints, func(repoDir string) error {
+			if err := validateRepositoryBranchContainsAnyCommit(ctx, repoDir, branch, branchValidationCommits); err != nil {
 				return err
 			}
 			repository.Branch = branch
@@ -123,19 +129,19 @@ func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repositor
 	})
 }
 
-func repositoryBranchValidationCommit(commitSHA string, commitBundle *repositorybundle.Bundle) (string, error) {
+func repositoryBranchValidationCommits(commitSHA string, commitBundle *repositorybundle.Bundle) ([]string, error) {
 	commitSHA = strings.ToLower(strings.TrimSpace(commitSHA))
 	if commitBundle == nil || !strings.EqualFold(strings.TrimSpace(commitBundle.TargetCommitSHA), commitSHA) {
-		return commitSHA, nil
+		return []string{commitSHA}, nil
 	}
 	prerequisites, err := commitBundle.PrerequisiteCommits()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(prerequisites) == 0 {
-		return commitSHA, nil
+		return []string{commitSHA}, nil
 	}
-	return prerequisites[0], nil
+	return prerequisites, nil
 }
 
 func (s *Service) loadRepositoryPolicy(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, policy.RepositoryConfig, error) {
@@ -218,6 +224,10 @@ func validateRepositoryBranch(ctx context.Context, repoDir, branch string) error
 }
 
 func validateRepositoryBranchContainsCommit(ctx context.Context, repoDir, branch, commitSHA string) error {
+	return validateRepositoryBranchContainsAnyCommit(ctx, repoDir, branch, []string{commitSHA})
+}
+
+func validateRepositoryBranchContainsAnyCommit(ctx context.Context, repoDir, branch string, commitSHAs []string) error {
 	if err := validateRepositoryBranch(ctx, repoDir, branch); err != nil {
 		return err
 	}
@@ -225,10 +235,12 @@ func validateRepositoryBranchContainsCommit(ctx context.Context, repoDir, branch
 	if err != nil {
 		return fmt.Errorf("resolve repository branch %q: %w", branch, err)
 	}
-	if _, err := gitOutputContext(ctx, repoDir, "merge-base", "--is-ancestor", commitSHA, branchCommit); err != nil {
-		return fmt.Errorf("repository commit %q is not reachable from branch %q", commitSHA, branch)
+	for _, commitSHA := range commitSHAs {
+		if _, err := gitOutputContext(ctx, repoDir, "merge-base", "--is-ancestor", commitSHA, branchCommit); err == nil {
+			return nil
+		}
 	}
-	return nil
+	return fmt.Errorf("repository branch %q does not contain any candidate commit", branch)
 }
 
 func gitShowFileAtCommit(ctx context.Context, repoDir, commitSHA, path string) ([]byte, error) {

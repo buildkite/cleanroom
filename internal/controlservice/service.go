@@ -495,7 +495,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			return nil, err
 		}
 	}
-	compiled, resolvedPolicySource, repository, err := s.resolveCreateSandboxPolicy(ctx, req.GetPolicy(), repository, commitBundle)
+	compiled, resolvedPolicySource, repository, authorizationRepository, err := s.resolveCreateSandboxPolicy(ctx, req.GetPolicy(), repository, commitBundle)
 	if err != nil {
 		return nil, err
 	}
@@ -541,7 +541,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 	span.SetAttributes(rootFSMinimumTraceAttributes(firecrackerCfg)...)
-	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, repository, changeset, "", effectiveAuthorizationResources(firecrackerCfg)))
+	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, authorizationRepository, changeset, "", effectiveAuthorizationResources(firecrackerCfg)))
 	if err != nil {
 		return nil, err
 	}
