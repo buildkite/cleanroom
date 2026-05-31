@@ -2835,7 +2835,7 @@ func TestCreateSandboxRepositoryPolicyRejectsCommitOutsideBranch(t *testing.T) {
 	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		RepositoryCheckout: repositoryCheckout,
 	})
-	if err == nil || !strings.Contains(err.Error(), "does not contain any candidate commit") {
+	if err == nil || !strings.Contains(err.Error(), "does not contain commit") {
 		t.Fatalf("CreateSandbox error = %v, want commit outside branch error", err)
 	}
 	if got := adapter.provisionCalls; got != 0 {
@@ -2843,7 +2843,7 @@ func TestCreateSandboxRepositoryPolicyRejectsCommitOutsideBranch(t *testing.T) {
 	}
 }
 
-func TestValidateRepositoryBranchContainsAnyCommitAcceptsReachableCandidate(t *testing.T) {
+func TestValidateRepositoryBranchContainsAllCommitsRejectsUnreachableCandidate(t *testing.T) {
 	repoDir := t.TempDir()
 	runTestGit(t, repoDir, "init")
 	runTestGit(t, repoDir, "config", "user.email", "test@example.com")
@@ -2863,8 +2863,9 @@ func TestValidateRepositoryBranchContainsAnyCommitAcceptsReachableCandidate(t *t
 	runTestGit(t, repoDir, "commit", "-m", "feature")
 	featureCommit := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD"))
 
-	if err := validateRepositoryBranchContainsAnyCommit(context.Background(), repoDir, mainBranch, []string{featureCommit, mainCommit}); err != nil {
-		t.Fatalf("validateRepositoryBranchContainsAnyCommit returned error: %v", err)
+	err := validateRepositoryBranchContainsAllCommits(context.Background(), repoDir, mainBranch, []string{featureCommit, mainCommit})
+	if err == nil || !strings.Contains(err.Error(), "does not contain commit "+featureCommit) {
+		t.Fatalf("validateRepositoryBranchContainsAllCommits error = %v, want unreachable candidate error", err)
 	}
 }
 

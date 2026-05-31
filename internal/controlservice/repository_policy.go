@@ -85,7 +85,7 @@ func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repositor
 			}
 		}
 		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, branchValidationCommits[0], hints, func(repoDir string) error {
-			if err := validateRepositoryBranchContainsAnyCommit(ctx, repoDir, branch, branchValidationCommits); err != nil {
+			if err := validateRepositoryBranchContainsAllCommits(ctx, repoDir, branch, branchValidationCommits); err != nil {
 				return err
 			}
 			repository.Branch = branch
@@ -224,10 +224,10 @@ func validateRepositoryBranch(ctx context.Context, repoDir, branch string) error
 }
 
 func validateRepositoryBranchContainsCommit(ctx context.Context, repoDir, branch, commitSHA string) error {
-	return validateRepositoryBranchContainsAnyCommit(ctx, repoDir, branch, []string{commitSHA})
+	return validateRepositoryBranchContainsAllCommits(ctx, repoDir, branch, []string{commitSHA})
 }
 
-func validateRepositoryBranchContainsAnyCommit(ctx context.Context, repoDir, branch string, commitSHAs []string) error {
+func validateRepositoryBranchContainsAllCommits(ctx context.Context, repoDir, branch string, commitSHAs []string) error {
 	if err := validateRepositoryBranch(ctx, repoDir, branch); err != nil {
 		return err
 	}
@@ -236,11 +236,15 @@ func validateRepositoryBranchContainsAnyCommit(ctx context.Context, repoDir, bra
 		return fmt.Errorf("resolve repository branch %q: %w", branch, err)
 	}
 	for _, commitSHA := range commitSHAs {
-		if _, err := gitOutputContext(ctx, repoDir, "merge-base", "--is-ancestor", commitSHA, branchCommit); err == nil {
-			return nil
+		commitSHA = strings.TrimSpace(commitSHA)
+		if commitSHA == "" {
+			return fmt.Errorf("repository branch %q validation commit is empty", branch)
+		}
+		if _, err := gitOutputContext(ctx, repoDir, "merge-base", "--is-ancestor", commitSHA, branchCommit); err != nil {
+			return fmt.Errorf("repository branch %q does not contain commit %s", branch, commitSHA)
 		}
 	}
-	return fmt.Errorf("repository branch %q does not contain any candidate commit", branch)
+	return nil
 }
 
 func gitShowFileAtCommit(ctx context.Context, repoDir, commitSHA, path string) ([]byte, error) {

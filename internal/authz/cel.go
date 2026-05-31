@@ -128,6 +128,20 @@ func (e *compiledBoolExpression) repositorySourceAuthorized(vars map[string]any,
 	return false
 }
 
+func (e *compiledBoolExpression) repositorySourceSatisfiable(vars map[string]any, unknownPaths ...string) bool {
+	if e == nil || strings.TrimSpace(e.source) == "" {
+		return true
+	}
+	ok, known, err := e.evalPartial(vars, unknownPaths...)
+	if err != nil {
+		return false
+	}
+	if known {
+		return ok
+	}
+	return e.repositorySourceAuthorized(vars, unknownPaths...)
+}
+
 func celAttributePattern(path string) *interpreter.AttributePattern {
 	parts := strings.Split(strings.TrimSpace(path), ".")
 	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {

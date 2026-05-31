@@ -328,6 +328,7 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 	deferredSourceGrant := false
 	var conditionErrorDecision *Decision
 	unknownPaths := repositoryPolicySourceUnknownPaths(req)
+	sourceAuthorizationUnknownPaths := repositoryPolicySourceAuthorizationUnknownPaths(req)
 	activation := grantActivation(req)
 	for _, grant := range b.binding.grants {
 		if !grant.matches(decision.Action, req.Resource.Kind) {
@@ -345,12 +346,17 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 			continue
 		}
 		if !known {
-			if grant.condition.repositorySourceAuthorized(activation, unknownPaths...) {
+			if grant.condition.repositorySourceAuthorized(activation, sourceAuthorizationUnknownPaths...) {
 				deferredSourceGrant = true
 			}
 			continue
 		}
 		if !ok {
+			decision.Grant = grant.name
+			decision.Reason = ReasonConditionFalse
+			continue
+		}
+		if !grant.condition.repositorySourceSatisfiable(activation, sourceAuthorizationUnknownPaths...) {
 			decision.Grant = grant.name
 			decision.Reason = ReasonConditionFalse
 			continue
@@ -392,6 +398,12 @@ func repositoryPolicySourceUnknownPaths(req DecisionRequest) []string {
 	if requestString(repository, "branch") == "" {
 		paths = append(paths, "request.repository.branch")
 	}
+	return paths
+}
+
+func repositoryPolicySourceAuthorizationUnknownPaths(req DecisionRequest) []string {
+	paths := repositoryPolicySourceUnknownPaths(req)
+	repository, _ := req.Request["repository"].(map[string]any)
 	changeset, _ := repository["changeset"].(map[string]any)
 	if changesetPresent, _ := changeset["present"].(bool); changesetPresent {
 		paths = append(paths,

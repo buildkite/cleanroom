@@ -672,6 +672,49 @@ func TestAuthzRepositoryPolicyCreateDeniesChangesetDigestGrantBeforeRepositorySt
 	}
 }
 
+func TestAuthzRepositoryPolicyCreateDeniesMismatchedChangesetDigestBeforeRepositoryStoreAccess(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	ctx := testAuthContextWithPolicy(t, "alice", authz.Policy{Bindings: []authz.Binding{{
+		Name: "test",
+		Principal: authz.PrincipalTemplate{
+			ID:    "oidc:${token.issuer}:${token.subject}",
+			Scope: "scope:${token.subject}",
+		},
+		Grants: []authz.Grant{{
+			Name:      "approved-changeset",
+			Actions:   []string{"sandbox.create"},
+			Resources: []string{"sandbox"},
+			Condition: `request.repository.remote_url == "https://github.com/buildkite/cleanroom.git" && request.repository.changeset.digest == "approved" && request.policy.network_default == "deny"`,
+		}},
+	}}})
+
+	_, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: &cleanroomv1.RepositoryCheckout{
+			RemoteUrl: "https://github.com/buildkite/cleanroom.git",
+			Branch:    "main",
+		},
+		RepositoryChangeset: &cleanroomv1.RepositoryChangeset{
+			Format:        repositorychangeset.FormatGitDiffV1,
+			BaseCommitSha: strings.Repeat("0", 40),
+			Digest:        "rejected",
+			TreeDigest:    strings.Repeat("1", 40),
+			Patch:         []byte("not a valid changeset"),
+		},
+	})
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("CreateSandbox error = %v, want authorization denied", err)
+	}
+	if got := mirrors.mirrorPathCalls + mirrors.ensureMirrorCalls + mirrors.refreshCalls + mirrors.calls; got != 0 {
+		t.Fatalf("repository store calls = %d, want 0", got)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("ProvisionSandbox calls = %d, want 0", got)
+	}
+}
+
 func TestAuthzRepositoryPolicyCreateDeniesDisallowedBranchBeforeRepositoryStoreAccess(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
@@ -799,6 +842,43 @@ func TestAuthzRepositoryPolicyCreateDefersRepositoryMethodGrant(t *testing.T) {
 			Actions:   []string{"sandbox.create"},
 			Resources: []string{"sandbox"},
 			Condition: `request.repository.remote_url.startsWith("https://github.com/buildkite/") && request.policy.network_default == "deny"`,
+		}},
+	}}})
+
+	_, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got := mirrors.mirrorPathCalls + mirrors.ensureMirrorCalls + mirrors.refreshCalls; got == 0 {
+		t.Fatalf("repository store was not used")
+	}
+	if got := adapter.provisionCalls; got != 1 {
+		t.Fatalf("ProvisionSandbox calls = %d, want 1", got)
+	}
+}
+
+func TestAuthzRepositoryPolicyCreateDefersGroupedRepositoryBranchGrant(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/workspace", false, true),
+	})
+	baseBranch := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "--abbrev-ref", "HEAD"))
+	repositoryCheckout.CommitSha = ""
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	ctx := testAuthContextWithPolicy(t, "alice", authz.Policy{Bindings: []authz.Binding{{
+		Name: "test",
+		Principal: authz.PrincipalTemplate{
+			ID:    "oidc:${token.issuer}:${token.subject}",
+			Scope: "scope:${token.subject}",
+		},
+		Grants: []authz.Grant{{
+			Name:      "repo-branch-policy",
+			Actions:   []string{"sandbox.create"},
+			Resources: []string{"sandbox"},
+			Condition: fmt.Sprintf(`(request.repository.remote_url == "https://github.com/buildkite/cleanroom.git" && request.repository.branch == %q) && request.policy.network_default == "deny"`, baseBranch),
 		}},
 	}}})
 
