@@ -173,6 +173,7 @@ func TestGitMirrorStoreRefreshMirrorUpdatesDefaultBranchHEAD(t *testing.T) {
 	runGitCommand(t, workDir, "commit", "-m", "initial")
 	runGitCommand(t, workDir, "remote", "add", "origin", originDir)
 	runGitCommand(t, workDir, "push", "-u", "origin", "main")
+	runGitCommand(t, originDir, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	store := NewGitMirrorStore(t.TempDir(), time.Hour, nil)
 	mirrorDir, err := store.EnsureMirror(context.Background(), "file://"+originDir)
