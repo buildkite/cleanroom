@@ -37,8 +37,9 @@ type gitMirrorStore struct {
 
 	group singleflight.Group
 
-	mu        sync.RWMutex
-	lastFetch map[string]time.Time
+	mu          sync.RWMutex
+	lastFetch   map[string]time.Time
+	mirrorLocks map[string]*sync.Mutex
 }
 
 func NewGitMirrorStore(baseDir string, maxAge time.Duration, credentials CredentialProvider) *gitMirrorStore {
@@ -47,6 +48,7 @@ func NewGitMirrorStore(baseDir string, maxAge time.Duration, credentials Credent
 		maxAge:      maxAge,
 		credentials: credentials,
 		lastFetch:   make(map[string]time.Time),
+		mirrorLocks: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -82,18 +84,10 @@ func (s *gitMirrorStore) EnsureMirror(ctx context.Context, remoteURL string) (st
 	key := canonicalRemoteURL
 
 	result, err, _ := s.group.Do(key, func() (any, error) {
-		if _, statErr := os.Stat(filepath.Join(mirrorDir, "HEAD")); os.IsNotExist(statErr) {
-			if err := s.cloneMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
-				return "", err
-			}
-			return mirrorDir, nil
-		}
-		if s.isStale(canonicalRemoteURL) {
-			if err := s.fetchMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
-				return "", err
-			}
-		}
-		return mirrorDir, nil
+		lock := s.lockForMirror(canonicalRemoteURL)
+		lock.Lock()
+		defer lock.Unlock()
+		return s.ensureMirrorLocked(ctx, canonicalRemoteURL, mirrorDir, false)
 	})
 	if err != nil {
 		return "", err
@@ -114,16 +108,10 @@ func (s *gitMirrorStore) RefreshMirror(ctx context.Context, remoteURL string) (s
 	key := canonicalRemoteURL + "#refresh"
 
 	result, err, _ := s.group.Do(key, func() (any, error) {
-		if _, statErr := os.Stat(filepath.Join(mirrorDir, "HEAD")); os.IsNotExist(statErr) {
-			if err := s.cloneMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
-				return "", err
-			}
-			return mirrorDir, nil
-		}
-		if err := s.fetchMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
-			return "", err
-		}
-		return mirrorDir, nil
+		lock := s.lockForMirror(canonicalRemoteURL)
+		lock.Lock()
+		defer lock.Unlock()
+		return s.ensureMirrorLocked(ctx, canonicalRemoteURL, mirrorDir, true)
 	})
 	if err != nil {
 		return "", err
@@ -147,7 +135,11 @@ func (s *gitMirrorStore) EnsureMirrorContains(ctx context.Context, remoteURL, co
 	key := canonicalRemoteURL + "#" + trimmedCommit
 
 	_, err, _ = s.group.Do(key, func() (any, error) {
-		mirrorDir, err := s.EnsureMirror(ctx, canonicalRemoteURL)
+		mirrorDir := s.mirrorPath(canonicalRemoteURL)
+		lock := s.lockForMirror(canonicalRemoteURL)
+		lock.Lock()
+		defer lock.Unlock()
+		mirrorDir, err := s.ensureMirrorLocked(ctx, canonicalRemoteURL, mirrorDir, false)
 		if err != nil {
 			return nil, err
 		}
@@ -171,6 +163,32 @@ func (s *gitMirrorStore) EnsureMirrorContains(ctx context.Context, remoteURL, co
 		return nil, nil
 	})
 	return err
+}
+
+func (s *gitMirrorStore) lockForMirror(remoteURL string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock := s.mirrorLocks[remoteURL]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.mirrorLocks[remoteURL] = lock
+	}
+	return lock
+}
+
+func (s *gitMirrorStore) ensureMirrorLocked(ctx context.Context, remoteURL, mirrorDir string, forceRefresh bool) (string, error) {
+	if _, statErr := os.Stat(filepath.Join(mirrorDir, "HEAD")); os.IsNotExist(statErr) {
+		if err := s.cloneMirror(ctx, remoteURL, mirrorDir); err != nil {
+			return "", err
+		}
+		return mirrorDir, nil
+	}
+	if forceRefresh || s.isStale(remoteURL) {
+		if err := s.fetchMirror(ctx, remoteURL, mirrorDir); err != nil {
+			return "", err
+		}
+	}
+	return mirrorDir, nil
 }
 
 func normalizeMirrorRemoteURL(raw string) (*url.URL, error) {

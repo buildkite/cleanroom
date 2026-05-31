@@ -325,18 +325,15 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 	}
 
 	matchedGrant := false
-	skippedUnavailableGrant := false
+	unknownGrant := false
 	var conditionErrorDecision *Decision
+	unknownPaths := repositoryPolicySourceUnknownPaths(req)
 	for _, grant := range b.binding.grants {
 		if !grant.matches(decision.Action, req.Resource.Kind) {
 			continue
 		}
-		if repositoryPolicySourceGrantNeedsLoadedPolicy(grant) {
-			skippedUnavailableGrant = true
-			continue
-		}
 		matchedGrant = true
-		ok, err := grant.condition.eval(grantActivation(req))
+		ok, known, err := grant.condition.evalPartial(grantActivation(req), unknownPaths...)
 		if err != nil {
 			if conditionErrorDecision == nil {
 				errorDecision := decision
@@ -344,6 +341,10 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 				errorDecision.Reason = ReasonConditionError
 				conditionErrorDecision = &errorDecision
 			}
+			continue
+		}
+		if !known {
+			unknownGrant = true
 			continue
 		}
 		if !ok {
@@ -356,7 +357,7 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 		decision.Reason = ReasonAllowed
 		return decision, true
 	}
-	if skippedUnavailableGrant {
+	if unknownGrant {
 		return decision, false
 	}
 	if conditionErrorDecision != nil {
@@ -368,39 +369,39 @@ func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (De
 	return decision, true
 }
 
-func repositoryPolicySourceGrantNeedsLoadedPolicy(grant compiledGrant) bool {
-	if grant.condition == nil {
-		return false
+func repositoryPolicySourceUnknownPaths(req DecisionRequest) []string {
+	paths := []string{
+		"request.image.ref",
+		"request.image.digest",
+		"request.policy.resources.vcpus",
+		"request.policy.resources.memory_bytes",
+		"request.policy.resources.disk_bytes",
+		"request.policy.docker.required",
+		"request.policy.network_default",
+		"request.policy.network.hosts",
+		"request.policy.network.ports",
+		"request.cache.reuse",
+		"request.snapshot.id",
 	}
-	source := grant.condition.source
-	unavailablePrefixes := []string{
-		"request.image",
-		"request.policy",
-		"request.cache",
-		"request.snapshot",
+	repository, _ := req.Request["repository"].(map[string]any)
+	if requestString(repository, "commit") == "" {
+		paths = append(paths, "request.repository.commit")
 	}
-	for i := 0; i < len(source); {
-		if source[i] == '"' || source[i] == '\'' {
-			next, err := skipQuoted(source, i)
-			if err != nil {
-				return true
-			}
-			i = next
-			continue
-		}
-		if !isIdentStart(rune(source[i])) || (i > 0 && source[i-1] == '.') {
-			i++
-			continue
-		}
-		path, next := readPath(source, i)
-		i = next
-		for _, prefix := range unavailablePrefixes {
-			if path == prefix || strings.HasPrefix(path, prefix+".") {
-				return true
-			}
-		}
+	if requestString(repository, "branch") == "" {
+		paths = append(paths, "request.repository.branch")
 	}
-	return false
+	return paths
+}
+
+func requestString(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func grantActivation(req DecisionRequest) map[string]any {

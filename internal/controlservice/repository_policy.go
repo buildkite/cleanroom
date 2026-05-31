@@ -193,6 +193,9 @@ func gitShowFileAtCommit(ctx context.Context, repoDir, commitSHA, path string) (
 		if message == "" {
 			message = err.Error()
 		}
+		if isGitShowFileMissingError(message, path) {
+			return nil, repositorystore.NewFileNotFoundError(commitSHA, path)
+		}
 		return nil, fmt.Errorf("git show %s:%s: %s", strings.TrimSpace(commitSHA), path, message)
 	}
 	return output, nil
@@ -213,11 +216,17 @@ func gitOutputContext(ctx context.Context, repoDir string, args ...string) (stri
 }
 
 func isRepositoryFileMissingError(err error) bool {
-	if err == nil {
+	return errors.Is(err, repositorystore.ErrFileNotFound)
+}
+
+func isGitShowFileMissingError(message, path string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	path = strings.ToLower(strings.TrimSpace(path))
+	if path == "" {
 		return false
 	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "does not exist") ||
-		strings.Contains(message, "exists on disk, but not in") ||
-		strings.Contains(message, "pathspec")
+	quotedPath := "'" + path + "'"
+	return strings.Contains(message, "path "+quotedPath+" does not exist") ||
+		strings.Contains(message, "path "+quotedPath+" exists on disk, but not in") ||
+		strings.Contains(message, "pathspec "+quotedPath)
 }

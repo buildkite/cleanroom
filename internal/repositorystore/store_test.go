@@ -2,6 +2,7 @@ package repositorystore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,6 +85,33 @@ func TestMirrorBackedRepositoryStoreReadFileAtCommit(t *testing.T) {
 	}
 	if got, want := string(content), "hello\n"; got != want {
 		t.Fatalf("unexpected file content: got %q want %q", got, want)
+	}
+}
+
+func TestMirrorBackedRepositoryStoreReadFileAtCommitReportsMissingFile(t *testing.T) {
+	t.Parallel()
+
+	workDir := t.TempDir()
+	originDir := filepath.Join(t.TempDir(), "origin.git")
+
+	runGitCommand(t, "", "init", "--bare", originDir)
+	runGitCommand(t, workDir, "init")
+	runGitCommand(t, workDir, "config", "user.email", "test@example.com")
+	runGitCommand(t, workDir, "config", "user.name", "Test")
+	runGitCommand(t, workDir, "branch", "-M", "main")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitCommand(t, workDir, "add", "README.md")
+	runGitCommand(t, workDir, "commit", "-m", "initial")
+	runGitCommand(t, workDir, "remote", "add", "origin", originDir)
+	runGitCommand(t, workDir, "push", "-u", "origin", "main")
+	head := strings.TrimSpace(runGitCommand(t, workDir, "rev-parse", "HEAD"))
+
+	store := NewMirrorBacked(gateway.NewGitMirrorStore(t.TempDir(), 0, nil))
+	_, err := store.ReadFileAtCommit(context.Background(), "file://"+originDir, head, "missing.txt")
+	if !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("ReadFileAtCommit error = %v, want ErrFileNotFound", err)
 	}
 }
 

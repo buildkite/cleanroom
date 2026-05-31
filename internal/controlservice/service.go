@@ -485,6 +485,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
 	if req.GetPolicy() == nil && repository != nil {
 		repositoryForAuth := cloneRepositoryCheckout(repository)
+		if commitBundle != nil && strings.TrimSpace(repositoryForAuth.CommitSHA) == "" {
+			repositoryForAuth.CommitSHA = strings.ToLower(strings.TrimSpace(commitBundle.TargetCommitSHA))
+		}
 		if _, err := repositoryForAuth.NormalizeRemoteURL(); err != nil {
 			return nil, err
 		}

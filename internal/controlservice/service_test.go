@@ -434,6 +434,9 @@ func (s *stubRepositoryMirrorStore) ReadFileAtCommit(ctx context.Context, remote
 			if message == "" {
 				message = err.Error()
 			}
+			if isGitShowFileMissingError(message, path) {
+				return repositorystore.NewFileNotFoundError(commitSHA, path)
+			}
 			return errors.New(message)
 		}
 		content = output
@@ -2921,6 +2924,32 @@ func TestCreateSandboxRepositoryPolicyRequiresRepositoryStore(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "requires repository store") {
 		t.Fatalf("expected repository store error, got %v", err)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyPreservesRepositoryAccessError(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{
+		mirrorPathErr:   errors.New("no cached mirror"),
+		ensureMirrorErr: errors.New("repository https://github.com/buildkite/missing.git does not exist"),
+	}
+	repositoryCheckout := testRepositoryCheckoutProto()
+	repositoryCheckout.RemoteUrl = "https://github.com/buildkite/missing.git"
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox to fail")
+	}
+	if !strings.Contains(err.Error(), "repository https://github.com/buildkite/missing.git does not exist") {
+		t.Fatalf("expected repository access error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "policy not found") {
+		t.Fatalf("expected repository access error to be preserved, got %v", err)
 	}
 }
 

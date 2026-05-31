@@ -2,6 +2,7 @@ package repositorystore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,31 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
+
+var ErrFileNotFound = errors.New("repository file not found")
+
+type FileNotFoundError struct {
+	CommitSHA string
+	Path      string
+}
+
+func NewFileNotFoundError(commitSHA, path string) error {
+	return &FileNotFoundError{
+		CommitSHA: strings.TrimSpace(commitSHA),
+		Path:      strings.TrimSpace(path),
+	}
+}
+
+func (e *FileNotFoundError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("repository file %s not found at %s", e.Path, e.CommitSHA)
+}
+
+func (e *FileNotFoundError) Is(target error) bool {
+	return target == ErrFileNotFound
+}
 
 type FetchHints struct {
 	Branches []string
@@ -140,7 +166,22 @@ func gitShowFileAtCommit(ctx context.Context, repoDir, commitSHA, path string) (
 		if message == "" {
 			message = err.Error()
 		}
+		if isGitShowFileMissingError(message, path) {
+			return nil, NewFileNotFoundError(commitSHA, path)
+		}
 		return nil, fmt.Errorf("git show %s:%s: %s", strings.TrimSpace(commitSHA), path, message)
 	}
 	return output, nil
+}
+
+func isGitShowFileMissingError(message, path string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	path = strings.ToLower(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	quotedPath := "'" + path + "'"
+	return strings.Contains(message, "path "+quotedPath+" does not exist") ||
+		strings.Contains(message, "path "+quotedPath+" exists on disk, but not in") ||
+		strings.Contains(message, "pathspec "+quotedPath)
 }

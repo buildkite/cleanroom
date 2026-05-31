@@ -8,6 +8,8 @@ import (
 	"unicode"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/interpreter"
 )
 
 const celRuntimeCostLimit uint64 = 10_000
@@ -43,7 +45,7 @@ func compileBoolExpression(source string, rules celPathRules) (*compiledBoolExpr
 	if !ast.OutputType().IsExactType(cel.BoolType) {
 		return nil, fmt.Errorf("expression must return bool, got %s", ast.OutputType())
 	}
-	program, err := env.Program(ast, cel.CostLimit(celRuntimeCostLimit))
+	program, err := env.Program(ast, cel.CostLimit(celRuntimeCostLimit), cel.EvalOptions(cel.OptPartialEval))
 	if err != nil {
 		return nil, err
 	}
@@ -66,6 +68,50 @@ func (e *compiledBoolExpression) eval(vars map[string]any) (bool, error) {
 		return false, fmt.Errorf("expression returned %T, expected bool", val.Value())
 	}
 	return native, nil
+}
+
+func (e *compiledBoolExpression) evalPartial(vars map[string]any, unknownPaths ...string) (bool, bool, error) {
+	if e == nil || strings.TrimSpace(e.source) == "" {
+		return true, true, nil
+	}
+	unknowns := make([]*interpreter.AttributePattern, 0, len(unknownPaths))
+	for _, path := range unknownPaths {
+		if pattern := celAttributePattern(path); pattern != nil {
+			unknowns = append(unknowns, pattern)
+		}
+	}
+	activation, err := cel.PartialVars(vars, unknowns...)
+	if err != nil {
+		return false, false, err
+	}
+	val, _, err := e.program.Eval(activation)
+	if err != nil {
+		return false, false, err
+	}
+	if types.IsUnknown(val) {
+		return false, false, nil
+	}
+	native, ok := val.Value().(bool)
+	if !ok {
+		return false, false, fmt.Errorf("expression returned %T, expected bool", val.Value())
+	}
+	return native, true, nil
+}
+
+func celAttributePattern(path string) *interpreter.AttributePattern {
+	parts := strings.Split(strings.TrimSpace(path), ".")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return nil
+	}
+	pattern := cel.AttributePattern(parts[0])
+	for _, part := range parts[1:] {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil
+		}
+		pattern = pattern.QualString(part)
+	}
+	return pattern
 }
 
 type celPathRules struct {
