@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 20 ready for review
+**Status:** Slice 21 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -24,13 +24,14 @@ host:443 while outbound URL construction could preserve an embedded port.
 Slice 16 closed both critical findings in PR #491. Slice 17 closed the HIGH
 darwin-vz helper resolution finding in PR #492. Slice 18 closed the HIGH
 execution-scoped gateway credential cleanup finding in PR #493. Slice 19 closed
-the HIGH DNS exfiltration finding in PR #494.
+the HIGH DNS exfiltration finding in PR #494. Slice 20 closed the HIGH OCI
+digest cache authorization finding in PR #495. Slice 21 closes the unknown
+OIDC `kid` JWKS fetch amplification finding.
 
-After PR #494 merged, the live `cleanroom-v0.10.0` DeepSec export shows 7
-unresolved true positives: OCI digest cache authorization, unknown OIDC `kid`
-JWKS fetch amplification, persistent darwin-vz file-handle policy lifetime, Git
-proxy environment port preservation, two Git mirror resource-exhaustion paths,
-and retained execution output UTF-8 handling.
+After Slice 21 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
+5 unresolved true positives: persistent darwin-vz file-handle policy lifetime,
+Git proxy environment port preservation, two Git mirror resource-exhaustion
+paths, and retained execution output UTF-8 handling.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -748,6 +749,42 @@ Result: the OCI digest cache authorization finding revalidated as fixed.
 DeepSec status now reports 12/12 findings revalidated, with 6 true positives
 and 6 fixed findings.
 
+Slice 21 is implemented and ready for review. OIDC JWKS cache lookups now
+distinguish an unloaded cache from a loaded fresh cache. Fresh cache misses for
+unknown `kid` values return a local key-not-found error without fetching JWKS
+again, while the first lookup still fetches keys, stale caches still refresh,
+and reused-`kid` key rotation still uses the existing signature-failure refresh
+path.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/authz -run 'TestOIDCValidator(DoesNotRefreshFreshJWKSForUnknownKid|RefreshesJWKSOnReusedKidSignatureFailure|ExpiresJWKSCache)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/authz
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/authz/oidc.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the unknown OIDC `kid` JWKS fetch amplification finding revalidated as
+fixed. DeepSec status now reports 12/12 findings revalidated, with 5 true
+positives and 7 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -758,6 +795,7 @@ and 6 fixed findings.
 | Execution-scoped gateway credential authorization persists after execution | High | Fixed by Slice 18 | Slice 18: restore gateway scope after execution |
 | Denied workloads can still exfiltrate data through DNS queries | High | Fixed by Slice 19 | Slice 19: DNS pre-query policy gate |
 | OCI digest cache can bypass repository-level authorization | High | Fixed by Slice 20 | Slice 20: OCI cache scope binding |
+| Unknown JWT key IDs force repeated JWKS fetches | Medium | Fixed by Slice 21 | Slice 21: OIDC JWKS fresh-miss guard |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -808,6 +846,7 @@ and 6 fixed findings.
 18. Restore registered gateway authorization when Firecracker execution scopes end.
 19. Gate DNS queries against sandbox policy before forwarding to upstream resolvers.
 20. Bind OCI digest cache entries to the authorized repo and owner scope.
+21. Return local OIDC JWKS key-not-found errors for fresh unknown `kid` cache misses.
 
 ## Key Learnings From Pressure-Testing
 

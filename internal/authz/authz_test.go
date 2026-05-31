@@ -152,6 +152,53 @@ func TestOIDCValidatorRefreshesJWKSOnReusedKidSignatureFailure(t *testing.T) {
 	}
 }
 
+func TestOIDCValidatorDoesNotRefreshFreshJWKSForUnknownKid(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	trustedKey := mustRSAKey(t)
+	otherKey := mustRSAKey(t)
+	var mu sync.Mutex
+	requests := 0
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				jwkPayload("kid-1", &trustedKey.PublicKey),
+			},
+		}); err != nil {
+			t.Fatalf("encode jwks: %v", err)
+		}
+	}))
+	t.Cleanup(jwks.Close)
+	validator := newTestOIDCValidator(t, jwks.URL, now)
+	claims := jwt.MapClaims{
+		"iss": "https://issuer.example",
+		"sub": "bot-123",
+		"aud": []string{"cleanroom"},
+		"iat": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"nbf": jwt.NewNumericDate(now.Add(-time.Minute)),
+		"exp": jwt.NewNumericDate(now.Add(time.Minute)),
+	}
+	if _, err := validator.Validate(context.Background(), signTestToken(t, trustedKey, "kid-1", claims)); err != nil {
+		t.Fatalf("Validate with known key returned error: %v", err)
+	}
+	if got, want := jwksRequestCount(&mu, &requests), 1; got != want {
+		t.Fatalf("unexpected jwks requests after cache warmup: got %d want %d", got, want)
+	}
+
+	for _, kid := range []string{"random-kid-1", "random-kid-2"} {
+		token := signTestToken(t, otherKey, kid, claims)
+		if _, err := validator.Validate(context.Background(), token); err == nil || !strings.Contains(err.Error(), `jwks key "`+kid+`" not found`) {
+			t.Fatalf("expected unknown kid error for %q, got %v", kid, err)
+		}
+	}
+	if got, want := jwksRequestCount(&mu, &requests), 1; got != want {
+		t.Fatalf("fresh unknown kid lookups refreshed jwks: got %d requests want %d", got, want)
+	}
+}
+
 func TestOIDCValidatorIgnoresUnsupportedJWKSKeys(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	key := mustRSAKey(t)
@@ -725,6 +772,12 @@ func signHS256TestToken(t *testing.T, kid string, claims jwt.MapClaims) string {
 		t.Fatalf("sign HS256 token: %v", err)
 	}
 	return signed
+}
+
+func jwksRequestCount(mu *sync.Mutex, requests *int) int {
+	mu.Lock()
+	defer mu.Unlock()
+	return *requests
 }
 
 func withClaim(claims jwt.MapClaims, key string, value any) jwt.MapClaims {
