@@ -350,17 +350,20 @@ IPSW-to-bundle creator that installs macOS, writes VZ identity files, and emits
 the runner's `bundle.json` shape.
 
 The worktree now has a minimal `darwin/arm64` macOS guest agent command,
-LaunchDaemon template, and offline prepare script that clones a base bundle,
-mounts the clone's APFS Data volume, installs the agent, marks setup complete,
-and updates `bundle.json`. The prepare script fails closed if it cannot set
-root ownership, with an explicit inspection-only override for rootless
-experiments. On the local macOS 26.5 build 25F71 bundle, metadata validation
-succeeds after rootless preparation, but the live `sw_vers` smoke still times
-out connecting to the guest vsock port. The rootless offline install cannot set
-root ownership on the agent or LaunchDaemon plist, and the guest did not create
-agent stdout/stderr logs during boot. The next validation step is a privileged
-package/install path, or an in-guest setup path, that produces launchd-accepted
-agent files before rerunning the live smoke.
+LaunchDaemon template, package builder, and offline prepare script that clones
+a base bundle, mounts the clone's APFS Data volume, installs the agent, marks
+setup complete, and updates `bundle.json`. The prepare script fails closed if
+it cannot set root ownership, with an explicit inspection-only override for
+rootless experiments. On the local macOS 26.5 build 25F71 bundle, metadata
+validation succeeds after rootless preparation, but the live `sw_vers` smoke
+still times out connecting to the guest vsock port. The rootless offline
+install cannot set root ownership on the agent or LaunchDaemon plist, and the
+guest did not create agent stdout/stderr logs during boot. The package builder
+now produces `dist/cleanroom-macos-guest-agent.pkg` as a script-only installer:
+its postinstall runs inside the guest as root, writes the agent and
+LaunchDaemon plist as `root:wheel`, and bootstraps the LaunchDaemon when the
+target is the running system. The next validation step is a setup boot or
+privileged in-guest install that runs that package, then reruns the live smoke.
 
 ## Delivery Strategy
 
@@ -437,9 +440,9 @@ Current status: `cmd/cleanroom-macos-guest-agent` builds for `darwin/arm64`,
 serves the existing newline-delimited exec stream over stdio for tests and
 Darwin AF_VSOCK in the guest, supports `ready`/`version` control requests, and
 streams stdout, stderr, stdin EOF, environment, working directory, and exit
-status. The LaunchDaemon template exists, but live launchd startup is not yet
-proved because the current offline install path cannot set root ownership in
-this non-sudo session.
+status. The LaunchDaemon template and package builder exist, but live launchd
+startup is not yet proved because the current offline install path cannot set
+root ownership in this non-sudo session.
 
 ### Slice 3: Image bundle creation and import
 
@@ -469,6 +472,10 @@ marks setup complete, and updates `bundle.json` to the installed agent version.
 It leaves the base bundle untouched and fails closed when root ownership cannot
 be set, unless the caller passes the inspection-only rootless override.
 Rootless offline installation has not produced a launchd-started agent yet.
+`build-guest-agent-pkg.sh` creates a script-only installer package for an
+in-guest finalization path. The package avoids host-side AppleDouble payload
+entries and uses postinstall to write root-owned files, then tries to bootstrap
+and kickstart the LaunchDaemon.
 
 Definition of done:
 
@@ -628,9 +635,9 @@ the existing backend.
 Questions that block Slice 1:
 
 - What installation path should make the LaunchDaemon acceptable to launchd?
-  Recommended default: build a package or image-finalization step that runs
-  with privileges inside the target guest or against the mounted Data volume,
-  sets root-owned metadata, and then reruns the existing `sw_vers` smoke.
+  Recommended default: run the generated agent package during a setup boot or
+  other privileged in-guest finalization step, then rerun the existing
+  `sw_vers` smoke.
 
 Questions before backend integration:
 

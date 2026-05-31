@@ -92,6 +92,13 @@ Build the minimal macOS guest agent:
 benchmarks/darwin-vz/macos-minimal/build-guest-agent.sh
 ```
 
+Build the package that can install and bootstrap the LaunchDaemon inside a
+running guest:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/build-guest-agent-pkg.sh
+```
+
 Then clone a base bundle and install the agent into the clone's APFS Data
 volume:
 
@@ -112,6 +119,18 @@ root-owned metadata on the installed files. By default it fails in that case
 because launchd may reject the daemon. Use `--allow-unverified-ownership` only
 for inspecting the offline image flow; a bundle prepared that way is not
 command-runnable until the live smoke proves the agent starts.
+
+For a setup boot or manual guest finalization, copy
+`dist/cleanroom-macos-guest-agent.pkg` into the guest and run:
+
+```bash
+sudo installer -pkg /path/to/cleanroom-macos-guest-agent.pkg -target /
+```
+
+The package is script-only so it does not archive host-side AppleDouble
+metadata. Its postinstall runs inside the guest as root, writes the agent and
+LaunchDaemon plist as `root:wheel`, then attempts to load and start
+`com.buildkite.cleanroom.macos-guest-agent`.
 
 ## Validate metadata
 
