@@ -264,9 +264,9 @@ type AllowRule struct {
 func normalizeRawAllowRules(raw rawAllowRules) ([]AllowRule, error) {
 	allow := make([]AllowRule, 0, len(raw))
 	for _, rule := range raw {
-		host := strings.TrimSpace(strings.ToLower(rule.Host))
-		if host == "" {
-			return nil, errors.New("allow rule host cannot be empty")
+		host, err := normalizeAllowRuleHost(rule.Host)
+		if err != nil {
+			return nil, err
 		}
 		if len(rule.Ports) == 0 {
 			return nil, fmt.Errorf("allow rule for host %q must include at least one port", host)
@@ -292,6 +292,22 @@ func normalizeRawAllowRules(raw rawAllowRules) ([]AllowRule, error) {
 		return allow[i].Host < allow[j].Host
 	})
 	return allow, nil
+}
+
+func normalizeAllowRuleHost(rawHost string) (string, error) {
+	host := strings.TrimSpace(strings.ToLower(rawHost))
+	if host == "" {
+		return "", errors.New("allow rule host cannot be empty")
+	}
+	if strings.ContainsAny(host, "/\\@[]:?&#%") {
+		return "", fmt.Errorf("allow rule host %q must be a bare hostname without scheme, path, userinfo, or port", host)
+	}
+	for _, r := range host {
+		if r <= ' ' || r == 0x7f || r > 0x7e {
+			return "", fmt.Errorf("allow rule host %q must be a bare hostname without control or non-ASCII characters", host)
+		}
+	}
+	return host, nil
 }
 
 func normalizeRawStageNetwork(raw *rawStageNetworkConfig) (*NetworkPolicy, error) {
@@ -1090,9 +1106,9 @@ func networkStagesToProto(stages *NetworkStagePolicies) *cleanroomv1.PolicyNetwo
 func normalizeProtoAllowRules(rules []*cleanroomv1.PolicyAllowRule) ([]AllowRule, error) {
 	allow := make([]AllowRule, 0, len(rules))
 	for _, rule := range rules {
-		host := strings.TrimSpace(strings.ToLower(rule.GetHost()))
-		if host == "" {
-			return nil, errors.New("allow rule host cannot be empty")
+		host, err := normalizeAllowRuleHost(rule.GetHost())
+		if err != nil {
+			return nil, err
 		}
 		ports := make([]int, 0, len(rule.GetPorts()))
 		seen := map[int]struct{}{}

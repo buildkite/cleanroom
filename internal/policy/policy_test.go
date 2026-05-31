@@ -211,6 +211,40 @@ sandbox:
 	}
 }
 
+func TestCompileRejectsNetworkAllowHostAuthoritySyntax(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		host string
+	}{
+		{name: "embedded port", host: "internal.example:8443"},
+		{name: "url scheme", host: "https://internal.example"},
+		{name: "userinfo", host: "user@internal.example"},
+		{name: "path", host: "internal.example/repo"},
+		{name: "escaped slash", host: "internal.example%2frepo"},
+		{name: "ipv6 literal", host: "[2001:db8::1]"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := baseRawPolicy()
+			raw.Sandbox.Network.Allow = rawAllowRules{
+				{Host: tc.host, Ports: []int{443}},
+			}
+
+			_, err := Compile(raw)
+			if err == nil {
+				t.Fatal("expected Compile to reject allow host authority syntax")
+			}
+			if !strings.Contains(err.Error(), "must be a bare hostname") {
+				t.Fatalf("unexpected error: got %v want bare hostname error", err)
+			}
+		})
+	}
+}
+
 func TestCompileNormalizesNetworkAllowScalar(t *testing.T) {
 	t.Parallel()
 
@@ -1626,6 +1660,25 @@ func TestFromProtoCanonicalisesAllowRules(t *testing.T) {
 	}
 	if got, want := compiled.Allow[0].Ports, []int{80, 443}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("expected deduplicated/sorted ports %v, got %v", want, got)
+	}
+}
+
+func TestFromProtoRejectsNetworkAllowHostAuthoritySyntax(t *testing.T) {
+	t.Parallel()
+
+	_, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Allow: []*cleanroomv1.PolicyAllowRule{
+			{Host: "internal.example:8443", Ports: []int32{443}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected FromProto to reject allow host authority syntax")
+	}
+	if !strings.Contains(err.Error(), "must be a bare hostname") {
+		t.Fatalf("unexpected error: got %v want bare hostname error", err)
 	}
 }
 

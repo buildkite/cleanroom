@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 21 ready for review
+**Status:** Slice 22 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -26,12 +26,13 @@ darwin-vz helper resolution finding in PR #492. Slice 18 closed the HIGH
 execution-scoped gateway credential cleanup finding in PR #493. Slice 19 closed
 the HIGH DNS exfiltration finding in PR #494. Slice 20 closed the HIGH OCI
 digest cache authorization finding in PR #495. Slice 21 closes the unknown
-OIDC `kid` JWKS fetch amplification finding.
+OIDC `kid` JWKS fetch amplification finding. Slice 22 closes the Git proxy
+environment port-preservation finding.
 
-After Slice 21 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
-5 unresolved true positives: persistent darwin-vz file-handle policy lifetime,
-Git proxy environment port preservation, two Git mirror resource-exhaustion
-paths, and retained execution output UTF-8 handling.
+After Slice 22 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
+4 unresolved true positives: persistent darwin-vz file-handle policy lifetime,
+two Git mirror resource-exhaustion paths, and retained execution output UTF-8
+handling.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -785,6 +786,43 @@ Result: the unknown OIDC `kid` JWKS fetch amplification finding revalidated as
 fixed. DeepSec status now reports 12/12 findings revalidated, with 5 true
 positives and 7 fixed findings.
 
+Slice 22 is implemented and ready for review. Policy allow-rule hosts now must
+be bare hostnames when loaded from YAML or proto state, so mapping-form rules
+cannot smuggle ports, userinfo, schemes, paths, percent escapes, bracketed
+IPv6 literals, or control characters into host-based policy checks. Git proxy
+environment generation also reuses the normalized Git route-host validator
+before writing `insteadOf` rewrites, so manually constructed compiled policies
+cannot produce a gateway rewrite for an authority-shaped host.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway ./internal/policy -run 'Test(GitProxyEnvVarsSkipsMalformedAllowRuleHosts|ProxyEnvVarsStillIncludesGitWhenRubyGemsRouteIsUnavailable|CompileRejectsNetworkAllowHostAuthoritySyntax|FromProtoRejectsNetworkAllowHostAuthoritySyntax|CompileNormalizesNetworkAllowShorthand|FromProtoCanonicalisesAllowRules)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway ./internal/policy
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/gateway/git_proxy_env.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the Git proxy environment port-preservation finding revalidated as
+fixed. DeepSec status now reports 12/12 findings revalidated, with 4 true
+positives and 8 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -796,6 +834,7 @@ positives and 7 fixed findings.
 | Denied workloads can still exfiltrate data through DNS queries | High | Fixed by Slice 19 | Slice 19: DNS pre-query policy gate |
 | OCI digest cache can bypass repository-level authorization | High | Fixed by Slice 20 | Slice 20: OCI cache scope binding |
 | Unknown JWT key IDs force repeated JWKS fetches | Medium | Fixed by Slice 21 | Slice 21: OIDC JWKS fresh-miss guard |
+| Git proxy rewrites can preserve embedded ports from policy hosts | Medium | Fixed by Slice 22 | Slice 22: policy host authority validation |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -847,6 +886,7 @@ positives and 7 fixed findings.
 19. Gate DNS queries against sandbox policy before forwarding to upstream resolvers.
 20. Bind OCI digest cache entries to the authorized repo and owner scope.
 21. Return local OIDC JWKS key-not-found errors for fresh unknown `kid` cache misses.
+22. Reject authority-shaped policy hosts before generating Git proxy rewrites.
 
 ## Key Learnings From Pressure-Testing
 

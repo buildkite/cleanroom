@@ -58,8 +58,8 @@ func GitProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToke
 	entries := make([]configEntry, 0, len(compiled.Allow)+1)
 	seenHosts := make(map[string]struct{}, len(compiled.Allow))
 	for _, rule := range compiled.Allow {
-		host := strings.TrimSpace(rule.Host)
-		if host == "" {
+		host, err := normalizeGitRouteHost(strings.TrimSpace(rule.Host))
+		if err != nil {
 			continue
 		}
 		for _, port := range rule.Ports {
