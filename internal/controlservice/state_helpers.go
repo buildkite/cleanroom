@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -245,19 +246,87 @@ func appendRetainedOutput(existing, chunk string, limit int) string {
 		return ""
 	}
 	if chunk == "" {
-		if len(existing) <= limit {
-			return existing
-		}
-		return strings.Clone(existing[len(existing)-limit:])
+		return retainedUTF8Tail(existing, limit)
 	}
 	if len(chunk) >= limit {
-		return strings.Clone(chunk[len(chunk)-limit:])
+		return retainedUTF8Tail(chunk, limit)
 	}
 	keepExisting := limit - len(chunk)
-	if keepExisting < len(existing) {
-		existing = strings.Clone(existing[len(existing)-keepExisting:])
+	existing = retainedUTF8Tail(existing, keepExisting)
+	return retainedUTF8Tail(existing+chunk, limit)
+}
+
+func appendRetainedOutputBytes(existing string, pending, chunk []byte, limit int) (string, []byte) {
+	if limit <= 0 {
+		return "", nil
 	}
-	return existing + chunk
+	if len(chunk) == 0 {
+		return retainedUTF8Tail(existing, limit), cloneBytes(pending)
+	}
+
+	combined := make([]byte, 0, len(pending)+len(chunk))
+	combined = append(combined, pending...)
+	combined = append(combined, chunk...)
+	prefix, nextPending := splitTrailingIncompleteUTF8(combined)
+	if len(prefix) > 0 {
+		existing = appendRetainedOutput(existing, string(prefix), limit)
+	} else {
+		existing = retainedUTF8Tail(existing, limit)
+	}
+	return existing, cloneBytes(nextPending)
+}
+
+func flushRetainedOutputPending(existing string, pending []byte, limit int) (string, []byte) {
+	if len(pending) == 0 {
+		return retainedUTF8Tail(existing, limit), nil
+	}
+	return appendRetainedOutput(existing, string(pending), limit), nil
+}
+
+func splitTrailingIncompleteUTF8(value []byte) ([]byte, []byte) {
+	if len(value) == 0 || utf8.Valid(value) {
+		return value, nil
+	}
+	max := len(value)
+	if max > utf8.UTFMax {
+		max = utf8.UTFMax
+	}
+	for size := 1; size <= max; size++ {
+		start := len(value) - size
+		if value[start] < utf8.RuneSelf {
+			break
+		}
+		if !utf8.RuneStart(value[start]) {
+			continue
+		}
+		if !utf8.FullRune(value[start:]) {
+			return value[:start], value[start:]
+		}
+		break
+	}
+	return value, nil
+}
+
+func retainedUTF8Tail(value string, limit int) string {
+	if limit <= 0 || value == "" {
+		return ""
+	}
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if len(value) <= limit {
+		return strings.Clone(value)
+	}
+	start := len(value) - limit
+	for start < len(value) && !utf8.RuneStart(value[start]) {
+		start++
+	}
+	return strings.Clone(value[start:])
+}
+
+func cloneBytes(value []byte) []byte {
+	if len(value) == 0 {
+		return nil
+	}
+	return append([]byte(nil), value...)
 }
 
 func appendBounded[T any](history []T, item T, limit int) []T {
