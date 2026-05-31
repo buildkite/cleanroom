@@ -413,19 +413,16 @@ func serveMirrorUploadPack(r *http.Request, w http.ResponseWriter, mirrorDir str
 	cmd.Env = append(os.Environ(), gitProtocolEnv(r)...)
 	cmd.Stdin = bytes.NewReader(body)
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git upload-pack --stateless-rpc: %s: %w", strings.TrimSpace(stderr.String()), err)
-	}
+	stderr := newLimitedOutputBuffer(maxGitCommandErrorOutputBytes)
+	cmd.Stdout = flushResponseWriter{w: w}
+	cmd.Stderr = stderr
 
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 	w.Header().Set("Cache-Control", "no-cache")
-	_, err = w.Write(stdout.Bytes())
-	return err
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git upload-pack --stateless-rpc: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
 }
 
 func gitProtocolEnv(r *http.Request) []string {
@@ -458,6 +455,18 @@ func readUploadPackBodyWithLimit(r *http.Request, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: limit %d bytes", errUploadPackRequestTooLarge, limit)
 	}
 	return body, nil
+}
+
+type flushResponseWriter struct {
+	w http.ResponseWriter
+}
+
+func (fw flushResponseWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if flusher, ok := fw.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return n, err
 }
 
 func uploadPackConfigArgs() []string {

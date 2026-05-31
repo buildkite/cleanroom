@@ -504,6 +504,27 @@ func TestGitHandlerServesMirrorToRealGitClient(t *testing.T) {
 	}
 }
 
+func TestServeMirrorUploadPackWritesCommandOutput(t *testing.T) {
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\ncat >/dev/null\nprintf 'pack-result'\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	req := httptest.NewRequest(http.MethodPost, "/git/github.com/org/repo.git/git-upload-pack", strings.NewReader("request-payload"))
+	resp := httptest.NewRecorder()
+	if err := serveMirrorUploadPack(req, resp, t.TempDir()); err != nil {
+		t.Fatalf("serveMirrorUploadPack returned error: %v", err)
+	}
+	if got, want := resp.Header().Get("Content-Type"), "application/x-git-upload-pack-result"; got != want {
+		t.Fatalf("unexpected content type: got %q want %q", got, want)
+	}
+	if got, want := resp.Body.String(), "pack-result"; got != want {
+		t.Fatalf("unexpected response body: got %q want %q", got, want)
+	}
+}
+
 type staticMirrorStore struct {
 	mirrorDir    string
 	gotRemoteURL string
