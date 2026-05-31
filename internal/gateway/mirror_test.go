@@ -190,6 +190,40 @@ func TestGitMirrorStoreSkipsCredentialsForFileRemote(t *testing.T) {
 	}
 }
 
+func TestGitMirrorStoreCloneMirrorBoundsCommandOutput(t *testing.T) {
+	installLargeOutputGit(t, "clone")
+
+	store := NewGitMirrorStore(t.TempDir(), time.Minute, nil)
+	mirrorDir := filepath.Join(t.TempDir(), "mirror.git")
+	err := store.cloneMirror(context.Background(), "https://github.com/buildkite/cleanroom.git", mirrorDir)
+	assertBoundedGitOutputError(t, err)
+	if _, statErr := os.Stat(mirrorDir); !os.IsNotExist(statErr) {
+		t.Fatalf("failed clone should remove mirror dir, stat err = %v", statErr)
+	}
+}
+
+func TestGitMirrorStoreFetchMirrorBoundsSetURLOutput(t *testing.T) {
+	installLargeOutputGit(t, "set-url")
+
+	store := NewGitMirrorStore(t.TempDir(), time.Minute, nil)
+	err := store.fetchMirror(context.Background(), "https://github.com/buildkite/cleanroom.git", t.TempDir())
+	assertBoundedGitOutputError(t, err)
+	if !strings.Contains(err.Error(), "git remote set-url origin") {
+		t.Fatalf("expected set-url context, got %q", err.Error())
+	}
+}
+
+func TestGitMirrorStoreFetchMirrorBoundsFetchOutput(t *testing.T) {
+	installLargeOutputGit(t, "fetch")
+
+	store := NewGitMirrorStore(t.TempDir(), time.Minute, nil)
+	err := store.fetchMirror(context.Background(), "https://github.com/buildkite/cleanroom.git", t.TempDir())
+	assertBoundedGitOutputError(t, err)
+	if !strings.Contains(err.Error(), "git fetch --prune origin") {
+		t.Fatalf("expected fetch context, got %q", err.Error())
+	}
+}
+
 func findEnvValue(env []string, name string) string {
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")
@@ -212,6 +246,59 @@ type failingCredentialProvider struct{}
 
 func (failingCredentialProvider) Resolve(context.Context, string) (string, error) {
 	return "", fmt.Errorf("credentials unavailable")
+}
+
+func installLargeOutputGit(t *testing.T, failMode string) {
+	t.Helper()
+
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	script := `#!/bin/sh
+emit_large_output() {
+	dd if=/dev/zero bs=70000 count=1 2>/dev/null | LC_ALL=C tr '\000' x
+	printf 'unretained-tail\n'
+}
+
+if [ "$FAKE_GIT_FAIL_MODE" = "clone" ] && [ "$1" = "clone" ]; then
+	emit_large_output
+	exit 1
+fi
+
+if [ "$FAKE_GIT_FAIL_MODE" = "set-url" ] && [ "$3" = "remote" ] && [ "$4" = "set-url" ]; then
+	emit_large_output
+	exit 1
+fi
+
+if [ "$FAKE_GIT_FAIL_MODE" = "fetch" ] && [ "$3" = "fetch" ]; then
+	emit_large_output
+	exit 1
+fi
+
+exit 0
+`
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GIT_FAIL_MODE", failMode)
+}
+
+func assertBoundedGitOutputError(t *testing.T, err error) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatal("expected git command error")
+	}
+	msg := err.Error()
+	if len(msg) > maxGitCommandErrorOutputBytes+2048 {
+		t.Fatalf("error output was not bounded: len=%d", len(msg))
+	}
+	if !strings.Contains(msg, "[truncated ") {
+		t.Fatalf("expected truncation marker in bounded error output, len=%d", len(msg))
+	}
+	if strings.Contains(msg, "unretained-tail") {
+		t.Fatalf("expected tail marker to be truncated, len=%d", len(msg))
+	}
 }
 
 func TestGitMirrorStorePathIsStableByRemoteURL(t *testing.T) {
