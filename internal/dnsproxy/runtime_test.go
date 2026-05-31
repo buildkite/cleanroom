@@ -962,6 +962,8 @@ func TestForwarderSanitizesAllowedQueryBeforeUpstream(t *testing.T) {
 	var gotQtype, gotQclass uint16
 	var gotOpcode int
 	var gotRecursionDesired bool
+	var gotEDNSUDPSize uint16
+	var gotEDNSOptions int
 	forwarder := NewForwarder(ForwarderConfig{
 		Runtime:                runtime,
 		UpstreamAddr:           "127.0.0.1:5300",
@@ -984,6 +986,10 @@ func TestForwarderSanitizesAllowedQueryBeforeUpstream(t *testing.T) {
 			gotAnswer = len(msg.Answer)
 			gotAuthority = len(msg.Ns)
 			gotExtra = len(msg.Extra)
+			if opt := msg.IsEdns0(); opt != nil {
+				gotEDNSUDPSize = opt.UDPSize()
+				gotEDNSOptions = len(opt.Option)
+			}
 			return testResponse(msg.Question[0].Name), 0, nil
 		}),
 	})
@@ -993,8 +999,8 @@ func TestForwarderSanitizesAllowedQueryBeforeUpstream(t *testing.T) {
 		localAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
 	}
 	request := new(dns.Msg)
-	request.Id = 1234
 	request.SetQuestion("ApI.ExAmPlE.CoM.", dns.TypeA)
+	request.Id = 1234
 	request.Answer = []dns.RR{&dns.TXT{
 		Hdr: dns.RR_Header{Name: "leak-answer.example.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET},
 		Txt: []string{"secret"},
@@ -1010,8 +1016,8 @@ func TestForwarderSanitizesAllowedQueryBeforeUpstream(t *testing.T) {
 
 	forwarder.ServeDNS(writer, request)
 
-	if gotID != 0 {
-		t.Fatalf("expected upstream query id to be rebuilt, got %d", gotID)
+	if gotID == 0 || gotID == request.Id {
+		t.Fatalf("expected upstream query id to be host-generated, got %d with original %d", gotID, request.Id)
 	}
 	if gotOpcode != dns.OpcodeQuery || !gotRecursionDesired {
 		t.Fatalf("unexpected upstream query flags: opcode=%d recursion_desired=%v", gotOpcode, gotRecursionDesired)
@@ -1019,11 +1025,14 @@ func TestForwarderSanitizesAllowedQueryBeforeUpstream(t *testing.T) {
 	if gotName != "api.example.com." || gotQtype != dns.TypeA || gotQclass != dns.ClassINET {
 		t.Fatalf("unexpected sanitized question: name=%q qtype=%d qclass=%d", gotName, gotQtype, gotQclass)
 	}
-	if gotAnswer != 0 || gotAuthority != 0 || gotExtra != 0 {
+	if gotAnswer != 0 || gotAuthority != 0 || gotExtra != 1 || gotEDNSUDPSize != 1232 || gotEDNSOptions != 0 {
 		t.Fatalf("expected upstream query sections to be stripped, got answer=%d authority=%d extra=%d", gotAnswer, gotAuthority, gotExtra)
 	}
 	if writer.message == nil || writer.message.Id != request.Id {
 		t.Fatalf("expected response id to be restored to %d, got %#v", request.Id, writer.message)
+	}
+	if len(writer.message.Question) != 1 || writer.message.Question[0].Name != "ApI.ExAmPlE.CoM." {
+		t.Fatalf("expected response question to preserve original casing, got %+v", writer.message.Question)
 	}
 }
 
@@ -1069,6 +1078,52 @@ func TestForwarderBlocksUnsupportedQueryShapeBeforeUpstream(t *testing.T) {
 	}
 	if writer.message == nil || writer.message.Rcode != dns.RcodeRefused {
 		t.Fatalf("expected refused response, got %#v", writer.message)
+	}
+}
+
+func TestForwarderAllowsAnyINQueryTypeWhenPolicyAllowsAll(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{})
+	if err := runtime.RegisterSandbox("sandbox-1", &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "allow",
+	}); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	var gotQtype uint16
+	forwarder := NewForwarder(ForwarderConfig{
+		Runtime:                runtime,
+		UpstreamAddr:           "127.0.0.1:5300",
+		BlockDisallowedQueries: true,
+		ScopeResolver: func(addr netip.Addr) (string, bool) {
+			if addr == sourceIP {
+				return "sandbox-1", true
+			}
+			return "", false
+		},
+		Client: exchangeFunc(func(msg *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+			gotQtype = msg.Question[0].Qtype
+			return testResponse(msg.Question[0].Name), 0, nil
+		}),
+	})
+
+	writer := &testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 53000},
+		localAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
+	}
+	request := new(dns.Msg)
+	request.SetQuestion("txt.example.com.", dns.TypeTXT)
+
+	forwarder.ServeDNS(writer, request)
+
+	if gotQtype != dns.TypeTXT {
+		t.Fatalf("expected TXT query to reach upstream under allow-all policy, got qtype %d", gotQtype)
+	}
+	if writer.message == nil || writer.message.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected successful response, got %#v", writer.message)
 	}
 }
 

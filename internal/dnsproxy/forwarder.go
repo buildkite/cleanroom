@@ -102,7 +102,7 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			_ = writeRefused(w, req)
 			return
 		}
-		upstreamReq = sanitizedQueryForUpstream(questions)
+		upstreamReq = sanitizedQueryForUpstream(questions, req.Id)
 	}
 	resp, _, err := f.client.Exchange(upstreamReq, f.upstreamAddr)
 	if err != nil || resp == nil {
@@ -111,6 +111,7 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 	if f.blockDisallowedQueries {
 		resp.Id = req.Id
+		resp.Question = append([]dns.Question(nil), req.Question...)
 	}
 
 	if err := w.WriteMsg(resp); err != nil {
@@ -131,12 +132,13 @@ func (f *Forwarder) questionsAllowedByPolicy(remoteAddr net.Addr, req *dns.Msg) 
 	if !ok {
 		return nil, false
 	}
+	allowAll := f.runtime.SandboxAllowsAllQueries(sandboxID)
 
 	allAllowed := true
 	questions := make([]dns.Question, 0, len(req.Question))
 	for _, question := range req.Question {
 		name := normalizeName(question.Name)
-		if name == "" || question.Qclass != dns.ClassINET || !allowedDNSQuestionType(question.Qtype) || !f.runtime.HostAllowedByPolicy(sandboxID, name) {
+		if name == "" || question.Qclass != dns.ClassINET || (!allowAll && !allowedDNSQuestionType(question.Qtype)) || !f.runtime.HostAllowedByPolicy(sandboxID, name) {
 			allAllowed = false
 			if f.onDeny != nil && name != "" {
 				f.onDeny(sandboxID, name)
@@ -164,12 +166,27 @@ func allowedDNSQuestionType(qtype uint16) bool {
 	}
 }
 
-func sanitizedQueryForUpstream(questions []dns.Question) *dns.Msg {
+func sanitizedQueryForUpstream(questions []dns.Question, originalID uint16) *dns.Msg {
 	msg := new(dns.Msg)
+	msg.Id = upstreamDNSID(originalID)
 	msg.MsgHdr.Opcode = dns.OpcodeQuery
 	msg.MsgHdr.RecursionDesired = true
 	msg.Question = append([]dns.Question(nil), questions...)
+	msg.SetEdns0(1232, false)
 	return msg
+}
+
+func upstreamDNSID(originalID uint16) uint16 {
+	for i := 0; i < 4; i++ {
+		id := dns.Id()
+		if id != 0 && id != originalID {
+			return id
+		}
+	}
+	if originalID != 1 {
+		return 1
+	}
+	return 2
 }
 
 func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
