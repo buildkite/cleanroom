@@ -87,6 +87,40 @@ func TestMirrorBackedRepositoryStoreReadFileAtCommit(t *testing.T) {
 	}
 }
 
+func TestMirrorBackedRepositoryStoreWithRepositoryEnsuresMissingMirrorPath(t *testing.T) {
+	t.Parallel()
+
+	mirrorDir := filepath.Join(t.TempDir(), "mirror.git")
+	mock := &mockMirrorSource{
+		mirrorPath: mirrorDir,
+		ensureMirrorFunc: func(_ context.Context, _ string) (string, error) {
+			if err := os.MkdirAll(mirrorDir, 0o755); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(mirrorDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+				return "", err
+			}
+			return mirrorDir, nil
+		},
+	}
+	store := NewMirrorBacked(mock)
+
+	var gotRepoDir string
+	err := store.WithRepository(context.Background(), "https://github.com/buildkite/cleanroom.git", "", FetchHints{}, func(repoDir string) error {
+		gotRepoDir = repoDir
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithRepository returned error: %v", err)
+	}
+	if gotRepoDir != mirrorDir {
+		t.Fatalf("unexpected repo dir: got %q want %q", gotRepoDir, mirrorDir)
+	}
+	if mock.ensureMirrorCalls != 1 {
+		t.Fatalf("expected EnsureMirror to be called once, got %d", mock.ensureMirrorCalls)
+	}
+}
+
 func TestEnsureSubmoduleMirror(t *testing.T) {
 	t.Parallel()
 
@@ -134,6 +168,8 @@ type mockMirrorSource struct {
 	ensureMirrorContainsURL string
 	ensureMirrorContainsSHA string
 	mirrorPathURL           string
+	ensureMirrorCalls       int
+	ensureMirrorFunc        func(context.Context, string) (string, error)
 }
 
 func (m *mockMirrorSource) MirrorPath(remoteURL string) (string, error) {
@@ -141,7 +177,11 @@ func (m *mockMirrorSource) MirrorPath(remoteURL string) (string, error) {
 	return m.mirrorPath, nil
 }
 
-func (m *mockMirrorSource) EnsureMirror(_ context.Context, remoteURL string) (string, error) {
+func (m *mockMirrorSource) EnsureMirror(ctx context.Context, remoteURL string) (string, error) {
+	m.ensureMirrorCalls++
+	if m.ensureMirrorFunc != nil {
+		return m.ensureMirrorFunc(ctx, remoteURL)
+	}
 	return m.mirrorPath, nil
 }
 

@@ -531,6 +531,26 @@ func testRepositoryDependencyAndServicesPolicy() *cleanroomv1.Policy {
 	return policyProto
 }
 
+func testRepositoryPolicyYAML(destinationDir string, submodules, allowGitHub bool) string {
+	allowBlock := ""
+	if allowGitHub {
+		allowBlock = `
+    allow:
+      - host: github.com
+        ports: [443]`
+	}
+	return fmt.Sprintf(`version: 1
+repository:
+  path: %s
+  submodules: %t
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny%s
+`, destinationDir, submodules, allowBlock)
+}
+
 func testRepositoryPortableDependencyPolicy() *cleanroomv1.Policy {
 	policyProto := testRepositoryDependencyPolicy()
 	policyProto.Dependencies.Reuse = policy.DependencyReusePortable
@@ -2669,6 +2689,141 @@ func runTestGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s returned error: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output)
+}
+
+func TestCreateSandboxLoadsPolicyFromRepositoryCheckout(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/repo", true, true),
+	})
+	wantCommit := repositoryCheckout.GetCommitSha()
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+	repository := resp.GetSandbox().GetRepositoryCheckout()
+	if repository == nil {
+		t.Fatal("expected repository checkout on sandbox")
+	}
+	if got := repository.GetCommitSha(); got != wantCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, wantCommit)
+	}
+	if got := repository.GetDestinationDir(); got != "/repo" {
+		t.Fatalf("unexpected destination dir: got %q", got)
+	}
+	if !repository.GetSubmodules() {
+		t.Fatal("expected repository submodules to come from policy")
+	}
+	if adapter.provisionCalls != 1 {
+		t.Fatalf("expected one provision call, got %d", adapter.provisionCalls)
+	}
+}
+
+func TestCreateSandboxLoadsFallbackPolicyFromRepositoryCheckout(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		".buildkite/cleanroom.yaml": testRepositoryPolicyYAML("/workspace", false, true),
+	})
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:.buildkite/cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyResolvesBranch(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/main", false, true),
+	})
+	runTestGit(t, mirrors.mirrorPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "cleanroom.yaml"), []byte(testRepositoryPolicyYAML("/feature", false, true)), 0o644); err != nil {
+		t.Fatalf("write branch policy: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", "cleanroom.yaml")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "feature policy")
+	wantCommit := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.Branch = "feature"
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	repository := resp.GetSandbox().GetRepositoryCheckout()
+	if got := repository.GetCommitSha(); got != wantCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, wantCommit)
+	}
+	if got := repository.GetBranch(); got != "feature" {
+		t.Fatalf("unexpected branch: got %q", got)
+	}
+	if got := repository.GetDestinationDir(); got != "/feature" {
+		t.Fatalf("unexpected destination dir: got %q", got)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyRequiresRepositoryStore(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: &cleanroomv1.RepositoryCheckout{
+			RemoteUrl: "https://github.com/buildkite/cleanroom.git",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox to fail")
+	}
+	if !strings.Contains(err.Error(), "requires repository store") {
+		t.Fatalf("expected repository store error, got %v", err)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyRejectsDisallowedRemote(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/workspace", false, false),
+	})
+	repositoryCheckout.CommitSha = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox to fail")
+	}
+	if !strings.Contains(err.Error(), `repository remote host "github.com" is not allowed`) {
+		t.Fatalf("expected host allowlist error, got %v", err)
+	}
 }
 
 type memorySnapshotStore struct {

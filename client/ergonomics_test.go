@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -245,6 +247,28 @@ func TestPolicyFromAllowlistSkipsEntriesWithoutPorts(t *testing.T) {
 	}
 	if got := policy.GetAllow()[0].GetPorts(); len(got) != 1 || got[0] != 443 {
 		t.Fatalf("unexpected allow ports: %#v", got)
+	}
+}
+
+func TestLoadPolicy(t *testing.T) {
+	root := t.TempDir()
+	policyPath := filepath.Join(root, PrimaryPolicyPath)
+	if err := os.WriteFile(policyPath, []byte(testRepositoryPolicyYAML("/workspace", false, true)), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	policy, source, err := LoadPolicy(root)
+	if err != nil {
+		t.Fatalf("LoadPolicy returned error: %v", err)
+	}
+	if source != policyPath {
+		t.Fatalf("unexpected source: got %q want %q", source, policyPath)
+	}
+	if policy.GetVersion() != 1 {
+		t.Fatalf("unexpected policy version: got %d", policy.GetVersion())
+	}
+	if got := policy.GetImageRef(); !strings.Contains(got, "ghcr.io/buildkite/cleanroom-base/alpine@sha256:") {
+		t.Fatalf("unexpected image ref: %q", got)
 	}
 }
 

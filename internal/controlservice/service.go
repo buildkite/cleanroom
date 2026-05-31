@@ -417,6 +417,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 	opts := req.GetOptions()
 	metricSourceKind := ""
+	policySource := ""
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
 	commitBundle := repositoryCommitBundleFromProto(req.GetRepositoryCommitBundle())
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
@@ -432,6 +433,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	)
 	logger := observability.WithTraceContext(s.Logger, ctx)
 	defer func() {
+		if resp != nil && policySource != "" {
+			resp.PolicySource = policySource
+		}
 		metricBackendName := backendName
 		if resp != nil && resp.GetSandbox() != nil {
 			span.SetAttributes(
@@ -478,21 +482,18 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 		return s.createSandboxFromSnapshot(ctx, req, snapshotID, reporter)
 	}
-	if req.GetPolicy() == nil {
-		return nil, errors.New("missing policy")
-	}
-
-	compiled, err := policy.FromCreateRequestProto(req.GetPolicy())
+	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
+	compiled, resolvedPolicySource, repository, err := s.resolveCreateSandboxPolicy(ctx, req.GetPolicy(), repository)
 	if err != nil {
-		return nil, fmt.Errorf("invalid policy: %w", err)
+		return nil, err
 	}
+	policySource = resolvedPolicySource
 	if opts.GetDangerouslyAllowAllEgress() {
 		compiled, err = policy.DangerouslyAllowAllEgress(compiled)
 		if err != nil {
 			return nil, fmt.Errorf("apply dangerously allow-all egress: %w", err)
 		}
 	}
-	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
 	if err := validateRepositoryScopedCreatePolicy(compiled, repository); err != nil {
 		return nil, err
 	}

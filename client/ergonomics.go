@@ -158,10 +158,13 @@ func PolicyFromAllowlist(imageRef, imageDigest string, entries ...HostPort) *Pol
 
 // EnsureSandboxOptions controls EnsureSandbox behavior.
 type EnsureSandboxOptions struct {
-	Backend   string
-	Policy    *Policy
-	Options   *SandboxOptions
-	SandboxID string
+	Backend                string
+	Policy                 *Policy
+	Options                *SandboxOptions
+	RepositoryCheckout     *RepositoryCheckout
+	RepositoryChangeset    *RepositoryChangeset
+	RepositoryCommitBundle *RepositoryCommitBundle
+	SandboxID              string
 }
 
 // SandboxHandle is a concise reusable sandbox descriptor.
@@ -220,12 +223,15 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 	}
 
 	createReq := &CreateSandboxRequest{
-		Backend: requestedBackend,
-		Options: opts.Options,
-		Policy:  opts.Policy,
+		Backend:                requestedBackend,
+		Options:                opts.Options,
+		Policy:                 opts.Policy,
+		RepositoryCheckout:     opts.RepositoryCheckout,
+		RepositoryChangeset:    opts.RepositoryChangeset,
+		RepositoryCommitBundle: opts.RepositoryCommitBundle,
 	}
-	if createReq.Policy == nil {
-		return nil, errors.New("missing policy")
+	if createReq.Policy == nil && createReq.RepositoryCheckout == nil {
+		return nil, errors.New("missing policy or repository checkout")
 	}
 
 	resp, err := c.CreateSandbox(ctx, createReq)
