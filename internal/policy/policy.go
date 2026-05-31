@@ -295,17 +295,21 @@ func normalizeRawAllowRules(raw rawAllowRules) ([]AllowRule, error) {
 }
 
 func normalizeAllowRuleHost(rawHost string) (string, error) {
-	host := strings.TrimSpace(strings.ToLower(rawHost))
-	if host == "" {
+	trimmed := strings.TrimSpace(rawHost)
+	if trimmed == "" {
 		return "", errors.New("allow rule host cannot be empty")
+	}
+	for _, r := range trimmed {
+		if r <= ' ' || r == 0x7f || r > 0x7e {
+			return "", fmt.Errorf("allow rule host %q must be a bare hostname without control or non-ASCII characters", trimmed)
+		}
+	}
+	host := strings.ToLower(trimmed)
+	if net.ParseIP(host) != nil {
+		return host, nil
 	}
 	if strings.ContainsAny(host, "/\\@[]:?&#%") {
 		return "", fmt.Errorf("allow rule host %q must be a bare hostname without scheme, path, userinfo, or port", host)
-	}
-	for _, r := range host {
-		if r <= ' ' || r == 0x7f || r > 0x7e {
-			return "", fmt.Errorf("allow rule host %q must be a bare hostname without control or non-ASCII characters", host)
-		}
 	}
 	return host, nil
 }

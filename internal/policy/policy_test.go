@@ -245,6 +245,44 @@ func TestCompileRejectsNetworkAllowHostAuthoritySyntax(t *testing.T) {
 	}
 }
 
+func TestCompilePreservesNetworkAllowIPLiteralHosts(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Network.Allow = rawAllowRules{
+		{Host: "2606:4700:4700::1111", Ports: []int{443}},
+		{Host: "192.0.2.10", Ports: []int{443}},
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	if !compiled.Allows("2606:4700:4700::1111", 443) {
+		t.Fatal("expected IPv6 literal allow rule to compile")
+	}
+	if !compiled.Allows("192.0.2.10", 443) {
+		t.Fatal("expected IPv4 literal allow rule to compile")
+	}
+}
+
+func TestCompileRejectsNetworkAllowNonASCIIBeforeLowercase(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Network.Allow = rawAllowRules{
+		{Host: "\u212a.example", Ports: []int{443}},
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected Compile to reject non-ASCII allow host")
+	}
+	if !strings.Contains(err.Error(), "without control or non-ASCII characters") {
+		t.Fatalf("unexpected error: got %v want non-ASCII error", err)
+	}
+}
+
 func TestCompileNormalizesNetworkAllowScalar(t *testing.T) {
 	t.Parallel()
 
@@ -1679,6 +1717,25 @@ func TestFromProtoRejectsNetworkAllowHostAuthoritySyntax(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "must be a bare hostname") {
 		t.Fatalf("unexpected error: got %v want bare hostname error", err)
+	}
+}
+
+func TestFromProtoPreservesNetworkAllowIPv6LiteralHost(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Allow: []*cleanroomv1.PolicyAllowRule{
+			{Host: "2606:4700:4700::1111", Ports: []int32{443}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if !compiled.Allows("2606:4700:4700::1111", 443) {
+		t.Fatal("expected IPv6 literal allow rule to compile")
 	}
 }
 

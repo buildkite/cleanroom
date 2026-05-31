@@ -787,17 +787,19 @@ fixed. DeepSec status now reports 12/12 findings revalidated, with 5 true
 positives and 7 fixed findings.
 
 Slice 22 is implemented and ready for review. Policy allow-rule hosts now must
-be bare hostnames when loaded from YAML or proto state, so mapping-form rules
-cannot smuggle ports, userinfo, schemes, paths, percent escapes, bracketed
-IPv6 literals, or control characters into host-based policy checks. Git proxy
-environment generation also reuses the normalized Git route-host validator
-before writing `insteadOf` rewrites, so manually constructed compiled policies
-cannot produce a gateway rewrite for an authority-shaped host.
+be bare hostnames or valid IP literals when loaded from YAML or proto state, so
+mapping-form rules cannot smuggle ports, userinfo, schemes, paths, percent
+escapes, bracketed IPv6 literals, or control characters into host-based policy
+checks. Host validation rejects non-ASCII input before lowercasing so Unicode
+case folding cannot silently rewrite policy hosts. Git proxy environment
+generation also reuses the normalized Git route-host validator before writing
+`insteadOf` rewrites, so manually constructed compiled policies cannot produce
+a gateway rewrite for an authority-shaped host.
 
 Focused validation run on 2026-05-31:
 
 ```text
-MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway ./internal/policy -run 'Test(GitProxyEnvVarsSkipsMalformedAllowRuleHosts|ProxyEnvVarsStillIncludesGitWhenRubyGemsRouteIsUnavailable|CompileRejectsNetworkAllowHostAuthoritySyntax|FromProtoRejectsNetworkAllowHostAuthoritySyntax|CompileNormalizesNetworkAllowShorthand|FromProtoCanonicalisesAllowRules)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway ./internal/policy -run 'Test(GitProxyEnvVarsSkipsMalformedAllowRuleHosts|ProxyEnvVarsStillIncludesGitWhenRubyGemsRouteIsUnavailable|CompileRejectsNetworkAllowHostAuthoritySyntax|CompilePreservesNetworkAllowIPLiteralHosts|CompileRejectsNetworkAllowNonASCIIBeforeLowercase|FromProtoRejectsNetworkAllowHostAuthoritySyntax|FromProtoPreservesNetworkAllowIPv6LiteralHost|CompileNormalizesNetworkAllowShorthand|FromProtoCanonicalisesAllowRules)'
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway ./internal/policy
 ```
 
