@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	contentcache "github.com/buildkite/content-cache"
 	ccgit "github.com/buildkite/content-cache/protocol/git"
+	ccoci "github.com/buildkite/content-cache/protocol/oci"
 	"github.com/buildkite/content-cache/store/metadb"
 )
 
@@ -647,32 +649,33 @@ func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	cache := &ContentCache{
 		ociHandlers:    make(map[string]*ociHandlerEntry),
 		maxOCIHandlers: 2,
-		buildOCIHandler: func(prefix string) (ociHandlerEntry, error) {
+		buildOCIHandler: func(prefix, cacheScope string) (ociHandlerEntry, error) {
+			cacheKey := prefix + "\x00" + cacheScope
 			return ociHandlerEntry{
 				handler: &comparableHandler{},
 				closer: closeFunc(func() {
-					closed = append(closed, prefix)
+					closed = append(closed, cacheKey)
 				}),
 			}, nil
 		},
 	}
 
-	handlerA, releaseA, err := cache.OCIHandlerForPrefix("registry-a.test")
+	handlerA, releaseA, err := cache.OCIHandlerForPrefix("registry-a.test", "scope-a")
 	if err != nil {
 		t.Fatalf("handler A: %v", err)
 	}
-	_, releaseB, err := cache.OCIHandlerForPrefix("registry-b.test")
+	_, releaseB, err := cache.OCIHandlerForPrefix("registry-b.test", "scope-b")
 	if err != nil {
 		t.Fatalf("handler B: %v", err)
 	}
-	reusedA, releaseReusedA, err := cache.OCIHandlerForPrefix("registry-a.test")
+	reusedA, releaseReusedA, err := cache.OCIHandlerForPrefix("registry-a.test", "scope-a")
 	if err != nil {
 		t.Fatalf("reused handler A: %v", err)
 	}
 	if reusedA != handlerA {
 		t.Fatal("expected registry-a handler to be reused before eviction")
 	}
-	_, releaseC, err := cache.OCIHandlerForPrefix("registry-c.test")
+	_, releaseC, err := cache.OCIHandlerForPrefix("registry-c.test", "scope-c")
 	if err != nil {
 		t.Fatalf("handler C: %v", err)
 	}
@@ -680,23 +683,85 @@ func TestOCIHandlerForPrefixEvictsLeastRecentlyUsedHandler(t *testing.T) {
 	if got, want := len(cache.ociHandlers), 2; got != want {
 		t.Fatalf("expected %d cached handlers, got %d", want, got)
 	}
-	if _, ok := cache.ociHandlers["registry-a.test"]; !ok {
+	if _, ok := cache.ociHandlers["registry-a.test\x00scope-a"]; !ok {
 		t.Fatal("expected registry-a to remain cached after recent reuse")
 	}
-	if _, ok := cache.ociHandlers["registry-c.test"]; !ok {
+	if _, ok := cache.ociHandlers["registry-c.test\x00scope-c"]; !ok {
 		t.Fatal("expected registry-c to be cached")
 	}
-	if _, ok := cache.ociHandlers["registry-b.test"]; ok {
+	if _, ok := cache.ociHandlers["registry-b.test\x00scope-b"]; ok {
 		t.Fatal("expected registry-b to be evicted")
 	}
 	if len(closed) != 0 {
 		t.Fatalf("expected active registry-b handler to stay open until release, got %v", closed)
 	}
 	releaseB()
-	if !slices.Equal(closed, []string{"registry-b.test"}) {
+	if !slices.Equal(closed, []string{"registry-b.test\x00scope-b"}) {
 		t.Fatalf("expected registry-b closer to run, got %v", closed)
 	}
 	releaseA()
 	releaseReusedA()
 	releaseC()
+}
+
+func TestOCIHandlerForPrefixSeparatesCacheScopes(t *testing.T) {
+	t.Parallel()
+
+	cache := &ContentCache{
+		ociHandlers: make(map[string]*ociHandlerEntry),
+		buildOCIHandler: func(_, _ string) (ociHandlerEntry, error) {
+			return ociHandlerEntry{handler: &comparableHandler{}}, nil
+		},
+	}
+
+	handlerA, releaseA, err := cache.OCIHandlerForPrefix("registry.test", "scope-a")
+	if err != nil {
+		t.Fatalf("handler A: %v", err)
+	}
+	handlerB, releaseB, err := cache.OCIHandlerForPrefix("registry.test", "scope-b")
+	if err != nil {
+		t.Fatalf("handler B: %v", err)
+	}
+	defer releaseA()
+	defer releaseB()
+
+	if handlerA == handlerB {
+		t.Fatal("expected different cache scopes for the same registry prefix to use different handlers")
+	}
+}
+
+func TestScopedOCIIndexKeepsManifestAndBlobDigestsSeparate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := metadb.NewBoltDB()
+	if err := db.Open(t.TempDir() + "/meta.db"); err != nil {
+		t.Fatalf("open metadb: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	indexA, err := newScopedOCIIndex(db, scopedMetadataPrefix("oci-scope-a"))
+	if err != nil {
+		t.Fatalf("index A: %v", err)
+	}
+	indexB, err := newScopedOCIIndex(db, scopedMetadataPrefix("oci-scope-b"))
+	if err != nil {
+		t.Fatalf("index B: %v", err)
+	}
+
+	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	hash := contentcache.HashBytes([]byte("scope-a"))
+	if err := indexA.PutManifest(ctx, digest, "application/vnd.oci.image.manifest.v1+json", hash, 123); err != nil {
+		t.Fatalf("put manifest: %v", err)
+	}
+	if err := indexA.PutBlob(ctx, digest, hash, 456); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+
+	if _, err := indexB.GetManifest(ctx, digest); !errors.Is(err, ccoci.ErrNotFound) {
+		t.Fatalf("expected manifest to be hidden from other scope, got %v", err)
+	}
+	if _, err := indexB.GetBlob(ctx, digest); !errors.Is(err, ccoci.ErrNotFound) {
+		t.Fatalf("expected blob to be hidden from other scope, got %v", err)
+	}
 }

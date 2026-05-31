@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"charm.land/log/v2"
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -15,7 +16,7 @@ import (
 
 type registryPrefixHandlerProvider interface {
 	OCIUpstreamForPrefix(prefix string) (string, int, string, int, error)
-	OCIHandlerForPrefix(prefix string) (http.Handler, func(), error)
+	OCIHandlerForPrefix(prefix, cacheScope string) (http.Handler, func(), error)
 }
 
 // cachedRegistryHandler wraps a content-cache OCI handler with cleanroom's
@@ -125,7 +126,8 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
 	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
 
-	cacheHandler, releaseHandler, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
+	cacheScope := ociCacheScope(scope, normalizedPrefix, rest)
+	cacheHandler, releaseHandler, err := h.cache.OCIHandlerForPrefix(normalizedPrefix, cacheScope)
 	if err != nil {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUnknownRegistryPrefix)
 		span.RecordError(err)
@@ -153,6 +155,18 @@ func rewriteOCICachePath(prefix, rest string) string {
 	}
 	rest = strings.TrimPrefix(rest, "v2/")
 	return "/v2/" + prefix + "/" + rest
+}
+
+func ociCacheScope(scope *SandboxScope, prefix, rest string) string {
+	repoKey, ok, err := gatewayauth.OCIRepoKeyFromPath(prefix, rest)
+	if err != nil || !ok {
+		repoKey = gatewayauth.NormalizeOCIRepoPrefix(prefix)
+	}
+	ownerKey := "owner:none"
+	if scope != nil && scope.GatewayScope.HasOwner() {
+		ownerKey = "owner:" + strings.TrimSpace(scope.GatewayScope.Owner.PrincipalID) + "\x00scope:" + strings.TrimSpace(scope.GatewayScope.Owner.Scope)
+	}
+	return ownerKey + "\x00oci:" + repoKey
 }
 
 func (h *cachedRegistryHandler) auditLog(ctx context.Context, sandboxID, target, action, reason string) {

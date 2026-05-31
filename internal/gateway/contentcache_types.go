@@ -25,7 +25,7 @@ const (
 
 type gitHandlerFactory func(host, cacheScope string) (gitHandlerEntry, error)
 
-type ociHandlerFactory func(prefix string) (ociHandlerEntry, error)
+type ociHandlerFactory func(prefix, cacheScope string) (ociHandlerEntry, error)
 
 type ociRouteResolver func(prefix string) (ociRoute, error)
 
@@ -657,13 +657,6 @@ func (c *ContentCache) OCIUpstreamForPrefix(prefix string) (string, int, string,
 		return "", 0, "", 0, errors.New("empty registry prefix")
 	}
 
-	c.ociMu.Lock()
-	if entry, ok := c.ociHandlers[prefix]; ok {
-		c.ociMu.Unlock()
-		return entry.policyHost, entry.policyPort, entry.upstreamHost, entry.upstreamPort, nil
-	}
-	c.ociMu.Unlock()
-
 	route, err := c.resolveOCIRoute(prefix)
 	if err != nil {
 		return "", 0, "", 0, err
@@ -672,8 +665,8 @@ func (c *ContentCache) OCIUpstreamForPrefix(prefix string) (string, int, string,
 }
 
 // OCIHandlerForPrefix returns an OCI cache handler for the requested registry
-// prefix, creating and caching it on first use.
-func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, func(), error) {
+// prefix and authorization cache scope, creating and caching it on first use.
+func (c *ContentCache) OCIHandlerForPrefix(prefix, cacheScope string) (http.Handler, func(), error) {
 	if c == nil || c.buildOCIHandler == nil {
 		return nil, nil, errors.New("oci cache not configured")
 	}
@@ -682,17 +675,22 @@ func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, func(),
 	if prefix == "" {
 		return nil, nil, errors.New("empty registry prefix")
 	}
+	cacheScope = strings.TrimSpace(cacheScope)
+	if cacheScope == "" {
+		return nil, nil, errors.New("empty oci cache scope")
+	}
+	cacheKey := prefix + "\x00" + cacheScope
 
 	c.ociMu.Lock()
-	if entry, ok := c.ociHandlers[prefix]; ok {
+	if entry, ok := c.ociHandlers[cacheKey]; ok {
 		entry.active++
-		c.touchOCIHandlerLocked(prefix)
+		c.touchOCIHandlerLocked(cacheKey)
 		release := c.releaseOCIHandler(entry)
 		c.ociMu.Unlock()
 		return entry.handler, release, nil
 	}
 
-	entryValue, err := c.buildOCIHandler(prefix)
+	entryValue, err := c.buildOCIHandler(prefix, cacheScope)
 	if err != nil {
 		c.ociMu.Unlock()
 		return nil, nil, err
@@ -702,8 +700,8 @@ func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, func(),
 	}
 	entry := &entryValue
 	entry.active = 1
-	c.ociHandlers[prefix] = entry
-	c.touchOCIHandlerLocked(prefix)
+	c.ociHandlers[cacheKey] = entry
+	c.touchOCIHandlerLocked(cacheKey)
 	evicted := c.evictOCIHandlerLocked()
 	release := c.releaseOCIHandler(entry)
 	c.ociMu.Unlock()

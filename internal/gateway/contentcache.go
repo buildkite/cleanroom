@@ -109,21 +109,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
 	rubyGemsHTTPClient := newRubyGemsContentCacheHTTPClient(cfg.Credentials)
 
-	manifestIdx, err := metadb.NewEnvelopeIndex(db, "oci", "manifest", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create oci manifest index: %w", err)
-	}
-	blobIdx, err := metadb.NewEnvelopeIndex(db, "oci", "blob", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create oci blob index: %w", err)
-	}
-	imageIdx, err := metadb.NewEnvelopeIndex(db, "oci", "image", 24*time.Hour)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create oci image index: %w", err)
-	}
 	sumDBIdx, err := metadb.NewEnvelopeIndex(db, "sumdb", "cache", 0)
 	if err != nil {
 		_ = db.Close()
@@ -160,7 +145,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	}
 
 	sumDBIndex := ccgoproxy.NewSumdbIndex(sumDBIdx)
-	ociIndex := ccoci.NewIndex(imageIdx, manifestIdx, blobIdx)
 	rubyGemsIndex := ccrubygems.NewIndex(
 		rubyGemsVersionsIdx,
 		rubyGemsInfoIdx,
@@ -291,8 +275,12 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		}
 		return entry, nil
 	}
-	cache.buildOCIHandler = func(prefix string) (ociHandlerEntry, error) {
+	cache.buildOCIHandler = func(prefix, cacheScope string) (ociHandlerEntry, error) {
 		route, err := cache.resolveOCIRoute(prefix)
+		if err != nil {
+			return ociHandlerEntry{}, err
+		}
+		ociIndex, err := newScopedOCIIndex(db, scopedMetadataPrefix("oci:"+cacheScope))
 		if err != nil {
 			return ociHandlerEntry{}, err
 		}
@@ -313,7 +301,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 			ociIndex,
 			cafs,
 			ccoci.WithRouter(router),
-			ccoci.WithDownloader(dl),
+			ccoci.WithDownloader(download.New()),
 			ccoci.WithTagTTL(tagTTL),
 			ccoci.WithLogger(logger),
 		)
@@ -424,6 +412,22 @@ func newScopedGitIndex(db metadb.EnvelopeStore, scopePrefix string) (*ccgit.Inde
 		return nil, fmt.Errorf("create scoped git pack index: %w", err)
 	}
 	return ccgit.NewIndex(packIdx), nil
+}
+
+func newScopedOCIIndex(db metadb.EnvelopeStore, scopePrefix string) (*ccoci.Index, error) {
+	imageIdx, err := newScopedEnvelopeIndex(db, "oci", "image", scopePrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped oci image index: %w", err)
+	}
+	manifestIdx, err := newScopedEnvelopeIndex(db, "oci", "manifest", scopePrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped oci manifest index: %w", err)
+	}
+	blobIdx, err := newScopedEnvelopeIndex(db, "oci", "blob", scopePrefix, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("create scoped oci blob index: %w", err)
+	}
+	return ccoci.NewIndex(imageIdx, manifestIdx, blobIdx), nil
 }
 
 func newScopedEnvelopeIndex(db metadb.EnvelopeStore, protocol, kind, policyPrefix string, ttl time.Duration) (*metadb.EnvelopeIndex, error) {
