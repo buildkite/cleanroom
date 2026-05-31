@@ -57,6 +57,33 @@ func TestProxyEnvVarsStillIncludesGitWhenRubyGemsRouteIsUnavailable(t *testing.T
 	}
 }
 
+func TestGitProxyEnvVarsSkipsMalformedAllowRuleHosts(t *testing.T) {
+	t.Parallel()
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "internal.example:8443", Ports: []int{443}},
+			{Host: "github.com", Ports: []int{443}},
+		},
+	}
+
+	env := GitProxyEnvVars(compiled, 8170, "")
+	if len(env) != 3 {
+		t.Fatalf("expected only one git rewrite for the valid host, got %d: %v", len(env), env)
+	}
+	if env[0] != "GIT_CONFIG_COUNT=1" {
+		t.Fatalf("expected one git config entry, got %q", env[0])
+	}
+	if want := "GIT_CONFIG_KEY_0=url.http://gateway.cleanroom.internal:8170/git/github.com/.insteadOf"; env[1] != want {
+		t.Fatalf("expected valid host rewrite key %q, got %q", want, env[1])
+	}
+	if want := "GIT_CONFIG_VALUE_0=https://github.com/"; env[2] != want {
+		t.Fatalf("expected valid host rewrite value %q, got %q", want, env[2])
+	}
+}
+
 func TestGoProxyEnvVarsRequiresLiveRoute(t *testing.T) {
 	t.Parallel()
 
