@@ -483,6 +483,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		return s.createSandboxFromSnapshot(ctx, req, snapshotID, reporter)
 	}
 	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
+	if req.GetPolicy() == nil && repository != nil {
+		repositoryForAuth := cloneRepositoryCheckout(repository)
+		if _, err := repositoryForAuth.NormalizeRemoteURL(); err != nil {
+			return nil, err
+		}
+		if _, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, nil, repositoryForAuth, changeset, "", policy.Resources{})); err != nil {
+			return nil, err
+		}
+	}
 	compiled, resolvedPolicySource, repository, err := s.resolveCreateSandboxPolicy(ctx, req.GetPolicy(), repository)
 	if err != nil {
 		return nil, err

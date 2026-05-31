@@ -121,6 +121,33 @@ func TestMirrorBackedRepositoryStoreWithRepositoryEnsuresMissingMirrorPath(t *te
 	}
 }
 
+func TestMirrorBackedRepositoryStoreWithRepositoryRefreshesExistingMirror(t *testing.T) {
+	t.Parallel()
+
+	mirrorDir := filepath.Join(t.TempDir(), "mirror.git")
+	if err := os.MkdirAll(mirrorDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mirrorDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	mock := &mockMirrorSource{mirrorPath: mirrorDir}
+	store := NewMirrorBacked(mock)
+
+	err := store.WithRepository(context.Background(), "https://github.com/buildkite/cleanroom.git", "", FetchHints{}, func(repoDir string) error {
+		if repoDir != mirrorDir {
+			t.Fatalf("unexpected repo dir: got %q want %q", repoDir, mirrorDir)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithRepository returned error: %v", err)
+	}
+	if mock.ensureMirrorCalls != 1 {
+		t.Fatalf("expected EnsureMirror to be called once, got %d", mock.ensureMirrorCalls)
+	}
+}
+
 func TestEnsureSubmoduleMirror(t *testing.T) {
 	t.Parallel()
 

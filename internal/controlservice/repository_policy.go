@@ -50,6 +50,8 @@ func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repo
 			resolvedRepository.DestinationDir = repositoryConfig.Path
 		}
 		resolvedRepository.Submodules = repositoryConfig.Submodules
+	} else {
+		resolvedRepository = nil
 	}
 	return compiled, "repository:" + source, resolvedRepository, nil
 }

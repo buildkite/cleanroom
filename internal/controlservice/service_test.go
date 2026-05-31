@@ -2789,6 +2789,31 @@ func TestCreateSandboxRepositoryPolicyResolvesBranch(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxRepositoryPolicyHonorsDisabledRepositoryBootstrap(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": strings.ReplaceAll(testRepositoryPolicyYAML("/workspace", false, true), "  path: /workspace\n  submodules: false", "  enabled: false"),
+	})
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if repository := resp.GetSandbox().GetRepositoryCheckout(); repository != nil {
+		t.Fatalf("expected repository bootstrap to be disabled, got %#v", repository)
+	}
+	if got := adapter.runCalls; got != 0 {
+		t.Fatalf("expected no repository bootstrap execution, got %d", got)
+	}
+}
+
 func TestCreateSandboxRepositoryPolicyRequiresRepositoryStore(t *testing.T) {
 	svc := newTestService(&stubAdapter{})
 

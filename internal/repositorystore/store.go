@@ -2,7 +2,6 @@ package repositorystore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -112,18 +111,7 @@ func (s *mirrorBackedRepositoryStore) EnsureSubmoduleMirror(ctx context.Context,
 }
 
 func (s *mirrorBackedRepositoryStore) repositoryPath(ctx context.Context, remoteURL string) (string, error) {
-	repoDir, err := s.mirrors.MirrorPath(remoteURL)
-	if err == nil {
-		if _, statErr := os.Stat(filepath.Join(repoDir, "HEAD")); statErr == nil {
-			return repoDir, nil
-		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			return "", statErr
-		}
-	}
-	if err != nil {
-		return s.mirrors.EnsureMirror(ctx, remoteURL)
-	}
-	repoDir, err = s.mirrors.EnsureMirror(ctx, remoteURL)
+	repoDir, err := s.mirrors.EnsureMirror(ctx, remoteURL)
 	if err != nil {
 		return "", err
 	}
