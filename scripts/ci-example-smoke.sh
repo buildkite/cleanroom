@@ -15,6 +15,8 @@ if ! command -v gotestsum >/dev/null 2>&1; then
   exit 127
 fi
 
+cd "$REPO_ROOT"
+
 mkdir -p tmp/test-engine
 
 result_path="${BUILDKITE_TEST_ENGINE_RESULT_PATH:-tmp/test-engine/examples-${BACKEND}.xml}"

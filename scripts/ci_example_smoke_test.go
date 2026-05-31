@@ -82,45 +82,47 @@ func TestCIExampleSmoke(t *testing.T) {
 		})
 	})
 
-	multiHost := h.startMultiHost(t)
-	port := multiHost.waitForExposure(t)
-	h.requireExposureCert(t)
+	t.Run("multi_host", func(t *testing.T) {
+		multiHost := h.startMultiHost(t)
+		port := multiHost.waitForExposure(t)
+		h.requireExposureCert(t)
 
-	t.Run("multi_host/exact_route", func(t *testing.T) {
-		out := h.curlOutput(t, "multi-host exact route", port, "example.cleanroom.localhost", "/")
-		requireOutputLine(t, out, "exact route ok")
-	})
+		t.Run("exact_route", func(t *testing.T) {
+			out := h.curlOutput(t, "multi-host exact route", port, "example.cleanroom.localhost", "/")
+			requireOutputLine(t, out, "exact route ok")
+		})
 
-	t.Run("multi_host/app_route", func(t *testing.T) {
-		out := h.curlOutput(t, "multi-host app route", port, "example-app.cleanroom.localhost", "/")
-		for _, needle := range []string{
-			`"host": "example-app.cleanroom.localhost:` + port + `"`,
-			`"x_forwarded_host": "example-app.cleanroom.localhost:` + port + `"`,
-			`"x_forwarded_proto": "https"`,
-			`"x_forwarded_port": "` + port + `"`,
-			`"x_forwarded_for": "127.0.0.1"`,
-		} {
-			if !strings.Contains(out, needle) {
-				t.Fatalf("expected multi-host app response to contain %q\nresponse:\n%s", needle, out)
+		t.Run("app_route", func(t *testing.T) {
+			out := h.curlOutput(t, "multi-host app route", port, "example-app.cleanroom.localhost", "/")
+			for _, needle := range []string{
+				`"host": "example-app.cleanroom.localhost:` + port + `"`,
+				`"x_forwarded_host": "example-app.cleanroom.localhost:` + port + `"`,
+				`"x_forwarded_proto": "https"`,
+				`"x_forwarded_port": "` + port + `"`,
+				`"x_forwarded_for": "127.0.0.1"`,
+			} {
+				if !strings.Contains(out, needle) {
+					t.Fatalf("expected multi-host app response to contain %q\nresponse:\n%s", needle, out)
+				}
 			}
-		}
-	})
+		})
 
-	t.Run("multi_host/redirect_route", func(t *testing.T) {
-		headers := h.curlHeaders(t, "multi-host redirect route", port, "example-s3.cleanroom.localhost", "/")
-		normalized := strings.ReplaceAll(headers, "\r", "")
-		if !regexp.MustCompile(`(?m)^HTTP/.* 302`).MatchString(normalized) {
-			t.Fatalf("expected multi-host redirect status in headers:\n%s", headers)
-		}
-		location := "Location: https://example-app.cleanroom.localhost:" + port + "/from-s3?client=127.0.0.1"
-		if !hasOutputLineFold(normalized, location) {
-			t.Fatalf("expected multi-host redirect location %q in headers:\n%s", location, headers)
-		}
-	})
+		t.Run("redirect_route", func(t *testing.T) {
+			headers := h.curlHeaders(t, "multi-host redirect route", port, "example-s3.cleanroom.localhost", "/")
+			normalized := strings.ReplaceAll(headers, "\r", "")
+			if !regexp.MustCompile(`(?m)^HTTP/.* 302`).MatchString(normalized) {
+				t.Fatalf("expected multi-host redirect status in headers:\n%s", headers)
+			}
+			location := "Location: https://example-app.cleanroom.localhost:" + port + "/from-s3?client=127.0.0.1"
+			if !hasOutputLineFold(normalized, location) {
+				t.Fatalf("expected multi-host redirect location %q in headers:\n%s", location, headers)
+			}
+		})
 
-	t.Run("multi_host/unregistered_route", func(t *testing.T) {
-		out := h.curlStatus(t, "multi-host unregistered route", port, "example-missing.cleanroom.localhost", "/", "404")
-		requireOutputLine(t, out, "404 page not found")
+		t.Run("unregistered_route", func(t *testing.T) {
+			out := h.curlStatus(t, "multi-host unregistered route", port, "example-missing.cleanroom.localhost", "/", "404")
+			requireOutputLine(t, out, "404 page not found")
+		})
 	})
 
 	t.Run("docker/run", func(t *testing.T) {
@@ -468,8 +470,13 @@ func (s *multiHostServer) waitForExposure(t *testing.T) string {
 
 func (s *multiHostServer) cleanup() {
 	if s.cmd.Process != nil && !s.waited {
-		_ = s.cmd.Process.Kill()
-		s.waitErr = <-s.done
+		_ = s.cmd.Process.Signal(os.Interrupt)
+		select {
+		case s.waitErr = <-s.done:
+		case <-time.After(30 * time.Second):
+			_ = s.cmd.Process.Kill()
+			s.waitErr = <-s.done
+		}
 		s.waited = true
 	}
 	_ = s.stdoutFile.Close()
