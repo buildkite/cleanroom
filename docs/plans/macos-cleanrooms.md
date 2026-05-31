@@ -369,8 +369,11 @@ not a noninteractive host-finalization path without administrator
 authorization. The setup viewer boots a bundle in a `VZVirtualMachineView`
 window and can expose `dist/` through the macOS guest automount tag so the
 package is available at `/Volumes/My Shared Files/cleanroom-macos-guest-agent.pkg`.
-The next validation step is to run that package during a setup boot or other
-privileged in-guest finalization step, then rerun the live smoke.
+The viewer-owned screenshot path works and showed the local prepared image
+stopping at loginwindow with generic name/password fields. The next validation
+step is to run that package during a setup boot or other privileged in-guest
+finalization step, or add a repeatable user/session finalization path, then
+rerun the live smoke.
 
 ## Delivery Strategy
 
@@ -393,11 +396,12 @@ Current status: these files exist. The runner builds and signs as
 `dist/darwin-vz-macos-minimal`, `--help` works, and validation fails closed
 when the example bundle points at missing artifacts or invalid
 Virtualization.framework identity data. The viewer builds and signs as
-`dist/darwin-vz-macos-viewer`; `--help` and invalid bundle errors work, and it
-can validate and attach a read-only VirtioFS directory share for setup-time
-package access. The repository Go suite also passes locally with this harness
+`dist/darwin-vz-macos-viewer`; `--help` and invalid bundle errors work, it can
+validate and attach a read-only VirtioFS directory share for setup-time package
+access, and its own `--screenshot` path can capture the VZ window for
+diagnostics. The repository Go suite also passes locally with this harness
 present. Live VM validation is pending a prepared macOS bundle with the guest
-agent installed.
+agent installed and started.
 
 Scope:
 
@@ -407,6 +411,7 @@ Scope:
   devices
 - sign the runner with the existing virtualization entitlement
 - provide a viewer path for setup and manual image finalization
+- provide a viewer-owned screenshot path for diagnosing guest boot state
 - start the VM without invoking `tart`
 - connect to the guest agent over virtio socket
 - run `/usr/bin/sw_vers` by default, with a flag for an arbitrary command

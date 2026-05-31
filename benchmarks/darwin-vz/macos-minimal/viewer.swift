@@ -6,6 +6,8 @@ private struct Options {
     var bundlePath = ""
     var sharedDirectoryPath: String?
     var validateOnly = false
+    var screenshotPath: String?
+    var screenshotAfterSeconds = 30.0
 }
 
 private struct BundleManifest: Decodable {
@@ -80,6 +82,9 @@ private func usage() -> String {
     Options:
       --shared-directory <path>   Expose a host directory read-only with the macOS guest automount tag.
       --validate-only             Validate the bundle and optional share without starting the VM.
+      --screenshot <path>         Write a viewer-owned PNG snapshot after the VM starts.
+      --screenshot-after <seconds>
+                                  Delay before writing --screenshot. Default: 30.
       -h, --help                  Show this help.
     """
 }
@@ -105,6 +110,13 @@ private func parseOptions(_ args: [String]) throws -> Options {
             opts.sharedDirectoryPath = try value()
         case "--validate-only":
             opts.validateOnly = true
+        case "--screenshot":
+            opts.screenshotPath = try value()
+        case "--screenshot-after":
+            guard let seconds = Double(try value()), seconds >= 0 else {
+                throw ViewerError.invalid("invalid --screenshot-after")
+            }
+            opts.screenshotAfterSeconds = seconds
         case "-h", "--help":
             throw ViewerError.usage(usage())
         default:
@@ -312,10 +324,23 @@ private final class ViewerAppDelegate: NSObject, NSApplicationDelegate, NSWindow
 
             queue.async {
                 vm.start { result in
-                    if case .failure(let error) = result {
+                    switch result {
+                    case .failure(let error):
                         DispatchQueue.main.async {
                             fputs("darwin-vz-macos-viewer: VM start failed: \(error)\n", stderr)
                             NSApp.terminate(nil)
+                        }
+                    case .success:
+                        guard let screenshotPath = opts.screenshotPath else {
+                            return
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + opts.screenshotAfterSeconds) {
+                            do {
+                                try writeSnapshot(of: view, to: screenshotPath)
+                                fputs("wrote screenshot: \(screenshotPath)\n", stderr)
+                            } catch {
+                                fputs("darwin-vz-macos-viewer: screenshot failed: \(error.localizedDescription)\n", stderr)
+                            }
                         }
                     }
                 }
@@ -356,6 +381,18 @@ private final class ViewerAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         }
         _ = sem.wait(timeout: .now() + .seconds(10))
     }
+}
+
+private func writeSnapshot(of view: NSView, to path: String) throws {
+    let url = absoluteURL(path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+    guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+        throw ViewerError.vm("could not create bitmap representation")
+    }
+    view.cacheDisplay(in: view.bounds, to: rep)
+    guard let data = rep.representation(using: .png, properties: [:]) else {
+        throw ViewerError.vm("could not encode PNG")
+    }
+    try data.write(to: url)
 }
 
 let app = NSApplication.shared

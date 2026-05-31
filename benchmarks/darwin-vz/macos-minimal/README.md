@@ -62,7 +62,10 @@ benchmarks/darwin-vz/macos-minimal/build-viewer.sh
 The viewer writes `dist/darwin-vz-macos-viewer`. It boots the same bundle in a
 `VZVirtualMachineView` window and can expose one host directory read-only using
 the macOS guest automount tag. Pass `--validate-only` to check the bundle and
-share configuration without starting the VM.
+share configuration without starting the VM. For headless diagnostics, pass
+`--screenshot /tmp/vm.png`; the viewer writes the PNG from inside its own
+process after the VM starts, which works even when host `screencapture` cannot
+capture the VZ window.
 
 ## Create a local bundle from an IPSW
 
@@ -152,6 +155,12 @@ Inside the guest, the package is available at:
 ```bash
 /Volumes/My Shared Files/cleanroom-macos-guest-agent.pkg
 ```
+
+If the guest stops at loginwindow, the image still needs user/session
+finalization before an agent installed as a LaunchAgent can run. The root-owned
+LaunchDaemon path below avoids requiring a logged-in user, but it must be
+installed by a privileged in-guest step or by a privileged offline image-prep
+step.
 
 The package is script-only so it does not archive host-side AppleDouble
 metadata. Its postinstall runs inside the guest as root, writes the agent and
