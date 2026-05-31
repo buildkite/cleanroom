@@ -206,10 +206,10 @@ func (s *gitMirrorStore) cloneMirror(ctx context.Context, remoteURL, mirrorDir s
 		return err
 	}
 	cmd.Env = env
-	output, err := cmd.CombinedOutput()
+	output, err := runGitCommandWithBoundedOutput(cmd)
 	if err != nil {
 		_ = os.RemoveAll(mirrorDir)
-		return fmt.Errorf("git clone --mirror %s: %s: %w", remoteURL, strings.TrimSpace(string(output)), err)
+		return fmt.Errorf("git clone --mirror %s: %s: %w", remoteURL, output, err)
 	}
 	s.markFetched(remoteURL)
 	return nil
@@ -218,8 +218,8 @@ func (s *gitMirrorStore) cloneMirror(ctx context.Context, remoteURL, mirrorDir s
 func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir string) error {
 	setURL := exec.CommandContext(ctx, "git", "-C", mirrorDir, "remote", "set-url", "origin", remoteURL)
 	setURL.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if output, err := setURL.CombinedOutput(); err != nil {
-		return fmt.Errorf("git remote set-url origin %s: %s: %w", remoteURL, strings.TrimSpace(string(output)), err)
+	if output, err := runGitCommandWithBoundedOutput(setURL); err != nil {
+		return fmt.Errorf("git remote set-url origin %s: %s: %w", remoteURL, output, err)
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "-C", mirrorDir, "fetch", "--prune", "origin")
@@ -228,12 +228,20 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 		return err
 	}
 	cmd.Env = env
-	output, err := cmd.CombinedOutput()
+	output, err := runGitCommandWithBoundedOutput(cmd)
 	if err != nil {
-		return fmt.Errorf("git fetch --prune origin: %s: %w", strings.TrimSpace(string(output)), err)
+		return fmt.Errorf("git fetch --prune origin: %s: %w", output, err)
 	}
 	s.markFetched(remoteURL)
 	return nil
+}
+
+func runGitCommandWithBoundedOutput(cmd *exec.Cmd) (string, error) {
+	output := newLimitedOutputBuffer(maxGitCommandErrorOutputBytes)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err := cmd.Run()
+	return strings.TrimSpace(output.String()), err
 }
 
 func (s *gitMirrorStore) gitEnvWithAuth(ctx context.Context, remoteURL string, baseEnv []string) ([]string, error) {
@@ -316,12 +324,12 @@ func gitConfigCount(env []string) (int, bool) {
 func gitCommitExists(ctx context.Context, repoDir, commitSHA string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "cat-file", "-e", strings.TrimSpace(commitSHA)+"^{commit}")
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	output, err := cmd.CombinedOutput()
+	output, err := runGitCommandWithBoundedOutput(cmd)
 	if err == nil {
 		return true, nil
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 128 {
 		return false, nil
 	}
-	return false, fmt.Errorf("git cat-file -e %s^{commit}: %s: %w", strings.TrimSpace(commitSHA), strings.TrimSpace(string(output)), err)
+	return false, fmt.Errorf("git cat-file -e %s^{commit}: %s: %w", strings.TrimSpace(commitSHA), output, err)
 }
