@@ -418,7 +418,7 @@ func (h *exampleSmokeHarness) retry(t *testing.T, label string, maxAttempts int,
 		if attempt < maxAttempts {
 			t.Logf("%s failed on attempt %d/%d: %v; retrying", label, attempt, maxAttempts, lastErr)
 			select {
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(time.Second):
 			case <-t.Context().Done():
 				t.Fatalf("%s canceled while waiting to retry: %v", label, t.Context().Err())
 			}
