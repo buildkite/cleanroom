@@ -945,7 +945,7 @@ func TestForwarderAllowsPolicyQueryWhenBlockingDisallowedQueries(t *testing.T) {
 	}
 }
 
-func TestForwarderStripsNonQuestionRecordsWhenBlockingDisallowedQueries(t *testing.T) {
+func TestForwarderSanitizesAllowedQueryBeforeUpstream(t *testing.T) {
 	t.Parallel()
 
 	runtime := NewRuntime(RuntimeConfig{})
@@ -957,6 +957,11 @@ func TestForwarderStripsNonQuestionRecordsWhenBlockingDisallowedQueries(t *testi
 
 	sourceIP := netip.MustParseAddr("10.0.0.2")
 	var gotAnswer, gotAuthority, gotExtra int
+	var gotID uint16
+	var gotName string
+	var gotQtype, gotQclass uint16
+	var gotOpcode int
+	var gotRecursionDesired bool
 	forwarder := NewForwarder(ForwarderConfig{
 		Runtime:                runtime,
 		UpstreamAddr:           "127.0.0.1:5300",
@@ -968,6 +973,14 @@ func TestForwarderStripsNonQuestionRecordsWhenBlockingDisallowedQueries(t *testi
 			return "", false
 		},
 		Client: exchangeFunc(func(msg *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+			gotID = msg.Id
+			gotOpcode = msg.Opcode
+			gotRecursionDesired = msg.RecursionDesired
+			if len(msg.Question) == 1 {
+				gotName = msg.Question[0].Name
+				gotQtype = msg.Question[0].Qtype
+				gotQclass = msg.Question[0].Qclass
+			}
 			gotAnswer = len(msg.Answer)
 			gotAuthority = len(msg.Ns)
 			gotExtra = len(msg.Extra)
@@ -980,7 +993,8 @@ func TestForwarderStripsNonQuestionRecordsWhenBlockingDisallowedQueries(t *testi
 		localAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
 	}
 	request := new(dns.Msg)
-	request.SetQuestion("api.example.com.", dns.TypeA)
+	request.Id = 1234
+	request.SetQuestion("ApI.ExAmPlE.CoM.", dns.TypeA)
 	request.Answer = []dns.RR{&dns.TXT{
 		Hdr: dns.RR_Header{Name: "leak-answer.example.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET},
 		Txt: []string{"secret"},
@@ -996,8 +1010,115 @@ func TestForwarderStripsNonQuestionRecordsWhenBlockingDisallowedQueries(t *testi
 
 	forwarder.ServeDNS(writer, request)
 
+	if gotID != 0 {
+		t.Fatalf("expected upstream query id to be rebuilt, got %d", gotID)
+	}
+	if gotOpcode != dns.OpcodeQuery || !gotRecursionDesired {
+		t.Fatalf("unexpected upstream query flags: opcode=%d recursion_desired=%v", gotOpcode, gotRecursionDesired)
+	}
+	if gotName != "api.example.com." || gotQtype != dns.TypeA || gotQclass != dns.ClassINET {
+		t.Fatalf("unexpected sanitized question: name=%q qtype=%d qclass=%d", gotName, gotQtype, gotQclass)
+	}
 	if gotAnswer != 0 || gotAuthority != 0 || gotExtra != 0 {
 		t.Fatalf("expected upstream query sections to be stripped, got answer=%d authority=%d extra=%d", gotAnswer, gotAuthority, gotExtra)
+	}
+	if writer.message == nil || writer.message.Id != request.Id {
+		t.Fatalf("expected response id to be restored to %d, got %#v", request.Id, writer.message)
+	}
+}
+
+func TestForwarderBlocksUnsupportedQueryShapeBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "api.example.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	upstreamCalls := 0
+	forwarder := NewForwarder(ForwarderConfig{
+		Runtime:                runtime,
+		UpstreamAddr:           "127.0.0.1:5300",
+		BlockDisallowedQueries: true,
+		ScopeResolver: func(addr netip.Addr) (string, bool) {
+			if addr == sourceIP {
+				return "sandbox-1", true
+			}
+			return "", false
+		},
+		Client: exchangeFunc(func(msg *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+			upstreamCalls++
+			return testResponse(msg.Question[0].Name), 0, nil
+		}),
+	})
+
+	writer := &testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 53000},
+		localAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
+	}
+	request := new(dns.Msg)
+	request.SetQuestion("api.example.com.", dns.TypeTXT)
+
+	forwarder.ServeDNS(writer, request)
+
+	if upstreamCalls != 0 {
+		t.Fatalf("expected unsupported query type to skip upstream exchange, got %d calls", upstreamCalls)
+	}
+	if writer.message == nil || writer.message.Rcode != dns.RcodeRefused {
+		t.Fatalf("expected refused response, got %#v", writer.message)
+	}
+}
+
+func TestForwarderBlocksAliasWhenOnlyCNAMETargetAllowed(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "cdn.example.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	upstreamCalls := 0
+	forwarder := NewForwarder(ForwarderConfig{
+		Runtime:                runtime,
+		UpstreamAddr:           "127.0.0.1:5300",
+		BlockDisallowedQueries: true,
+		ScopeResolver: func(addr netip.Addr) (string, bool) {
+			if addr == sourceIP {
+				return "sandbox-1", true
+			}
+			return "", false
+		},
+		Client: exchangeFunc(func(msg *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+			upstreamCalls++
+			return testResponse(msg.Question[0].Name,
+				&dns.CNAME{
+					Hdr:    dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 30},
+					Target: "cdn.example.com.",
+				},
+			), 0, nil
+		}),
+	})
+
+	writer := &testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 53000},
+		localAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
+	}
+	request := new(dns.Msg)
+	request.SetQuestion("service.example.com.", dns.TypeA)
+
+	forwarder.ServeDNS(writer, request)
+
+	if upstreamCalls != 0 {
+		t.Fatalf("expected non-allowlisted alias query to skip upstream exchange, got %d calls", upstreamCalls)
+	}
+	if writer.message == nil || writer.message.Rcode != dns.RcodeRefused {
+		t.Fatalf("expected refused response, got %#v", writer.message)
 	}
 }
 

@@ -95,21 +95,22 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		_ = writeServerFailure(w, req)
 		return
 	}
-	if f.blockDisallowedQueries && !f.queryAllowedByPolicy(w.RemoteAddr(), req) {
-		_ = writeRefused(w, req)
-		return
-	}
-
 	upstreamReq := req.Copy()
 	if f.blockDisallowedQueries {
-		upstreamReq.Answer = nil
-		upstreamReq.Ns = nil
-		upstreamReq.Extra = nil
+		questions, ok := f.questionsAllowedByPolicy(w.RemoteAddr(), req)
+		if !ok {
+			_ = writeRefused(w, req)
+			return
+		}
+		upstreamReq = sanitizedQueryForUpstream(questions)
 	}
 	resp, _, err := f.client.Exchange(upstreamReq, f.upstreamAddr)
 	if err != nil || resp == nil {
 		_ = writeServerFailure(w, req)
 		return
+	}
+	if f.blockDisallowedQueries {
+		resp.Id = req.Id
 	}
 
 	if err := w.WriteMsg(resp); err != nil {
@@ -118,31 +119,57 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	f.observeScopedResponse(w.RemoteAddr(), resp)
 }
 
-func (f *Forwarder) queryAllowedByPolicy(remoteAddr net.Addr, req *dns.Msg) bool {
+func (f *Forwarder) questionsAllowedByPolicy(remoteAddr net.Addr, req *dns.Msg) ([]dns.Question, bool) {
 	if f.runtime == nil || f.scopeResolver == nil || req == nil || len(req.Question) == 0 {
-		return false
+		return nil, false
 	}
 	sourceIP, ok := addrFromNetAddr(remoteAddr)
 	if !ok {
-		return false
+		return nil, false
 	}
 	sandboxID, ok := f.scopeResolver(sourceIP)
 	if !ok {
-		return false
+		return nil, false
 	}
 
-	allowed := true
+	allAllowed := true
+	questions := make([]dns.Question, 0, len(req.Question))
 	for _, question := range req.Question {
 		name := normalizeName(question.Name)
-		if name != "" && f.runtime.HostAllowedByPolicy(sandboxID, name) {
+		if name == "" || question.Qclass != dns.ClassINET || !allowedDNSQuestionType(question.Qtype) || !f.runtime.HostAllowedByPolicy(sandboxID, name) {
+			allAllowed = false
+			if f.onDeny != nil && name != "" {
+				f.onDeny(sandboxID, name)
+			}
 			continue
 		}
-		allowed = false
-		if f.onDeny != nil && name != "" {
-			f.onDeny(sandboxID, name)
-		}
+		questions = append(questions, dns.Question{
+			Name:   dns.Fqdn(name),
+			Qtype:  question.Qtype,
+			Qclass: dns.ClassINET,
+		})
 	}
-	return allowed
+	if !allAllowed || len(questions) == 0 {
+		return nil, false
+	}
+	return questions, true
+}
+
+func allowedDNSQuestionType(qtype uint16) bool {
+	switch qtype {
+	case dns.TypeA, dns.TypeAAAA, dns.TypeCNAME, dns.TypeHTTPS, dns.TypeSVCB:
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizedQueryForUpstream(questions []dns.Question) *dns.Msg {
+	msg := new(dns.Msg)
+	msg.MsgHdr.Opcode = dns.OpcodeQuery
+	msg.MsgHdr.RecursionDesired = true
+	msg.Question = append([]dns.Question(nil), questions...)
+	return msg
 }
 
 func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {

@@ -663,13 +663,17 @@ is enabled, only query names allowed by the active sandbox policy or static
 gateway records are answered; denied names get `REFUSED`, invoke the deny hook,
 and do not create DNS observations. Policy-gated upstream requests also strip
 answer, authority, and additional sections from guest-supplied DNS messages so
-allowed question names cannot carry extra records upstream. The gate is enabled
-for both darwin-vz file-handle DNS and Firecracker trusted DNS.
+allowed question names cannot carry extra records upstream. They also rebuild
+allowed questions into canonical `IN` address, CNAME, HTTPS, or SVCB lookups so
+header fields, mixed-case QNAME bytes, QCLASS, and unsupported QTYPE values do
+not become covert channels. The gate is enabled for both darwin-vz file-handle
+DNS and Firecracker trusted DNS, and remains disabled when file-handle
+networking runs without a policy runtime.
 
 Focused validation run on 2026-05-31:
 
 ```text
-MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/dnsproxy -run 'TestForwarder(BlocksDisallowedQueryBeforeUpstream|AllowsPolicyQueryWhenBlockingDisallowedQueries|StripsNonQuestionRecordsWhenBlockingDisallowedQueries|ServesStaticRecordsWithoutUpstreamObservationOrDeny)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/dnsproxy -run 'TestForwarder(BlocksDisallowedQueryBeforeUpstream|AllowsPolicyQueryWhenBlockingDisallowedQueries|SanitizesAllowedQueryBeforeUpstream|BlocksUnsupportedQueryShapeBeforeUpstream|BlocksAliasWhenOnlyCNAMETargetAllowed|ServesStaticRecordsWithoutUpstreamObservationOrDeny)'
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz -run 'TestStartFileHandleGatewayDoesNotResolveAllowRulesAtStartup|TestNewFileHandleDNSRuntime|TestFileHandleGateway'
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/firecracker -run 'TestSetupHostNetworkWithTrustedDNSFactory|TestTrustedDNS'
 MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/dnsproxy
