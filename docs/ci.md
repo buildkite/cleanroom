@@ -34,6 +34,11 @@ Set
 `CLEANROOM_AUTH_OIDC_ORGANIZATION_ID` or `CLEANROOM_AUTH_OIDC_PIPELINE_ID` if
 the pipeline should fail when those immutable IDs drift.
 
+The protobuf schema is linted with Buf on every build and published to
+`buf.build/buildkite/cleanroom` after tests pass on `main` and tag builds. The
+publish step uses `buf push --git-metadata`, so Buildkite must expose a BSR
+token as `BUF_TOKEN` on those builds.
+
 Cleanroom no longer builds managed `darwin-vz` kernels during its release
 pipeline. The experimental Apple Silicon `darwin-vz` minimal rootfs-profile
 kernel is published from the `buildkite/cleanroom-kernels` project, and runtime

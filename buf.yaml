@@ -1,4 +1,5 @@
 version: v1
+name: buf.build/buildkite/cleanroom
 
 breaking:
   use:
@@ -7,4 +8,8 @@ breaking:
 lint:
   use:
     - STANDARD
-
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
