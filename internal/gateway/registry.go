@@ -12,12 +12,13 @@ import (
 
 // SandboxScope holds the identity and policy for a registered sandbox.
 type SandboxScope struct {
-	SandboxID    string
-	GuestIP      string
-	Policy       *policy.CompiledPolicy
-	GatewayScope gatewayauth.ScopeMetadata
-	ExecutionID  string
-	TraceContext trace.SpanContext
+	SandboxID           string
+	GuestIP             string
+	Policy              *policy.CompiledPolicy
+	GatewayScope        gatewayauth.ScopeMetadata
+	defaultGatewayScope gatewayauth.ScopeMetadata
+	ExecutionID         string
+	TraceContext        trace.SpanContext
 }
 
 // Registry is a thread-safe mapping of guest IPs to sandbox scopes.
@@ -43,11 +44,13 @@ func (r *Registry) Register(guestIP, sandboxID string, p *policy.CompiledPolicy,
 	if _, exists := r.byGuestIP[guestIP]; exists {
 		return fmt.Errorf("guest IP %s already registered (possible IP collision)", guestIP)
 	}
+	defaultGatewayScope := firstScopeMetadata(metadata).Clone()
 	r.byGuestIP[guestIP] = &SandboxScope{
-		SandboxID:    sandboxID,
-		GuestIP:      guestIP,
-		Policy:       p,
-		GatewayScope: firstScopeMetadata(metadata).Clone(),
+		SandboxID:           sandboxID,
+		GuestIP:             guestIP,
+		Policy:              p,
+		GatewayScope:        defaultGatewayScope.Clone(),
+		defaultGatewayScope: defaultGatewayScope.Clone(),
 	}
 	return nil
 }
@@ -79,10 +82,12 @@ func (r *Registry) RegisterScopeToken(scopeToken, sandboxID string, p *policy.Co
 	if _, exists := r.byScopeToken[scopeToken]; exists {
 		return fmt.Errorf("scope token already registered")
 	}
+	defaultGatewayScope := firstScopeMetadata(metadata).Clone()
 	r.byScopeToken[scopeToken] = &SandboxScope{
-		SandboxID:    sandboxID,
-		Policy:       p,
-		GatewayScope: firstScopeMetadata(metadata).Clone(),
+		SandboxID:           sandboxID,
+		Policy:              p,
+		GatewayScope:        defaultGatewayScope.Clone(),
+		defaultGatewayScope: defaultGatewayScope.Clone(),
 	}
 	return nil
 }
@@ -157,12 +162,29 @@ func (r *Registry) ClearActiveExecutionTrace(sandboxID, executionID string) {
 	}
 }
 
+func (r *Registry) ClearActiveExecutionScope(sandboxID, executionID string) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return
+	}
+	executionID = strings.TrimSpace(executionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.byGuestIP {
+		clearActiveExecutionScopeForScope(scope, sandboxID, executionID)
+	}
+	for _, scope := range r.byScopeToken {
+		clearActiveExecutionScopeForScope(scope, sandboxID, executionID)
+	}
+}
+
 func cloneSandboxScope(scope *SandboxScope) *SandboxScope {
 	if scope == nil {
 		return nil
 	}
 	clone := *scope
 	clone.GatewayScope = scope.GatewayScope.Clone()
+	clone.defaultGatewayScope = scope.defaultGatewayScope.Clone()
 	return &clone
 }
 
@@ -192,4 +214,16 @@ func clearActiveExecutionTraceForScope(scope *SandboxScope, sandboxID, execution
 	}
 	scope.ExecutionID = ""
 	scope.TraceContext = trace.SpanContext{}
+}
+
+func clearActiveExecutionScopeForScope(scope *SandboxScope, sandboxID, executionID string) {
+	if scope == nil || scope.SandboxID != sandboxID {
+		return
+	}
+	if executionID != "" && strings.TrimSpace(scope.ExecutionID) != executionID {
+		return
+	}
+	scope.ExecutionID = ""
+	scope.TraceContext = trace.SpanContext{}
+	scope.GatewayScope = scope.defaultGatewayScope.Clone()
 }

@@ -230,6 +230,80 @@ func TestRegistrySetActiveExecutionScopeUpdatesGatewayScope(t *testing.T) {
 	}
 }
 
+func TestRegistryClearActiveExecutionScopeRestoresRegisteredGatewayScope(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	registered := gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{PrincipalID: "oidc:test:old"},
+		Authorization: gatewayauth.Authorization{
+			GitRepoPrefixes: []string{"github.com/buildkite/original"},
+			OCIRepoPrefixes: []string{"ghcr.io/buildkite/original"},
+		},
+	}
+	if err := r.Register("10.1.1.2", "sandbox-1", testPolicy(), registered); err != nil {
+		t.Fatalf("register scope: %v", err)
+	}
+	if err := r.RegisterScopeToken("token-1", "sandbox-1", testPolicy(), registered); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	r.SetActiveExecutionScope("sandbox-1", "exec-1", testSpanContext(), gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{PrincipalID: "oidc:test:alice"},
+		Authorization: gatewayauth.Authorization{
+			GitRepoPrefixes: []string{"github.com/buildkite/cleanroom"},
+		},
+	})
+	r.ClearActiveExecutionScope("sandbox-1", "exec-1")
+
+	for name, scope := range map[string]*SandboxScope{
+		"guest IP":    mustLookupScope(t, r, "10.1.1.2"),
+		"scope token": mustLookupScopeToken(t, r, "token-1"),
+	} {
+		if got := scope.ExecutionID; got != "" {
+			t.Fatalf("%s execution id mismatch: got %q want empty", name, got)
+		}
+		if scope.TraceContext.IsValid() {
+			t.Fatalf("%s trace context should be cleared", name)
+		}
+		if got, want := scope.GatewayScope.Owner.PrincipalID, "oidc:test:old"; got != want {
+			t.Fatalf("%s gateway owner mismatch: got %q want %q", name, got, want)
+		}
+		if got, want := scope.GatewayScope.Authorization.GitRepoPrefixes[0], "github.com/buildkite/original"; got != want {
+			t.Fatalf("%s gateway git prefix mismatch: got %q want %q", name, got, want)
+		}
+		if got, want := scope.GatewayScope.Authorization.OCIRepoPrefixes[0], "ghcr.io/buildkite/original"; got != want {
+			t.Fatalf("%s gateway oci prefix mismatch: got %q want %q", name, got, want)
+		}
+	}
+}
+
+func TestRegistryClearActiveExecutionScopeIgnoresMismatchedExecution(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	if err := r.Register("10.1.1.2", "sandbox-1", testPolicy(), gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{PrincipalID: "oidc:test:old"},
+	}); err != nil {
+		t.Fatalf("register scope: %v", err)
+	}
+	r.SetActiveExecutionScope("sandbox-1", "exec-1", testSpanContext(), gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{PrincipalID: "oidc:test:alice"},
+	})
+	r.ClearActiveExecutionScope("sandbox-1", "exec-other")
+
+	scope := mustLookupScope(t, r, "10.1.1.2")
+	if got, want := scope.ExecutionID, "exec-1"; got != want {
+		t.Fatalf("execution id mismatch: got %q want %q", got, want)
+	}
+	if !scope.TraceContext.IsValid() {
+		t.Fatal("trace context should still be active")
+	}
+	if got, want := scope.GatewayScope.Owner.PrincipalID, "oidc:test:alice"; got != want {
+		t.Fatalf("gateway owner mismatch: got %q want %q", got, want)
+	}
+}
+
 func TestRegistryDuplicateScopeTokenReturnsError(t *testing.T) {
 	t.Parallel()
 	r := NewRegistry()
@@ -263,6 +337,32 @@ func TestRegistryReleaseScopeToken(t *testing.T) {
 	if _, ok := r.LookupScopeToken("token-1"); ok {
 		t.Fatal("expected token lookup to fail after release")
 	}
+}
+
+func mustLookupScope(t *testing.T, r *Registry, guestIP string) *SandboxScope {
+	t.Helper()
+	scope, ok := r.Lookup(guestIP)
+	if !ok {
+		t.Fatalf("expected lookup for guest IP %q to succeed", guestIP)
+	}
+	return scope
+}
+
+func mustLookupScopeToken(t *testing.T, r *Registry, scopeToken string) *SandboxScope {
+	t.Helper()
+	scope, ok := r.LookupScopeToken(scopeToken)
+	if !ok {
+		t.Fatalf("expected lookup for scope token %q to succeed", scopeToken)
+	}
+	return scope
+}
+
+func testSpanContext() trace.SpanContext {
+	return trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1},
+		SpanID:     trace.SpanID{2},
+		TraceFlags: trace.FlagsSampled,
+	})
 }
 
 func itoa(i int) string {

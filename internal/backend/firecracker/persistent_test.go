@@ -680,14 +680,26 @@ func (testGatewayRegistry) SetActiveExecutionTrace(string, string, trace.SpanCon
 func (testGatewayRegistry) SetActiveExecutionScope(string, string, trace.SpanContext, gatewayauth.ScopeMetadata) {
 }
 func (testGatewayRegistry) ClearActiveExecutionTrace(string, string) {}
+func (testGatewayRegistry) ClearActiveExecutionScope(string, string) {}
 
 type capturingGatewayRegistry struct {
 	testGatewayRegistry
-	scope gatewayauth.ScopeMetadata
+	scope            gatewayauth.ScopeMetadata
+	setSandboxID     string
+	setExecutionID   string
+	clearSandboxID   string
+	clearExecutionID string
 }
 
-func (r *capturingGatewayRegistry) SetActiveExecutionScope(_ string, _ string, _ trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+func (r *capturingGatewayRegistry) SetActiveExecutionScope(sandboxID string, executionID string, _ trace.SpanContext, metadata gatewayauth.ScopeMetadata) {
+	r.setSandboxID = sandboxID
+	r.setExecutionID = executionID
 	r.scope = metadata.Clone()
+}
+
+func (r *capturingGatewayRegistry) ClearActiveExecutionScope(sandboxID, executionID string) {
+	r.clearSandboxID = sandboxID
+	r.clearExecutionID = executionID
 }
 
 func TestRunInSandboxUpdatesGatewayScope(t *testing.T) {
@@ -733,6 +745,18 @@ func TestRunInSandboxUpdatesGatewayScope(t *testing.T) {
 	}
 	if got, want := registry.scope.Authorization.GitRepoPrefixes, []string{"github.com/buildkite/cleanroom"}; !slices.Equal(got, want) {
 		t.Fatalf("gateway scope git prefixes mismatch: got %v want %v", got, want)
+	}
+	if got, want := registry.setSandboxID, "cr-test"; got != want {
+		t.Fatalf("set gateway scope sandbox mismatch: got %q want %q", got, want)
+	}
+	if got, want := registry.setExecutionID, "run-gateway-scope"; got != want {
+		t.Fatalf("set gateway scope execution mismatch: got %q want %q", got, want)
+	}
+	if got, want := registry.clearSandboxID, "cr-test"; got != want {
+		t.Fatalf("clear gateway scope sandbox mismatch: got %q want %q", got, want)
+	}
+	if got, want := registry.clearExecutionID, "run-gateway-scope"; got != want {
+		t.Fatalf("clear gateway scope execution mismatch: got %q want %q", got, want)
 	}
 }
 

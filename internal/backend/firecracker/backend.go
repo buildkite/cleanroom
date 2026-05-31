@@ -84,9 +84,8 @@ type Adapter struct {
 type gatewayRegistry interface {
 	Register(guestIP, sandboxID string, p *policy.CompiledPolicy, metadata ...gatewayauth.ScopeMetadata) error
 	Release(guestIP string)
-	SetActiveExecutionTrace(sandboxID, executionID string, spanContext trace.SpanContext)
 	SetActiveExecutionScope(sandboxID, executionID string, spanContext trace.SpanContext, metadata gatewayauth.ScopeMetadata)
-	ClearActiveExecutionTrace(sandboxID, executionID string)
+	ClearActiveExecutionScope(sandboxID, executionID string)
 }
 
 type sandboxInstance struct {
@@ -455,7 +454,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	}
 	if a.GatewayRegistry != nil {
 		a.GatewayRegistry.SetActiveExecutionScope(sandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx), req.GatewayScope)
-		defer a.GatewayRegistry.ClearActiveExecutionTrace(sandboxID, req.ExecutionID)
+		defer a.GatewayRegistry.ClearActiveExecutionScope(sandboxID, req.ExecutionID)
 	}
 
 	cacheOutputCaptures, err := cacheOutputFileCaptures(instance.cacheOutputVolumes, req.CacheOutputFileCaptures)
