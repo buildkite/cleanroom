@@ -344,6 +344,13 @@ func (g *fileHandleGateway) SetPolicy(sandboxID string, compiled *policy.Compile
 	return g.network.SetPolicy(sandboxID, compiled)
 }
 
+func (g *fileHandleGateway) ClearPolicy(sandboxID string) {
+	if g == nil || g.network == nil {
+		return
+	}
+	g.network.ClearPolicy(sandboxID)
+}
+
 func (g *fileHandleGateway) DialTCP(ctx context.Context, guestIP string, port int) (net.Conn, error) {
 	if g == nil || g.network == nil {
 		return nil, errors.New("file-handle gateway is not running")
@@ -678,8 +685,24 @@ func (n *fileHandleVirtualNetwork) SetPolicy(sandboxID string, compiled *policy.
 	conns := n.drainActiveTCPProxyConnsLocked()
 	closeTCPProxyConns(conns)
 	err := n.dnsRuntime.UpdateSandboxPolicy(sandboxID, compiled)
+	if errors.Is(err, dnsproxy.ErrSandboxNotRegistered) {
+		err = n.dnsRuntime.RegisterSandbox(sandboxID, compiled)
+	}
 	n.activeMu.Unlock()
 	return err
+}
+
+func (n *fileHandleVirtualNetwork) ClearPolicy(sandboxID string) {
+	if n == nil {
+		return
+	}
+	n.activeMu.Lock()
+	conns := n.drainActiveTCPProxyConnsLocked()
+	closeTCPProxyConns(conns)
+	if n.dnsRuntime != nil {
+		n.dnsRuntime.ClearSandbox(sandboxID)
+	}
+	n.activeMu.Unlock()
 }
 
 func (n *fileHandleVirtualNetwork) trackTCPProxyConn(guest, outbound net.Conn) func() {

@@ -1951,6 +1951,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		if err := instance.FileHandleGateway.SetPolicy(scopeSandboxID, networkPolicy); err != nil {
 			return nil, fmt.Errorf("update file-handle network policy: %w", err)
 		}
+		defer instance.FileHandleGateway.ClearPolicy(scopeSandboxID)
 	}
 
 	gatewayScopeToken := ""

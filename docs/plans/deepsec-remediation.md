@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 23 ready for review
+**Status:** Slice 24 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -28,11 +28,11 @@ the HIGH DNS exfiltration finding in PR #494. Slice 20 closed the HIGH OCI
 digest cache authorization finding in PR #495. Slice 21 closed the unknown
 OIDC `kid` JWKS fetch amplification finding in PR #496. Slice 22 closed the
 Git proxy environment port-preservation finding in PR #497. Slice 23 closes the
-retained execution output UTF-8 handling bug.
+retained execution output UTF-8 handling bug. Slice 24 closes the persistent
+darwin-vz file-handle network policy lifetime finding.
 
-After Slice 23 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
-3 unresolved true positives: persistent darwin-vz file-handle policy lifetime
-and two Git mirror resource-exhaustion paths.
+After Slice 24 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
+2 unresolved true positives: the two Git mirror resource-exhaustion paths.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -864,6 +864,42 @@ Result: the retained execution output UTF-8 handling bug revalidated as fixed.
 DeepSec status now reports 12/12 findings revalidated, with 3 true positives
 and 9 fixed findings.
 
+Slice 24 is implemented and ready for review. Persistent darwin-vz executions
+now clear the file-handle network policy when the execution returns. The clear
+path drains active TCP proxy connections, removes DNS policy state for the
+sandbox, and lets the next execution re-register its stage policy before it
+runs. This closes the gap where detached guest children could keep using the
+last execution's egress policy after the foreground command exited.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz -run 'TestFileHandle(Gateway(SetPolicyUpdatesDNSRuntime|ClearPolicyRemovesDNSRuntimePolicy)|VirtualNetwork(SetPolicyClosesActiveTCPProxyConnections|SetPolicyCancelsPendingTCPProxyDial|SetPolicySerializesWithTCPAdmission|ClearPolicyClosesActiveTCPProxyConnections))'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/backend/darwinvz/backend_darwin.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the persistent darwin-vz file-handle network policy lifetime finding
+revalidated as fixed. DeepSec status now reports 12/12 findings revalidated,
+with 2 true positives and 10 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -877,6 +913,9 @@ and 9 fixed findings.
 | Unknown JWT key IDs force repeated JWKS fetches | Medium | Fixed by Slice 21 | Slice 21: OIDC JWKS fresh-miss guard |
 | Git proxy rewrites can preserve embedded ports from policy hosts | Medium | Fixed by Slice 22 | Slice 22: policy host authority validation |
 | Retained execution output can become invalid UTF-8 | Bug | Fixed by Slice 23 | Slice 23: retained output UTF-8 sanitization |
+| Persistent VM network policy remains active after an execution exits | Medium | Fixed by Slice 24 | Slice 24: darwin-vz file-handle policy cleanup |
+| Mirror upload-pack buffers unbounded pack responses in memory | Medium | Needs fix | Slice 25: stream or bound Git upload-pack responses |
+| Git mirror operations buffer unbounded command output | Medium | Needs fix | Slice 26: bound Git mirror command output |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -930,6 +969,9 @@ and 9 fixed findings.
 21. Return local OIDC JWKS key-not-found errors for fresh unknown `kid` cache misses.
 22. Reject authority-shaped policy hosts before generating Git proxy rewrites.
 23. Sanitize retained execution output before exposing protobuf strings.
+24. Clear persistent darwin-vz file-handle network policy when execution exits.
+25. Stream or bound Git upload-pack responses.
+26. Bound Git mirror command output captured for errors.
 
 ## Key Learnings From Pressure-Testing
 
