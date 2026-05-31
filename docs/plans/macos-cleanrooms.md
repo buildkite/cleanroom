@@ -345,9 +345,10 @@ Current evidence proves that the host and SDK expose the required
 Virtualization.framework APIs, the existing Cleanroom `darwin-vz` backend has
 reusable helper/control-plane pieces, Tart proves the macOS VM plus guest-agent
 model works in practice, and the standalone macOS harness can compile and
-validate bundle metadata paths. No prepared macOS VM bundle or Cleanroom macOS
-guest agent is available in this worktree yet, so the live `sw_vers` smoke has
-not run.
+validate bundle metadata paths. The benchmark directory also has a local
+IPSW-to-bundle creator that installs macOS, writes VZ identity files, and emits
+the runner's `bundle.json` shape. No local IPSW or Cleanroom macOS guest agent
+is available in this worktree yet, so the live `sw_vers` smoke has not run.
 
 ## Delivery Strategy
 
@@ -433,6 +434,14 @@ Scope:
   bundle and writes normalized Cleanroom metadata
 - install or verify the guest agent in the image
 - clone the base bundle into a sandbox-owned working bundle before boot
+
+Current status: `benchmarks/darwin-vz/macos-minimal/create-bundle.swift` and
+`build-create-bundle.sh` can build a signed installer helper that accepts a
+local Apple Silicon IPSW, creates `disk.img`, `auxiliary.storage`,
+`hardware-model.bin`, `machine-identifier.bin`, runs `VZMacOSInstaller`, and
+writes `bundle.json`. The tool intentionally stops short of claiming the bundle
+is command-runnable because the Cleanroom macOS guest agent still needs to be
+installed inside the guest.
 
 Definition of done:
 

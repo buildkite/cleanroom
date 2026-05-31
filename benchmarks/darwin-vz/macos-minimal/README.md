@@ -53,6 +53,37 @@ benchmarks/darwin-vz/macos-minimal/build-runner.sh
 The script writes `dist/darwin-vz-macos-minimal` and signs it with
 `cmd/cleanroom-darwin-vz/entitlements.plist` by default.
 
+## Create a local bundle from an IPSW
+
+```bash
+benchmarks/darwin-vz/macos-minimal/build-create-bundle.sh
+
+dist/darwin-vz-macos-create-bundle \
+  --ipsw /path/to/UniversalMac.ipsw \
+  --out /path/to/cleanroom-macos-bundle \
+  --disk-size-gib 120
+```
+
+The create-bundle tool installs macOS from a local Apple Silicon IPSW into the
+same bundle layout consumed by the runner:
+
+- `bundle.json`
+- `disk.img`
+- `auxiliary.storage`
+- `hardware-model.bin`
+- `machine-identifier.bin`
+
+It chooses CPU and memory defaults that satisfy the restore image requirements
+and writes the macOS version/build discovered from the IPSW. The default
+`agent.version` is `uninstalled`; use `--vcpus`, `--memory-mib`, `--agent-port`,
+`--agent-version`, and `--display` to override the metadata written to
+`bundle.json`.
+
+This only prepares the VM bundle. It does not install the Cleanroom macOS guest
+agent inside the guest. Before the runner can execute commands, boot the bundle
+once, finish macOS setup, install the guest agent as a LaunchDaemon, then shut
+the guest down cleanly.
+
 ## Validate metadata
 
 ```bash
