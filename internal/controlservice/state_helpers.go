@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -245,19 +246,30 @@ func appendRetainedOutput(existing, chunk string, limit int) string {
 		return ""
 	}
 	if chunk == "" {
-		if len(existing) <= limit {
-			return existing
-		}
-		return strings.Clone(existing[len(existing)-limit:])
+		return retainedUTF8Tail(existing, limit)
 	}
+	chunk = strings.ToValidUTF8(chunk, "\uFFFD")
 	if len(chunk) >= limit {
-		return strings.Clone(chunk[len(chunk)-limit:])
+		return retainedUTF8Tail(chunk, limit)
 	}
 	keepExisting := limit - len(chunk)
-	if keepExisting < len(existing) {
-		existing = strings.Clone(existing[len(existing)-keepExisting:])
+	existing = retainedUTF8Tail(existing, keepExisting)
+	return retainedUTF8Tail(existing+chunk, limit)
+}
+
+func retainedUTF8Tail(value string, limit int) string {
+	if limit <= 0 || value == "" {
+		return ""
 	}
-	return existing + chunk
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if len(value) <= limit {
+		return strings.Clone(value)
+	}
+	start := len(value) - limit
+	for start < len(value) && !utf8.RuneStart(value[start]) {
+		start++
+	}
+	return strings.Clone(value[start:])
 }
 
 func appendBounded[T any](history []T, item T, limit int) []T {

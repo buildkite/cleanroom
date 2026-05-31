@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -40,6 +41,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"google.golang.org/protobuf/proto"
 )
 
 type stubAdapter struct {
@@ -10309,6 +10311,26 @@ func TestAppendRetainedOutputClonesTailSlice(t *testing.T) {
 	}
 }
 
+func TestAppendRetainedOutputSanitizesInvalidUTF8(t *testing.T) {
+	got := appendRetainedOutput("", string([]byte{'o', 0xff, 'k'}), 32)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected retained output to be valid UTF-8, got %q", got)
+	}
+	if want := "o\uFFFDk"; got != want {
+		t.Fatalf("unexpected retained output: got %q want %q", got, want)
+	}
+}
+
+func TestAppendRetainedOutputTruncatesOnUTF8Boundary(t *testing.T) {
+	got := appendRetainedOutput("ab\u20AC", "cd", 5)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected retained output to be valid UTF-8, got %q", got)
+	}
+	if want := "\u20ACcd"; got != want {
+		t.Fatalf("unexpected retained output: got %q want %q", got, want)
+	}
+}
+
 func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 	svc := newTestService(&stubAdapter{})
 	retention := testRetentionPolicy()
@@ -10687,6 +10709,65 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	}
 	if got, want := snapshot.Stderr, "cdefghij"; got != want {
 		t.Fatalf("unexpected retained stderr: got %q want %q", got, want)
+	}
+}
+
+func TestExecutionRetentionSanitizesInvalidUTF8Output(t *testing.T) {
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte{'o', 0xff, 'k'})
+			}
+			if stream.OnStderr != nil {
+				stream.OnStderr([]byte{'e', 'r', 0xe2, 0x82})
+			}
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Message:     "ok",
+			}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	retention := testRetentionPolicy()
+	retention.maxRetainedExecutionOutputBytes = 32
+	svc.runtime.retention = retention
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"emit", "invalid-utf8"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	inspect, err := svc.InspectExecution(context.Background(), &cleanroomv1.InspectExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	})
+	if err != nil {
+		t.Fatalf("InspectExecution returned error: %v", err)
+	}
+	if !utf8.ValidString(inspect.GetStdout()) || !utf8.ValidString(inspect.GetStderr()) {
+		t.Fatalf("expected retained output to be valid UTF-8, stdout=%q stderr=%q", inspect.GetStdout(), inspect.GetStderr())
+	}
+	if got, want := inspect.GetStdout(), "o\uFFFDk"; got != want {
+		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
+	}
+	if got, want := inspect.GetStderr(), "er\uFFFD"; got != want {
+		t.Fatalf("unexpected retained stderr: got %q want %q", got, want)
+	}
+	if _, err := proto.Marshal(inspect); err != nil {
+		t.Fatalf("marshal InspectExecutionResponse: %v", err)
 	}
 }
 

@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 22 ready for review
+**Status:** Slice 23 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -25,14 +25,14 @@ Slice 16 closed both critical findings in PR #491. Slice 17 closed the HIGH
 darwin-vz helper resolution finding in PR #492. Slice 18 closed the HIGH
 execution-scoped gateway credential cleanup finding in PR #493. Slice 19 closed
 the HIGH DNS exfiltration finding in PR #494. Slice 20 closed the HIGH OCI
-digest cache authorization finding in PR #495. Slice 21 closes the unknown
-OIDC `kid` JWKS fetch amplification finding. Slice 22 closes the Git proxy
-environment port-preservation finding.
+digest cache authorization finding in PR #495. Slice 21 closed the unknown
+OIDC `kid` JWKS fetch amplification finding in PR #496. Slice 22 closed the
+Git proxy environment port-preservation finding in PR #497. Slice 23 closes the
+retained execution output UTF-8 handling bug.
 
-After Slice 22 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
-4 unresolved true positives: persistent darwin-vz file-handle policy lifetime,
-two Git mirror resource-exhaustion paths, and retained execution output UTF-8
-handling.
+After Slice 23 revalidation, the live `cleanroom-v0.10.0` DeepSec status shows
+3 unresolved true positives: persistent darwin-vz file-handle policy lifetime
+and two Git mirror resource-exhaustion paths.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -825,6 +825,43 @@ Result: the Git proxy environment port-preservation finding revalidated as
 fixed. DeepSec status now reports 12/12 findings revalidated, with 4 true
 positives and 8 fixed findings.
 
+Slice 23 is implemented and ready for review. Retained execution stdout and
+stderr are now sanitized with `strings.ToValidUTF8` before being stored in
+snapshot strings, and tail truncation advances to a UTF-8 rune boundary before
+cloning the retained bytes. This keeps `InspectExecutionResponse` protobuf
+string fields valid even when a workload emits invalid bytes or a byte limit
+lands in the middle of a multi-byte rune. Raw stream events still carry the
+original bytes.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/controlservice -run 'Test(AppendRetainedOutput(ClonesTailSlice|SanitizesInvalidUTF8|TruncatesOnUTF8Boundary)|ExecutionRetention(BoundsOutput|SanitizesInvalidUTF8Output))'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/controlservice
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/controlservice/state_helpers.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the retained execution output UTF-8 handling bug revalidated as fixed.
+DeepSec status now reports 12/12 findings revalidated, with 3 true positives
+and 9 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -837,6 +874,7 @@ positives and 8 fixed findings.
 | OCI digest cache can bypass repository-level authorization | High | Fixed by Slice 20 | Slice 20: OCI cache scope binding |
 | Unknown JWT key IDs force repeated JWKS fetches | Medium | Fixed by Slice 21 | Slice 21: OIDC JWKS fresh-miss guard |
 | Git proxy rewrites can preserve embedded ports from policy hosts | Medium | Fixed by Slice 22 | Slice 22: policy host authority validation |
+| Retained execution output can become invalid UTF-8 | Bug | Fixed by Slice 23 | Slice 23: retained output UTF-8 sanitization |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -889,6 +927,7 @@ positives and 8 fixed findings.
 20. Bind OCI digest cache entries to the authorized repo and owner scope.
 21. Return local OIDC JWKS key-not-found errors for fresh unknown `kid` cache misses.
 22. Reject authority-shaped policy hosts before generating Git proxy rewrites.
+23. Sanitize retained execution output before exposing protobuf strings.
 
 ## Key Learnings From Pressure-Testing
 
