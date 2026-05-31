@@ -1,5 +1,6 @@
 /dist
 /release-extra
+/tmp
 
 # Local Terraform environment values (keep *.example committed)
 /infra/terraform/envs/ci/terraform.tfvars
