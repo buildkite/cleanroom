@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "os": "macos",
+  "arch": "arm64",
+  "macos_version": "15.5",
+  "macos_build": "24F74",
+  "vcpus": 4,
+  "memory_mib": 8192,
+  "disk": "disk.img",
+  "auxiliary_storage": "auxiliary.storage",
+  "hardware_model": "hardware-model.bin",
+  "machine_identifier": "machine-identifier.bin",
+  "agent": {
+    "transport": "virtio_socket",
+    "port": 10700,
+    "version": "0.1.0"
+  },
+  "display": {
+    "width_px": 1024,
+    "height_px": 768,
+    "pixels_per_inch": 72
+  }
+}
