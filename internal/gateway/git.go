@@ -91,7 +91,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	span := trace.SpanFromContext(r.Context())
 
-	upstreamHost, repoPath, err := splitGitRequestPath(r.URL.Path)
+	upstreamHost, repoPath, err := splitGitRequestURL(r.URL)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -257,10 +257,66 @@ func splitGitRequestPath(rawPath string) (string, string, error) {
 	if slashIdx <= 0 {
 		return "", "", fmt.Errorf("missing repository path")
 	}
-	return trimmed[:slashIdx], trimmed[slashIdx:], nil
+	upstreamHost, err := normalizeGitRouteHost(trimmed[:slashIdx])
+	if err != nil {
+		return "", "", err
+	}
+	return upstreamHost, trimmed[slashIdx:], nil
+}
+
+func splitGitRequestURL(u *url.URL) (string, string, error) {
+	if u == nil {
+		return "", "", fmt.Errorf("missing upstream host")
+	}
+	if err := validateGitRouteEscapedHost(u.EscapedPath()); err != nil {
+		return "", "", err
+	}
+	return splitGitRequestPath(u.Path)
+}
+
+func validateGitRouteEscapedHost(escapedPath string) error {
+	trimmed := strings.TrimPrefix(escapedPath, "/git/")
+	if trimmed == "" || trimmed == escapedPath {
+		return fmt.Errorf("missing upstream host")
+	}
+	slashIdx := strings.Index(trimmed, "/")
+	if slashIdx <= 0 {
+		return fmt.Errorf("missing repository path")
+	}
+	if strings.Contains(trimmed[:slashIdx], "%") {
+		return fmt.Errorf("invalid upstream host")
+	}
+	return nil
+}
+
+func normalizeGitRouteHost(rawHost string) (string, error) {
+	if rawHost == "" {
+		return "", fmt.Errorf("missing upstream host")
+	}
+	if rawHost != strings.TrimSpace(rawHost) {
+		return "", fmt.Errorf("invalid upstream host")
+	}
+	host := strings.ToLower(rawHost)
+	if strings.ContainsAny(host, "/\\@[]:?&#%") {
+		return "", fmt.Errorf("invalid upstream host")
+	}
+	for _, r := range host {
+		if r <= ' ' || r == 0x7f || r > 0x7e {
+			return "", fmt.Errorf("invalid upstream host")
+		}
+	}
+	parsed, err := url.Parse("https://" + host + "/")
+	if err != nil || parsed.User != nil || parsed.Host != host || parsed.Hostname() != host || parsed.Port() != "" {
+		return "", fmt.Errorf("invalid upstream host")
+	}
+	return host, nil
 }
 
 func canonicalUpstreamRemoteURL(upstreamHost, repoPath string) (string, error) {
+	normalizedHost, err := normalizeGitRouteHost(upstreamHost)
+	if err != nil {
+		return "", err
+	}
 	repositoryPath := repoPath
 	switch {
 	case strings.HasSuffix(repositoryPath, "/info/refs"):
@@ -275,7 +331,7 @@ func canonicalUpstreamRemoteURL(upstreamHost, repoPath string) (string, error) {
 	if strings.TrimSpace(repositoryPath) == "" || repositoryPath == "/" {
 		return "", fmt.Errorf("missing repository path")
 	}
-	return "https://" + upstreamHost + repositoryPath, nil
+	return "https://" + normalizedHost + repositoryPath, nil
 }
 
 func querySuffix(rawQuery string) string {
@@ -286,15 +342,16 @@ func querySuffix(rawQuery string) string {
 }
 
 func upstreamRequestURL(upstreamHost, repoPath, rawQuery string) (string, error) {
-	if strings.TrimSpace(upstreamHost) == "" {
-		return "", fmt.Errorf("missing upstream host")
+	normalizedHost, err := normalizeGitRouteHost(upstreamHost)
+	if err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(repoPath) == "" || !strings.HasPrefix(repoPath, "/") {
 		return "", fmt.Errorf("missing repository path")
 	}
 	return (&url.URL{
 		Scheme:   "https",
-		Host:     upstreamHost,
+		Host:     normalizedHost,
 		Path:     repoPath,
 		RawQuery: rawQuery,
 	}).String(), nil

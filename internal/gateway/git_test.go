@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"charm.land/log/v2"
+	"github.com/buildkite/cleanroom/internal/gatewayauth"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"go.opentelemetry.io/otel/attribute"
@@ -143,27 +144,14 @@ func TestGitHandlerMissingRepoPath(t *testing.T) {
 	}
 }
 
-func TestGitHandlerProxiesUpstream(t *testing.T) {
+func TestGitHandlerRejectsEmbeddedPortHost(t *testing.T) {
 	t.Parallel()
 
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if auth := r.Header.Get("Authorization"); auth != "Bearer test-token" {
-			t.Errorf("expected Bearer test-token, got %q", auth)
-		}
-		if got, want := r.URL.Path, "/org/repo.git/info/refs"; got != want {
-			t.Fatalf("unexpected upstream path: got %q want %q", got, want)
-		}
-		if got, want := r.URL.RawQuery, "service=git-upload-pack"; got != want {
-			t.Fatalf("unexpected upstream query: got %q want %q", got, want)
-		}
-		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("git-refs-data"))
-	}))
-	defer upstream.Close()
-
-	// Extract host:port from upstream URL
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+	h := newGitHandler(nil, nil)
+	h.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("upstream transport should not be called for an invalid route host")
+		return nil, nil
+	})}
 
 	scope := &SandboxScope{
 		SandboxID: "sandbox-test",
@@ -171,16 +159,93 @@ func TestGitHandlerProxiesUpstream(t *testing.T) {
 		Policy: &policy.CompiledPolicy{
 			Version:        1,
 			NetworkDefault: "deny",
-			Allow:          []policy.AllowRule{{Host: upstreamHost, Ports: []int{443}}},
+			Allow: []policy.AllowRule{
+				{Host: "127.0.0.1", Ports: []int{443}},
+				{Host: "127.0.0.1:8443", Ports: []int{443}},
+			},
 		},
 	}
 
-	creds := &staticCredentialProvider{headers: map[string]string{"https://" + upstreamHost + "/org/repo.git": "Bearer test-token"}}
-	h := newGitHandler(creds, nil)
-	h.client = upstream.Client()
-
-	req := httptest.NewRequest("GET", "/git/"+upstreamHost+"/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req := httptest.NewRequest("GET", "/git/127.0.0.1:8443/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, scope)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+func TestGitHandlerRejectsEscapedSlashInRouteHost(t *testing.T) {
+	t.Parallel()
+
+	h := newGitHandlerWithMirrors(nil, nil, nil, true)
+	h.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("upstream transport should not be called for an invalid route host")
+		return nil, nil
+	})}
+
+	scope := gitTestScope()
+	scope.GatewayScope = gatewayauth.ScopeMetadata{
+		Owner: gatewayauth.Owner{
+			PrincipalID: "oidc:test:alice",
+			Scope:       "repo:org/repo",
+		},
+		Authorization: gatewayauth.Authorization{
+			GitRepoPrefixes: []string{"github.com/org/"},
+		},
+	}
+
+	req := httptest.NewRequest("GET", "/git/github.com%2forg/../private.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, scope)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSplitGitRequestPathRejectsUnsafeHosts(t *testing.T) {
+	t.Parallel()
+
+	for _, rawPath := range []string{
+		"/git/github.com:8443/org/repo.git/info/refs",
+		"/git/user@github.com/org/repo.git/info/refs",
+		"/git/github.com%3a8443/org/repo.git/info/refs",
+		"/git/github.com%zz/org/repo.git/info/refs",
+		"/git/[::1]/org/repo.git/info/refs",
+		"/git/github.com\\evil/org/repo.git/info/refs",
+		"/git/ github.com/org/repo.git/info/refs",
+	} {
+		if host, repoPath, err := splitGitRequestPath(rawPath); err == nil {
+			t.Fatalf("splitGitRequestPath(%q) = host %q repo %q, want error", rawPath, host, repoPath)
+		}
+	}
+}
+
+func TestGitHandlerProxiesUpstream(t *testing.T) {
+	t.Parallel()
+
+	h := newGitHandler(&staticCredentialProvider{headers: map[string]string{
+		"https://github.com/org/repo.git": "Bearer test-token",
+	}}, nil)
+	h.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer test-token" {
+			t.Errorf("expected Bearer test-token, got %q", auth)
+		}
+		if got, want := r.URL.String(), "https://github.com/org/repo.git/info/refs?service=git-upload-pack"; got != want {
+			t.Fatalf("unexpected upstream URL: got %q want %q", got, want)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/x-git-upload-pack-advertisement"}},
+			Body:       io.NopCloser(strings.NewReader("git-refs-data")),
+		}, nil
+	})}
+
+	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, gitTestScope())
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -244,7 +309,10 @@ func TestGitHandlerAuditLogIncludesTraceCorrelation(t *testing.T) {
 func TestGitHandlerForwardsEndToEndHeadersAndStripsGatewayHeaders(t *testing.T) {
 	t.Parallel()
 
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := newGitHandler(&staticCredentialProvider{headers: map[string]string{
+		"https://github.com/org/repo.git": "Bearer test-token",
+	}}, nil)
+	h.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		if got, want := r.Header.Get("Authorization"), "Bearer test-token"; got != want {
 			t.Fatalf("unexpected Authorization header: got %q want %q", got, want)
 		}
@@ -279,29 +347,15 @@ func TestGitHandlerForwardsEndToEndHeadersAndStripsGatewayHeaders(t *testing.T) 
 		if got, want := string(body), "request-payload"; got != want {
 			t.Fatalf("unexpected proxied body: got %q want %q", got, want)
 		}
-		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("packfile"))
-	}))
-	defer upstream.Close()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/x-git-upload-pack-result"}},
+			Body:       io.NopCloser(strings.NewReader("packfile")),
+		}, nil
+	})}
 
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	scope := &SandboxScope{
-		SandboxID: "sandbox-test",
-		GuestIP:   "10.1.1.2",
-		Policy: &policy.CompiledPolicy{
-			Version:        1,
-			NetworkDefault: "deny",
-			Allow:          []policy.AllowRule{{Host: upstreamHost, Ports: []int{443}}},
-		},
-	}
-
-	creds := &staticCredentialProvider{headers: map[string]string{"https://" + upstreamHost + "/org/repo.git": "Bearer test-token"}}
-	h := newGitHandler(creds, nil)
-	h.client = upstream.Client()
-
-	req := httptest.NewRequest("POST", "/git/"+upstreamHost+"/org/repo.git/git-upload-pack", strings.NewReader("request-payload"))
-	req = withScope(req, scope)
+	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-upload-pack", strings.NewReader("request-payload"))
+	req = withScope(req, gitTestScope())
 	req.Header.Set("Authorization", "Basic should-not-leak")
 	req.Header.Set("User-Agent", "git/2.49.0")
 	req.Header.Set("Git-Protocol", "version=2")

@@ -159,38 +159,32 @@ func TestCredentialNotLeakedToClient(t *testing.T) {
 
 	const secretToken = "ghp_SUPERSECRET_TOKEN_12345"
 
-	// Upstream server: verifies it receives the token, responds with benign body.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := newGitHandler(&staticCredentialProvider{headers: map[string]string{"https://github.com/org/repo.git": "Bearer " + secretToken}}, nil)
+	h.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer "+secretToken {
 			t.Errorf("upstream: expected Authorization header with token, got %q", auth)
 		}
-		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("refs-response"))
-	}))
-	defer upstream.Close()
-
-	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
-	scope := &SandboxScope{
-		SandboxID: "sandbox-leak-test",
-		GuestIP:   "10.1.1.2",
-		Policy: &policy.CompiledPolicy{
-			Version: 1, NetworkDefault: "deny",
-			Allow: []policy.AllowRule{{Host: upstreamHost, Ports: []int{443}}},
-		},
-	}
-
-	creds := &staticCredentialProvider{headers: map[string]string{"https://" + upstreamHost + "/org/repo.git": "Bearer " + secretToken}}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/x-git-upload-pack-advertisement"}},
+			Body:       io.NopCloser(strings.NewReader("refs-response")),
+		}, nil
+	})}
 
 	// Capture log output.
 	var logBuf bytes.Buffer
 	logger := log.NewWithOptions(&logBuf, log.Options{})
+	h.logger = logger
 
-	h := newGitHandler(creds, logger)
-	h.client = upstream.Client()
-
-	req := httptest.NewRequest("GET", "/git/"+upstreamHost+"/org/repo.git/info/refs?service=git-upload-pack", nil)
-	req = withScope(req, scope)
+	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, &SandboxScope{
+		SandboxID: "sandbox-leak-test",
+		GuestIP:   "10.1.1.2",
+		Policy: &policy.CompiledPolicy{
+			Version: 1, NetworkDefault: "deny",
+			Allow: []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+		},
+	})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 

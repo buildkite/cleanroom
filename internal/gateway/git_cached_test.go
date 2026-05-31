@@ -98,6 +98,72 @@ func TestCachedGitHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonHostNotAllowed)
 }
 
+func TestCachedGitHandlerRejectsEmbeddedPortBeforeCacheOrFallback(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubGitHostHandlerProvider{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("cache backend should not be called for an invalid route host")
+		}),
+	}
+	fallback := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("fallback should not be called for an invalid route host")
+	})
+	h := newCachedGitHandlerWithDirectFallback(provider, fallback, fallback, nil, false, nil)
+
+	scope := &SandboxScope{
+		SandboxID: "sandbox-cached-test",
+		GuestIP:   "10.1.1.2",
+		Policy: &policy.CompiledPolicy{
+			Version:        1,
+			NetworkDefault: "deny",
+			Allow: []policy.AllowRule{
+				{Host: "127.0.0.1", Ports: []int{443}},
+				{Host: "127.0.0.1:8443", Ports: []int{443}},
+			},
+		},
+	}
+
+	req := httptest.NewRequest("GET", "/git/127.0.0.1:8443/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, scope)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if provider.host != "" {
+		t.Fatalf("expected cache handler lookup to be skipped, got %q", provider.host)
+	}
+}
+
+func TestCachedGitHandlerRejectsEscapedSlashBeforeCacheOrFallback(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubGitHostHandlerProvider{
+		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("cache backend should not be called for an invalid route host")
+		}),
+	}
+	fallback := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("fallback should not be called for an invalid route host")
+	})
+	h := newCachedGitHandlerWithDirectFallback(provider, fallback, fallback, nil, true, nil)
+
+	scope := cachedGitOwnedScope("github.com/org/")
+	req := httptest.NewRequest("GET", "/git/github.com%2forg/../private.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, scope)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if provider.host != "" {
+		t.Fatalf("expected cache handler lookup to be skipped, got %q", provider.host)
+	}
+}
+
 func TestCachedGitHandlerRejectsReceivePack(t *testing.T) {
 	t.Parallel()
 
