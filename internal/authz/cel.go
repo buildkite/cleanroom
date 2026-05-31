@@ -8,6 +8,8 @@ import (
 	"unicode"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/interpreter"
 )
 
 const celRuntimeCostLimit uint64 = 10_000
@@ -43,7 +45,7 @@ func compileBoolExpression(source string, rules celPathRules) (*compiledBoolExpr
 	if !ast.OutputType().IsExactType(cel.BoolType) {
 		return nil, fmt.Errorf("expression must return bool, got %s", ast.OutputType())
 	}
-	program, err := env.Program(ast, cel.CostLimit(celRuntimeCostLimit))
+	program, err := env.Program(ast, cel.CostLimit(celRuntimeCostLimit), cel.EvalOptions(cel.OptPartialEval))
 	if err != nil {
 		return nil, err
 	}
@@ -66,6 +68,223 @@ func (e *compiledBoolExpression) eval(vars map[string]any) (bool, error) {
 		return false, fmt.Errorf("expression returned %T, expected bool", val.Value())
 	}
 	return native, nil
+}
+
+func (e *compiledBoolExpression) evalPartial(vars map[string]any, unknownPaths ...string) (bool, bool, error) {
+	if e == nil || strings.TrimSpace(e.source) == "" {
+		return true, true, nil
+	}
+	unknowns := make([]*interpreter.AttributePattern, 0, len(unknownPaths))
+	for _, path := range unknownPaths {
+		if pattern := celAttributePattern(path); pattern != nil {
+			unknowns = append(unknowns, pattern)
+		}
+	}
+	activation, err := cel.PartialVars(vars, unknowns...)
+	if err != nil {
+		return false, false, err
+	}
+	val, _, err := e.program.Eval(activation)
+	if err != nil {
+		return false, false, err
+	}
+	if types.IsUnknown(val) {
+		return false, false, nil
+	}
+	native, ok := val.Value().(bool)
+	if !ok {
+		return false, false, fmt.Errorf("expression returned %T, expected bool", val.Value())
+	}
+	return native, true, nil
+}
+
+func (e *compiledBoolExpression) repositorySourceAuthorized(vars map[string]any, unknownPaths ...string) bool {
+	if e == nil || strings.TrimSpace(e.source) == "" {
+		return true
+	}
+	for _, disjunct := range sourceDisjuncts(e.source) {
+		disjunctExpr, err := compileBoolExpression(disjunct, grantCELRules())
+		if err != nil {
+			continue
+		}
+		ok, known, err := disjunctExpr.evalPartial(vars, unknownPaths...)
+		if err != nil || (known && !ok) {
+			continue
+		}
+		for _, conjunct := range sourceConjuncts(disjunct) {
+			if !referencesCELPath(conjunct, "request.repository.remote_url") {
+				continue
+			}
+			compiled, err := compileBoolExpression(conjunct, grantCELRules())
+			if err != nil {
+				continue
+			}
+			ok, known, err := compiled.evalPartial(vars, unknownPaths...)
+			if err == nil && known && ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (e *compiledBoolExpression) repositorySourceSatisfiable(vars map[string]any, unknownPaths ...string) bool {
+	if e == nil || strings.TrimSpace(e.source) == "" {
+		return true
+	}
+	ok, known, err := e.evalPartial(vars, unknownPaths...)
+	if err != nil {
+		return false
+	}
+	if known {
+		return ok
+	}
+	return e.repositorySourceAuthorized(vars, unknownPaths...)
+}
+
+func celAttributePattern(path string) *interpreter.AttributePattern {
+	parts := strings.Split(strings.TrimSpace(path), ".")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return nil
+	}
+	pattern := cel.AttributePattern(parts[0])
+	for _, part := range parts[1:] {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil
+		}
+		pattern = pattern.QualString(part)
+	}
+	return pattern
+}
+
+func sourceDisjuncts(source string) []string {
+	source = stripOuterParens(strings.TrimSpace(source))
+	parts := splitTopLevelOr(source)
+	if len(parts) == 1 && parts[0] == source {
+		return []string{source}
+	}
+	var out []string
+	for _, part := range parts {
+		out = append(out, sourceDisjuncts(part)...)
+	}
+	return out
+}
+
+func sourceConjuncts(source string) []string {
+	source = stripOuterParens(strings.TrimSpace(source))
+	parts := splitTopLevelAnd(source)
+	if len(parts) == 1 && parts[0] == source {
+		return []string{source}
+	}
+	var out []string
+	for _, part := range parts {
+		out = append(out, sourceConjuncts(part)...)
+	}
+	return out
+}
+
+func splitTopLevelOr(source string) []string {
+	return splitTopLevelOperator(source, '|')
+}
+
+func splitTopLevelAnd(source string) []string {
+	return splitTopLevelOperator(source, '&')
+}
+
+func splitTopLevelOperator(source string, op byte) []string {
+	var parts []string
+	start := 0
+	depth := 0
+	for i := 0; i < len(source); {
+		switch source[i] {
+		case '\'', '"':
+			next, err := skipQuoted(source, i)
+			if err != nil {
+				return []string{strings.TrimSpace(source)}
+			}
+			i = next
+			continue
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case op:
+			if depth == 0 && i+1 < len(source) && source[i+1] == op {
+				parts = append(parts, strings.TrimSpace(source[start:i]))
+				i += 2
+				start = i
+				continue
+			}
+		}
+		i++
+	}
+	parts = append(parts, strings.TrimSpace(source[start:]))
+	return parts
+}
+
+func stripOuterParens(source string) string {
+	for {
+		source = strings.TrimSpace(source)
+		if len(source) < 2 || source[0] != '(' || source[len(source)-1] != ')' {
+			return source
+		}
+		depth := 0
+		wrapped := true
+		for i := 0; i < len(source); {
+			switch source[i] {
+			case '\'', '"':
+				next, err := skipQuoted(source, i)
+				if err != nil {
+					return source
+				}
+				i = next
+				continue
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 && i != len(source)-1 {
+					wrapped = false
+				}
+			}
+			i++
+		}
+		if !wrapped || depth != 0 {
+			return source
+		}
+		source = source[1 : len(source)-1]
+	}
+}
+
+func referencesCELPath(source, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for i := 0; i < len(source); {
+		r := rune(source[i])
+		if source[i] == '"' || source[i] == '\'' {
+			next, err := skipQuoted(source, i)
+			if err != nil {
+				return false
+			}
+			i = next
+			continue
+		}
+		if !isIdentStart(r) || (i > 0 && source[i-1] == '.') {
+			i++
+			continue
+		}
+		path, next := readPath(source, i)
+		if path == target || strings.HasPrefix(path, target+".") {
+			return true
+		}
+		i = next
+	}
+	return false
 }
 
 type celPathRules struct {

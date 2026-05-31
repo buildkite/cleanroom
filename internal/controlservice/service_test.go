@@ -366,6 +366,8 @@ type stubRepositoryMirrorStore struct {
 	mirrorPathErr             error
 	ensureMirrorCalls         int
 	ensureMirrorErr           error
+	refreshCalls              int
+	refreshErr                error
 	ensureSubmoduleMirrorFunc func(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error)
 }
 
@@ -406,6 +408,22 @@ func (s *stubRepositoryMirrorStore) EnsureMirror(_ context.Context, remoteURL st
 	return s.mirrorPath, nil
 }
 
+func (s *stubRepositoryMirrorStore) Refresh(_ context.Context, remoteURL string, _ repositorystore.FetchHints) error {
+	s.remoteURL = remoteURL
+	s.refreshCalls++
+	if s.refreshErr != nil {
+		return s.refreshErr
+	}
+	return nil
+}
+
+func (s *stubRepositoryMirrorStore) RefreshMirror(ctx context.Context, remoteURL string) (string, error) {
+	if err := s.Refresh(ctx, remoteURL, repositorystore.FetchHints{}); err != nil {
+		return "", err
+	}
+	return s.mirrorPath, nil
+}
+
 func (s *stubRepositoryMirrorStore) ReadFileAtCommit(ctx context.Context, remoteURL, commitSHA, path string) ([]byte, error) {
 	var content []byte
 	err := s.WithRepository(ctx, remoteURL, commitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
@@ -415,6 +433,9 @@ func (s *stubRepositoryMirrorStore) ReadFileAtCommit(ctx context.Context, remote
 			message := strings.TrimSpace(string(output))
 			if message == "" {
 				message = err.Error()
+			}
+			if isGitShowFileMissingError(message, path) {
+				return repositorystore.NewFileNotFoundError(commitSHA, path)
 			}
 			return errors.New(message)
 		}
@@ -529,6 +550,26 @@ func testRepositoryDependencyAndServicesPolicy() *cleanroomv1.Policy {
 	}
 
 	return policyProto
+}
+
+func testRepositoryPolicyYAML(destinationDir string, submodules, allowGitHub bool) string {
+	allowBlock := ""
+	if allowGitHub {
+		allowBlock = `
+    allow:
+      - host: github.com
+        ports: [443]`
+	}
+	return fmt.Sprintf(`version: 1
+repository:
+  path: %s
+  submodules: %t
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny%s
+`, destinationDir, submodules, allowBlock)
 }
 
 func testRepositoryPortableDependencyPolicy() *cleanroomv1.Policy {
@@ -2669,6 +2710,383 @@ func runTestGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s returned error: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output)
+}
+
+func TestCreateSandboxLoadsPolicyFromRepositoryCheckout(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/repo", true, true),
+	})
+	wantCommit := repositoryCheckout.GetCommitSha()
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+	repository := resp.GetSandbox().GetRepositoryCheckout()
+	if repository == nil {
+		t.Fatal("expected repository checkout on sandbox")
+	}
+	if got := repository.GetCommitSha(); got != wantCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, wantCommit)
+	}
+	if got := repository.GetDestinationDir(); got != "/repo" {
+		t.Fatalf("unexpected destination dir: got %q", got)
+	}
+	if !repository.GetSubmodules() {
+		t.Fatal("expected repository submodules to come from policy")
+	}
+	if adapter.provisionCalls != 1 {
+		t.Fatalf("expected one provision call, got %d", adapter.provisionCalls)
+	}
+}
+
+func TestCreateSandboxLoadsFallbackPolicyFromRepositoryCheckout(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		".buildkite/cleanroom.yaml": testRepositoryPolicyYAML("/workspace", false, true),
+	})
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:.buildkite/cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyResolvesBranch(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/main", false, true),
+	})
+	runTestGit(t, mirrors.mirrorPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "cleanroom.yaml"), []byte(testRepositoryPolicyYAML("/feature", false, true)), 0o644); err != nil {
+		t.Fatalf("write branch policy: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", "cleanroom.yaml")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "feature policy")
+	wantCommit := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.Branch = "feature"
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	repository := resp.GetSandbox().GetRepositoryCheckout()
+	if got := repository.GetCommitSha(); got != wantCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, wantCommit)
+	}
+	if got := repository.GetBranch(); got != "feature" {
+		t.Fatalf("unexpected branch: got %q", got)
+	}
+	if got := repository.GetDestinationDir(); got != "/feature" {
+		t.Fatalf("unexpected destination dir: got %q", got)
+	}
+	if got := mirrors.refreshCalls; got != 1 {
+		t.Fatalf("expected one mirror refresh before resolving branch, got %d", got)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyRejectsCommitOutsideBranch(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/main", false, true),
+	})
+	baseBranch := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "--abbrev-ref", "HEAD"))
+	runTestGit(t, mirrors.mirrorPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", "feature.txt")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "feature commit")
+	featureCommit := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+	repositoryCheckout.CommitSha = featureCommit
+	repositoryCheckout.Branch = baseBranch
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not contain commit") {
+		t.Fatalf("CreateSandbox error = %v, want commit outside branch error", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("ProvisionSandbox calls = %d, want 0", got)
+	}
+}
+
+func TestValidateRepositoryBranchContainsAllCommitsRejectsUnreachableCandidate(t *testing.T) {
+	repoDir := t.TempDir()
+	runTestGit(t, repoDir, "init")
+	runTestGit(t, repoDir, "config", "user.email", "test@example.com")
+	runTestGit(t, repoDir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runTestGit(t, repoDir, "add", "README.md")
+	runTestGit(t, repoDir, "commit", "-m", "base")
+	mainBranch := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "--abbrev-ref", "HEAD"))
+	mainCommit := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD"))
+	runTestGit(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	runTestGit(t, repoDir, "add", "feature.txt")
+	runTestGit(t, repoDir, "commit", "-m", "feature")
+	featureCommit := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD"))
+
+	err := validateRepositoryBranchContainsAllCommits(context.Background(), repoDir, mainBranch, []string{featureCommit, mainCommit})
+	if err == nil || !strings.Contains(err.Error(), "does not contain commit "+featureCommit) {
+		t.Fatalf("validateRepositoryBranchContainsAllCommits error = %v, want unreachable candidate error", err)
+	}
+}
+
+func TestCreateSandboxLoadsRepositoryPolicyFromCommitBundle(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md":      "hello\n",
+		"cleanroom.yaml": testRepositoryPolicyYAML("/base", false, true),
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+	baseBranch := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "--abbrev-ref", "HEAD"))
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "cleanroom.yaml"), []byte(testRepositoryPolicyYAML("/bundle", true, true)), 0o644); err != nil {
+		t.Fatalf("WriteFile(cleanroom.yaml) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "cleanroom.yaml")
+	runTestGit(t, localRepo, "commit", "-m", "local policy")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+	repositoryCheckout.Branch = baseBranch
+	repositoryCheckout.DestinationDir = ""
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		switch strings.TrimSpace(commitSHA) {
+		case baseCommit:
+			return nil
+		case localCommit:
+			return errors.New("local-only commit should be supplied by commit bundle")
+		default:
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+	}
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+	repository := resp.GetSandbox().GetRepositoryCheckout()
+	if repository == nil {
+		t.Fatal("expected repository checkout on sandbox")
+	}
+	if got := repository.GetCommitSha(); got != localCommit {
+		t.Fatalf("unexpected resolved commit: got %q want %q", got, localCommit)
+	}
+	if got := repository.GetDestinationDir(); got != "/bundle" {
+		t.Fatalf("unexpected destination dir: got %q", got)
+	}
+	if !repository.GetSubmodules() {
+		t.Fatal("expected repository submodules to come from bundled policy")
+	}
+	if !slices.Contains(mirrors.commitSHAs, baseCommit) {
+		t.Fatalf("expected bundle prerequisite %q to be ensured, got %v", baseCommit, mirrors.commitSHAs)
+	}
+	if slices.Contains(mirrors.commitSHAs, localCommit) {
+		t.Fatalf("expected local-only commit %q to avoid direct mirror ensure, got %v", localCommit, mirrors.commitSHAs)
+	}
+}
+
+func TestCreateSandboxLoadsDisabledRepositoryPolicyFromCommitBundle(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md":      "hello\n",
+		"cleanroom.yaml": testRepositoryPolicyYAML("/base", false, true),
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	disabledPolicy := strings.ReplaceAll(testRepositoryPolicyYAML("/bundle", false, true), "  path: /bundle\n  submodules: false", "  enabled: false")
+	if err := os.WriteFile(filepath.Join(localRepo, "cleanroom.yaml"), []byte(disabledPolicy), 0o644); err != nil {
+		t.Fatalf("WriteFile(cleanroom.yaml) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "cleanroom.yaml")
+	runTestGit(t, localRepo, "commit", "-m", "disable checkout")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+	repositoryCheckout.DestinationDir = ""
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		if strings.TrimSpace(commitSHA) != baseCommit {
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+		return nil
+	}
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetPolicySource(), "repository:cleanroom.yaml"; got != want {
+		t.Fatalf("unexpected policy source: got %q want %q", got, want)
+	}
+	if repository := resp.GetSandbox().GetRepositoryCheckout(); repository != nil {
+		t.Fatalf("expected repository bootstrap to be disabled, got %#v", repository)
+	}
+	if got := adapter.runCalls; got != 0 {
+		t.Fatalf("expected no repository bootstrap execution, got %d", got)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyHonorsDisabledRepositoryBootstrap(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": strings.ReplaceAll(testRepositoryPolicyYAML("/workspace", false, true), "  path: /workspace\n  submodules: false", "  enabled: false"),
+	})
+	repositoryCheckout.CommitSha = ""
+	repositoryCheckout.DestinationDir = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if repository := resp.GetSandbox().GetRepositoryCheckout(); repository != nil {
+		t.Fatalf("expected repository bootstrap to be disabled, got %#v", repository)
+	}
+	if got := adapter.runCalls; got != 0 {
+		t.Fatalf("expected no repository bootstrap execution, got %d", got)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyRequiresRepositoryStore(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: &cleanroomv1.RepositoryCheckout{
+			RemoteUrl: "https://github.com/buildkite/cleanroom.git",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox to fail")
+	}
+	if !strings.Contains(err.Error(), "requires repository store") {
+		t.Fatalf("expected repository store error, got %v", err)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyPreservesRepositoryAccessError(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{
+		mirrorPathErr:   errors.New("no cached mirror"),
+		ensureMirrorErr: errors.New("repository https://github.com/buildkite/missing.git does not exist"),
+	}
+	repositoryCheckout := testRepositoryCheckoutProto()
+	repositoryCheckout.RemoteUrl = "https://github.com/buildkite/missing.git"
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox to fail")
+	}
+	if !strings.Contains(err.Error(), "repository https://github.com/buildkite/missing.git does not exist") {
+		t.Fatalf("expected repository access error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "policy not found") {
+		t.Fatalf("expected repository access error to be preserved, got %v", err)
+	}
+}
+
+func TestCreateSandboxRepositoryPolicyRejectsDisallowedRemote(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"cleanroom.yaml": testRepositoryPolicyYAML("/workspace", false, false),
+	})
+	repositoryCheckout.CommitSha = ""
+
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox to fail")
+	}
+	if !strings.Contains(err.Error(), `repository remote host "github.com" is not allowed`) {
+		t.Fatalf("expected host allowlist error, got %v", err)
+	}
 }
 
 type memorySnapshotStore struct {

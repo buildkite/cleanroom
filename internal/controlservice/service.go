@@ -417,6 +417,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 	opts := req.GetOptions()
 	metricSourceKind := ""
+	policySource := ""
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
 	commitBundle := repositoryCommitBundleFromProto(req.GetRepositoryCommitBundle())
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
@@ -432,6 +433,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	)
 	logger := observability.WithTraceContext(s.Logger, ctx)
 	defer func() {
+		if resp != nil && policySource != "" {
+			resp.PolicySource = policySource
+		}
 		metricBackendName := backendName
 		if resp != nil && resp.GetSandbox() != nil {
 			span.SetAttributes(
@@ -478,21 +482,30 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 		return s.createSandboxFromSnapshot(ctx, req, snapshotID, reporter)
 	}
-	if req.GetPolicy() == nil {
-		return nil, errors.New("missing policy")
+	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
+	if req.GetPolicy() == nil && repository != nil {
+		repositoryForAuth := cloneRepositoryCheckout(repository)
+		if commitBundle != nil && strings.TrimSpace(repositoryForAuth.CommitSHA) == "" {
+			repositoryForAuth.CommitSHA = strings.ToLower(strings.TrimSpace(commitBundle.TargetCommitSHA))
+		}
+		if _, err := repositoryForAuth.NormalizeRemoteURL(); err != nil {
+			return nil, err
+		}
+		if err := s.authorizeRepositoryPolicySource(ctx, backendName, repositoryForAuth, changeset); err != nil {
+			return nil, err
+		}
 	}
-
-	compiled, err := policy.FromCreateRequestProto(req.GetPolicy())
+	compiled, resolvedPolicySource, repository, authorizationRepository, err := s.resolveCreateSandboxPolicy(ctx, req.GetPolicy(), repository, commitBundle)
 	if err != nil {
-		return nil, fmt.Errorf("invalid policy: %w", err)
+		return nil, err
 	}
+	policySource = resolvedPolicySource
 	if opts.GetDangerouslyAllowAllEgress() {
 		compiled, err = policy.DangerouslyAllowAllEgress(compiled)
 		if err != nil {
 			return nil, fmt.Errorf("apply dangerously allow-all egress: %w", err)
 		}
 	}
-	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
 	if err := validateRepositoryScopedCreatePolicy(compiled, repository); err != nil {
 		return nil, err
 	}
@@ -515,7 +528,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := validateRepositoryChangesetForCheckout(repository, changeset); err != nil {
 		return nil, err
 	}
-	if err := validateRepositoryCommitBundleForCheckout(repository, commitBundle); err != nil {
+	if err := validateRepositoryCommitBundleForResolvedCheckout(repository, commitBundle, policySource); err != nil {
 		return nil, err
 	}
 	execOpts := executionOptions{}
@@ -528,7 +541,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withBackendLaunchResourceDefaults(firecrackerCfg)
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 	span.SetAttributes(rootFSMinimumTraceAttributes(firecrackerCfg)...)
-	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, repository, changeset, "", effectiveAuthorizationResources(firecrackerCfg)))
+	owner, err := s.authorizeCreate(ctx, "sandbox.create", "sandbox", createSandboxAuthorizationRequest(backendName, compiled, authorizationRepository, changeset, "", effectiveAuthorizationResources(firecrackerCfg)))
 	if err != nil {
 		return nil, err
 	}

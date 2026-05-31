@@ -1012,16 +1012,47 @@ func readPolicy(path string) (rawPolicy, error) {
 		return rawPolicy{}, err
 	}
 
+	return parsePolicyBytes(b, path)
+}
+
+func parsePolicyBytes(b []byte, source string) (rawPolicy, error) {
 	var raw rawPolicy
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&raw); err != nil {
 		if !errors.Is(err, io.EOF) {
-			return rawPolicy{}, fmt.Errorf("parse %s: %w", path, err)
+			return rawPolicy{}, fmt.Errorf("parse %s: %w", source, err)
 		}
 	}
 
 	return raw, nil
+}
+
+// CompileBytes parses and compiles policy YAML loaded from source.
+func CompileBytes(b []byte, source string) (*CompiledPolicy, error) {
+	raw, err := parsePolicyBytes(b, source)
+	if err != nil {
+		return nil, err
+	}
+	return Compile(raw)
+}
+
+// CompileBytesWithRepositoryConfig parses policy YAML and returns both the
+// compiled policy and normalized repository configuration.
+func CompileBytesWithRepositoryConfig(b []byte, source string) (*CompiledPolicy, RepositoryConfig, error) {
+	raw, err := parsePolicyBytes(b, source)
+	if err != nil {
+		return nil, RepositoryConfig{}, err
+	}
+	compiled, err := Compile(raw)
+	if err != nil {
+		return nil, RepositoryConfig{}, err
+	}
+	repository, err := normalizeRepositoryConfig(raw.Repository)
+	if err != nil {
+		return nil, RepositoryConfig{}, err
+	}
+	return compiled, repository, nil
 }
 
 func exists(path string) (bool, error) {

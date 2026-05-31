@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -113,6 +114,26 @@ func testPolicy() *Policy {
 		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		NetworkDefault: "deny",
 	}
+}
+
+func testRepositoryPolicyYAML(destinationDir string, submodules, allowGitHub bool) string {
+	allowBlock := ""
+	if allowGitHub {
+		allowBlock = `
+    allow:
+      - host: github.com
+        ports: [443]`
+	}
+	return fmt.Sprintf(`version: 1
+repository:
+  path: %s
+  submodules: %t
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny%s
+`, destinationDir, submodules, allowBlock)
 }
 
 func TestClientLifecycle(t *testing.T) {

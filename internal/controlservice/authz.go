@@ -49,6 +49,22 @@ func (s *Service) authorizeCreate(ctx context.Context, action, resourceKind stri
 	return owner, nil
 }
 
+func (s *Service) authorizeRepositoryPolicySource(ctx context.Context, backendName string, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) error {
+	bound, ok := authz.BoundPrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	decision, decisive := bound.AuthorizeRepositoryPolicySource(authz.DecisionRequest{
+		Action:   "sandbox.create",
+		Resource: authz.Resource{Kind: "sandbox"},
+		Request:  createSandboxAuthorizationRequest(backendName, nil, repository, changeset, "", policy.Resources{}),
+	})
+	if !decisive || decision.Allowed {
+		return nil
+	}
+	return s.denyAuthorization(ctx, decision)
+}
+
 func (s *Service) authorizeOwnedResource(ctx context.Context, action, resourceKind, resourceID string, owner authz.ResourceOwner, request map[string]any) error {
 	bound, ok := authz.BoundPrincipalFromContext(ctx)
 	if !ok {

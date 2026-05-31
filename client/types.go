@@ -19,11 +19,24 @@ const (
 )
 
 type PolicyAllowRule = cleanroomv1.PolicyAllowRule
+type PolicyDocker = cleanroomv1.PolicyDocker
+type PolicyBlockInputs = cleanroomv1.PolicyBlockInputs
+type PolicyBlockOutputs = cleanroomv1.PolicyBlockOutputs
+type PolicyBlock = cleanroomv1.PolicyBlock
+type PolicyServices = cleanroomv1.PolicyServices
+type PolicyDependencies = cleanroomv1.PolicyDependencies
+type PolicyRun = cleanroomv1.PolicyRun
+type PolicyNetwork = cleanroomv1.PolicyNetwork
+type PolicyNetworkStages = cleanroomv1.PolicyNetworkStages
 type PolicyResources = cleanroomv1.PolicyResources
 type SandboxResources = cleanroomv1.SandboxResources
 type Policy = cleanroomv1.Policy
 type Snapshot = cleanroomv1.Snapshot
 type SandboxOptions = cleanroomv1.SandboxOptions
+type RepositoryCheckout = cleanroomv1.RepositoryCheckout
+type RepositoryChangesetFile = cleanroomv1.RepositoryChangesetFile
+type RepositoryChangeset = cleanroomv1.RepositoryChangeset
+type RepositoryCommitBundle = cleanroomv1.RepositoryCommitBundle
 type CreateSandboxRequest = cleanroomv1.CreateSandboxRequest
 type CreateSandboxResponse = cleanroomv1.CreateSandboxResponse
 type CreateSandboxPhase = cleanroomv1.CreateSandboxPhase

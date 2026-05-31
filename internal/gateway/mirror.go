@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,6 +27,7 @@ const defaultGitMirrorMaxAge = 30 * time.Second
 type GitMirrorStore interface {
 	MirrorPath(remoteURL string) (string, error)
 	EnsureMirror(ctx context.Context, remoteURL string) (string, error)
+	RefreshMirror(ctx context.Context, remoteURL string) (string, error)
 	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }
 
@@ -36,8 +38,9 @@ type gitMirrorStore struct {
 
 	group singleflight.Group
 
-	mu        sync.RWMutex
-	lastFetch map[string]time.Time
+	mu          sync.RWMutex
+	lastFetch   map[string]time.Time
+	mirrorLocks map[string]*sync.Mutex
 }
 
 func NewGitMirrorStore(baseDir string, maxAge time.Duration, credentials CredentialProvider) *gitMirrorStore {
@@ -46,6 +49,7 @@ func NewGitMirrorStore(baseDir string, maxAge time.Duration, credentials Credent
 		maxAge:      maxAge,
 		credentials: credentials,
 		lastFetch:   make(map[string]time.Time),
+		mirrorLocks: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -81,18 +85,34 @@ func (s *gitMirrorStore) EnsureMirror(ctx context.Context, remoteURL string) (st
 	key := canonicalRemoteURL
 
 	result, err, _ := s.group.Do(key, func() (any, error) {
-		if _, statErr := os.Stat(filepath.Join(mirrorDir, "HEAD")); os.IsNotExist(statErr) {
-			if err := s.cloneMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
-				return "", err
-			}
-			return mirrorDir, nil
-		}
-		if s.isStale(canonicalRemoteURL) {
-			if err := s.fetchMirror(ctx, canonicalRemoteURL, mirrorDir); err != nil {
-				return "", err
-			}
-		}
-		return mirrorDir, nil
+		lock := s.lockForMirror(canonicalRemoteURL)
+		lock.Lock()
+		defer lock.Unlock()
+		return s.ensureMirrorLocked(ctx, canonicalRemoteURL, mirrorDir, false)
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
+}
+
+func (s *gitMirrorStore) RefreshMirror(ctx context.Context, remoteURL string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("mirror store is nil")
+	}
+	parsed, err := normalizeMirrorRemoteURL(remoteURL)
+	if err != nil {
+		return "", err
+	}
+	canonicalRemoteURL := parsed.String()
+	mirrorDir := s.mirrorPath(canonicalRemoteURL)
+	key := canonicalRemoteURL + "#refresh"
+
+	result, err, _ := s.group.Do(key, func() (any, error) {
+		lock := s.lockForMirror(canonicalRemoteURL)
+		lock.Lock()
+		defer lock.Unlock()
+		return s.ensureMirrorLocked(ctx, canonicalRemoteURL, mirrorDir, true)
 	})
 	if err != nil {
 		return "", err
@@ -116,7 +136,11 @@ func (s *gitMirrorStore) EnsureMirrorContains(ctx context.Context, remoteURL, co
 	key := canonicalRemoteURL + "#" + trimmedCommit
 
 	_, err, _ = s.group.Do(key, func() (any, error) {
-		mirrorDir, err := s.EnsureMirror(ctx, canonicalRemoteURL)
+		mirrorDir := s.mirrorPath(canonicalRemoteURL)
+		lock := s.lockForMirror(canonicalRemoteURL)
+		lock.Lock()
+		defer lock.Unlock()
+		mirrorDir, err := s.ensureMirrorLocked(ctx, canonicalRemoteURL, mirrorDir, false)
 		if err != nil {
 			return nil, err
 		}
@@ -140,6 +164,32 @@ func (s *gitMirrorStore) EnsureMirrorContains(ctx context.Context, remoteURL, co
 		return nil, nil
 	})
 	return err
+}
+
+func (s *gitMirrorStore) lockForMirror(remoteURL string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock := s.mirrorLocks[remoteURL]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.mirrorLocks[remoteURL] = lock
+	}
+	return lock
+}
+
+func (s *gitMirrorStore) ensureMirrorLocked(ctx context.Context, remoteURL, mirrorDir string, forceRefresh bool) (string, error) {
+	if _, statErr := os.Stat(filepath.Join(mirrorDir, "HEAD")); os.IsNotExist(statErr) {
+		if err := s.cloneMirror(ctx, remoteURL, mirrorDir); err != nil {
+			return "", err
+		}
+		return mirrorDir, nil
+	}
+	if forceRefresh || s.isStale(remoteURL) {
+		if err := s.fetchMirror(ctx, remoteURL, mirrorDir); err != nil {
+			return "", err
+		}
+	}
+	return mirrorDir, nil
 }
 
 func normalizeMirrorRemoteURL(raw string) (*url.URL, error) {
@@ -232,8 +282,53 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 	if err != nil {
 		return fmt.Errorf("git fetch --prune origin: %s: %w", output, err)
 	}
+	if err := s.updateMirrorHEAD(ctx, remoteURL, mirrorDir); err != nil {
+		return err
+	}
 	s.markFetched(remoteURL)
 	return nil
+}
+
+func (s *gitMirrorStore) updateMirrorHEAD(ctx context.Context, remoteURL, mirrorDir string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", mirrorDir, "ls-remote", "--symref", "origin", "HEAD")
+	env, err := s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
+	if err != nil {
+		return err
+	}
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git ls-remote --symref origin HEAD: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	headRef := parseRemoteHEADSymref(string(output))
+	if headRef == "" {
+		return nil
+	}
+	if _, err := gitOutputContext(ctx, mirrorDir, "show-ref", "--verify", "--quiet", headRef); err != nil {
+		return nil
+	}
+	if _, err := gitOutputContext(ctx, mirrorDir, "symbolic-ref", "HEAD", headRef); err != nil {
+		return fmt.Errorf("update mirror HEAD: %w", err)
+	}
+	return nil
+}
+
+func parseRemoteHEADSymref(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ref:") || !strings.HasSuffix(line, "\tHEAD") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ref := strings.TrimSpace(fields[1])
+		if strings.HasPrefix(ref, "refs/heads/") {
+			return ref
+		}
+	}
+	return ""
 }
 
 func runGitCommandWithBoundedOutput(cmd *exec.Cmd) (string, error) {
@@ -319,6 +414,20 @@ func gitConfigCount(env []string) (int, bool) {
 		found = true
 	}
 	return count, found
+}
+
+func gitOutputContext(ctx context.Context, repoDir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return "", errors.New(message)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func gitCommitExists(ctx context.Context, repoDir, commitSHA string) (bool, error) {

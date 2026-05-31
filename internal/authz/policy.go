@@ -299,6 +299,132 @@ func (b BoundPrincipal) Authorize(req DecisionRequest) Decision {
 	return decision
 }
 
+// AuthorizeRepositoryPolicySource evaluates the part of a sandbox.create request
+// that is known before a repository policy is loaded. The boolean return value is
+// false when matching grants depend on policy/image/cache fields that are not
+// available yet, so callers should defer the final decision until after policy
+// resolution.
+func (b BoundPrincipal) AuthorizeRepositoryPolicySource(req DecisionRequest) (Decision, bool) {
+	req.Principal = b.Principal
+	if req.Claims == nil {
+		req.Claims = b.Claims
+	}
+	req.Action = strings.TrimSpace(req.Action)
+	req.Resource.Kind = strings.TrimSpace(req.Resource.Kind)
+	decision := Decision{
+		Allowed:   false,
+		Principal: b.Principal,
+		Action:    req.Action,
+		Resource:  req.Resource,
+		Binding:   b.Binding,
+		Reason:    ReasonNoGrant,
+	}
+	if b.binding == nil {
+		decision.Reason = ReasonNoBinding
+		return decision, true
+	}
+
+	matchedGrant := false
+	deferredSourceGrant := false
+	var conditionErrorDecision *Decision
+	unknownPaths := repositoryPolicySourceUnknownPaths(req)
+	sourceAuthorizationUnknownPaths := repositoryPolicySourceAuthorizationUnknownPaths(req)
+	activation := grantActivation(req)
+	for _, grant := range b.binding.grants {
+		if !grant.matches(decision.Action, req.Resource.Kind) {
+			continue
+		}
+		matchedGrant = true
+		ok, known, err := grant.condition.evalPartial(activation, unknownPaths...)
+		if err != nil {
+			if conditionErrorDecision == nil {
+				errorDecision := decision
+				errorDecision.Grant = grant.name
+				errorDecision.Reason = ReasonConditionError
+				conditionErrorDecision = &errorDecision
+			}
+			continue
+		}
+		if !known {
+			if grant.condition.repositorySourceAuthorized(activation, sourceAuthorizationUnknownPaths...) {
+				deferredSourceGrant = true
+			}
+			continue
+		}
+		if !ok {
+			decision.Grant = grant.name
+			decision.Reason = ReasonConditionFalse
+			continue
+		}
+		if !grant.condition.repositorySourceSatisfiable(activation, sourceAuthorizationUnknownPaths...) {
+			decision.Grant = grant.name
+			decision.Reason = ReasonConditionFalse
+			continue
+		}
+		decision.Allowed = true
+		decision.Grant = grant.name
+		decision.Reason = ReasonAllowed
+		return decision, true
+	}
+	if deferredSourceGrant {
+		return decision, false
+	}
+	if conditionErrorDecision != nil {
+		return *conditionErrorDecision, true
+	}
+	if matchedGrant && decision.Reason == ReasonNoGrant {
+		decision.Reason = ReasonConditionFalse
+	}
+	return decision, true
+}
+
+func repositoryPolicySourceUnknownPaths(req DecisionRequest) []string {
+	paths := []string{
+		"request.image.ref",
+		"request.image.digest",
+		"request.policy.resources.vcpus",
+		"request.policy.resources.memory_bytes",
+		"request.policy.resources.disk_bytes",
+		"request.policy.docker.required",
+		"request.policy.network_default",
+		"request.policy.network.hosts",
+		"request.policy.network.ports",
+		"request.cache.reuse",
+	}
+	repository, _ := req.Request["repository"].(map[string]any)
+	if requestString(repository, "commit") == "" {
+		paths = append(paths, "request.repository.commit")
+	}
+	if requestString(repository, "branch") == "" {
+		paths = append(paths, "request.repository.branch")
+	}
+	return paths
+}
+
+func repositoryPolicySourceAuthorizationUnknownPaths(req DecisionRequest) []string {
+	paths := repositoryPolicySourceUnknownPaths(req)
+	repository, _ := req.Request["repository"].(map[string]any)
+	changeset, _ := repository["changeset"].(map[string]any)
+	if changesetPresent, _ := changeset["present"].(bool); changesetPresent {
+		paths = append(paths,
+			"request.repository.changeset.digest",
+			"request.repository.changeset.tree_digest",
+		)
+	}
+	return paths
+}
+
+func requestString(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
 func grantActivation(req DecisionRequest) map[string]any {
 	return map[string]any{
 		"principal": map[string]any{

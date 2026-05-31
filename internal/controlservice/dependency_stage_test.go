@@ -157,6 +157,10 @@ func (s *testSubmoduleStore) ReadFileAtCommit(_ context.Context, _, _, _ string)
 	return nil, nil
 }
 
+func (s *testSubmoduleStore) Refresh(_ context.Context, _ string, _ repositorystore.FetchHints) error {
+	return nil
+}
+
 func (s *testSubmoduleStore) WithRepository(_ context.Context, _, _ string, _ repositorystore.FetchHints, fn func(string) error) error {
 	return fn(s.mirrorDir)
 }

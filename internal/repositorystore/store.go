@@ -2,13 +2,40 @@ package repositorystore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
+
+var ErrFileNotFound = errors.New("repository file not found")
+
+type FileNotFoundError struct {
+	CommitSHA string
+	Path      string
+}
+
+func NewFileNotFoundError(commitSHA, path string) error {
+	return &FileNotFoundError{
+		CommitSHA: strings.TrimSpace(commitSHA),
+		Path:      strings.TrimSpace(path),
+	}
+}
+
+func (e *FileNotFoundError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("repository file %s not found at %s", e.Path, e.CommitSHA)
+}
+
+func (e *FileNotFoundError) Is(target error) bool {
+	return target == ErrFileNotFound
+}
 
 type FetchHints struct {
 	Branches []string
@@ -22,6 +49,7 @@ type TransportHints struct {
 type RepositoryStore interface {
 	EnsureCommit(ctx context.Context, remoteURL, commitSHA string, hints FetchHints) error
 	ReadFileAtCommit(ctx context.Context, remoteURL, commitSHA, path string) ([]byte, error)
+	Refresh(ctx context.Context, remoteURL string, hints FetchHints) error
 	WithRepository(ctx context.Context, remoteURL, commitSHA string, hints FetchHints, fn func(repoDir string) error) error
 	TransportHints(ctx context.Context, remoteURL, commitSHA string, hints FetchHints) (TransportHints, error)
 	EnsureSubmoduleMirror(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (mirrorDir string, err error)
@@ -30,6 +58,7 @@ type RepositoryStore interface {
 type mirrorSource interface {
 	MirrorPath(remoteURL string) (string, error)
 	EnsureMirror(ctx context.Context, remoteURL string) (string, error)
+	RefreshMirror(ctx context.Context, remoteURL string) (string, error)
 	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }
 
@@ -65,6 +94,14 @@ func (s *mirrorBackedRepositoryStore) ReadFileAtCommit(ctx context.Context, remo
 		return nil, err
 	}
 	return content, nil
+}
+
+func (s *mirrorBackedRepositoryStore) Refresh(ctx context.Context, remoteURL string, _ FetchHints) error {
+	if s == nil || s.mirrors == nil {
+		return fmt.Errorf("repository store is nil")
+	}
+	_, err := s.mirrors.RefreshMirror(ctx, remoteURL)
+	return err
 }
 
 func (s *mirrorBackedRepositoryStore) WithRepository(ctx context.Context, remoteURL, commitSHA string, hints FetchHints, fn func(repoDir string) error) error {
@@ -110,11 +147,30 @@ func (s *mirrorBackedRepositoryStore) EnsureSubmoduleMirror(ctx context.Context,
 }
 
 func (s *mirrorBackedRepositoryStore) repositoryPath(ctx context.Context, remoteURL string) (string, error) {
-	repoDir, err := s.mirrors.MirrorPath(remoteURL)
-	if err == nil {
+	if repoDir, err := s.cachedRepositoryPath(remoteURL); err == nil {
 		return repoDir, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
-	return s.mirrors.EnsureMirror(ctx, remoteURL)
+	repoDir, err := s.mirrors.EnsureMirror(ctx, remoteURL)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := os.Stat(filepath.Join(repoDir, "HEAD")); statErr != nil {
+		return "", statErr
+	}
+	return repoDir, nil
+}
+
+func (s *mirrorBackedRepositoryStore) cachedRepositoryPath(remoteURL string) (string, error) {
+	repoDir, err := s.mirrors.MirrorPath(remoteURL)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := os.Stat(filepath.Join(repoDir, "HEAD")); statErr != nil {
+		return "", statErr
+	}
+	return repoDir, nil
 }
 
 func gitShowFileAtCommit(ctx context.Context, repoDir, commitSHA, path string) ([]byte, error) {
@@ -126,7 +182,22 @@ func gitShowFileAtCommit(ctx context.Context, repoDir, commitSHA, path string) (
 		if message == "" {
 			message = err.Error()
 		}
+		if isGitShowFileMissingError(message, path) {
+			return nil, NewFileNotFoundError(commitSHA, path)
+		}
 		return nil, fmt.Errorf("git show %s:%s: %s", strings.TrimSpace(commitSHA), path, message)
 	}
 	return output, nil
+}
+
+func isGitShowFileMissingError(message, path string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	path = strings.ToLower(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	quotedPath := "'" + path + "'"
+	return strings.Contains(message, "path "+quotedPath+" does not exist") ||
+		strings.Contains(message, "path "+quotedPath+" exists on disk, but not in") ||
+		strings.Contains(message, "pathspec "+quotedPath)
 }
