@@ -281,6 +281,7 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 		`[tasks.lint-shell]`,
 		`.buildkite/hooks/pre-command`,
 		`scripts/base-image-tag.sh`,
+		`benchmarks/darwin-vz/macos-minimal/build-runner.sh`,
 		`scripts/e2e-observability.sh`,
 		`scripts/ci-with-host-lock.sh`,
 		`scripts/ci-go-test-engine.sh`,
