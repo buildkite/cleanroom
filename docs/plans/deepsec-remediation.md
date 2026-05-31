@@ -1,8 +1,8 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 15 ready for review
-**Last reviewed:** 2026-05-30
+**Status:** Slice 16 ready for review
+**Last reviewed:** 2026-05-31
 
 ## Summary
 
@@ -15,6 +15,12 @@ remote control-plane auth findings from that set, and Slice 14 closes the
 cached Git pack authorization finding. Slice 15 closes the remaining dynamic
 Git content-cache handler growth finding. The 2026-05-30 DeepSec status now
 shows all 27 findings revalidated as fixed.
+
+DeepSec was rerun against the v0.10.0 release on 2026-05-31. That run tracked
+64 files, found 12 issues, and revalidated all 12 as true positives. The first
+v0.10.0 fixing slice is scoped to the two critical Git gateway port-smuggling
+findings because they share one root cause: route hosts were authorized as
+host:443 while outbound URL construction could preserve an embedded port.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -527,10 +533,56 @@ Result: the dynamic Git handler creation finding revalidated as fixed. DeepSec
 status now reports 27/27 findings revalidated, with 0 true positives and 27
 fixed findings.
 
+Slice 16 is implemented and ready for review. The direct Git route in
+`internal/gateway/git.go` and the cached route in
+`internal/gateway/git_cached.go` now normalize the route host before policy
+checks and outbound URL construction. Explicit ports, userinfo, slashes,
+malformed escapes, and other URL authority syntax are rejected before either
+the direct proxy, content-cache, or fallback paths can construct an outbound
+URL.
+
+Codex review on PR #491 flagged that an escaped route-host slash could be
+decoded by `net/http` before host validation. The slice now validates the
+escaped `/git/<host>/` segment before splitting the decoded path, so encoded
+host separators are rejected before owner, cache, or fallback decisions.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/gateway
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/gateway/git.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/gateway/git_cached.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec report --project-id cleanroom-v0.10.0
+```
+
+Result: both critical Git gateway port-smuggling findings revalidated as fixed.
+The `internal/gateway/git.go` run also rechecked the existing medium mirror
+buffering finding, which remains a true positive outside this slice. DeepSec
+status now reports 12/12 findings revalidated, with 10 true positives and
+2 fixed findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
 | --- | --- | --- | --- |
+| Direct Git proxy allows SSRF via embedded port in upstream host | Critical | Fixed by Slice 16 | Slice 16: Git gateway route authority normalization |
+| Git cache route allows policy port bypass via port smuggling in upstream host | Critical | Fixed by Slice 16 | Slice 16: Git gateway route authority normalization |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -576,6 +628,7 @@ fixed findings.
 13. Require auth for direct non-loopback `cleanroom serve` listeners.
 14. Finish Git pack cache authorization binding.
 15. Bound dynamic Git content-cache handler creation.
+16. Normalize Git gateway route authorities before policy checks or outbound URL construction.
 
 ## Key Learnings From Pressure-Testing
 

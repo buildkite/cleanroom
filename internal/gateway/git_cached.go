@@ -46,7 +46,7 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamHost, repoPath, err := splitGitRequestPath(r.URL.Path)
+	upstreamHost, repoPath, err := splitGitRequestURL(r.URL)
 	if err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
@@ -110,9 +110,10 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonCached)
 
 	// content-cache's git handler expects paths like /{host}/{repo}.git/...
-	// Strip the /git/ prefix so the cache handler sees the host-rooted path.
+	// Rebuild the path from the normalized route host so the cache layer sees
+	// the same authority that policy and owner checks already approved.
 	r = r.Clone(r.Context())
-	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/git")
+	r.URL.Path = "/" + upstreamHost + repoPath
 	r.URL.RawPath = ""
 	cacheHandler.ServeHTTP(w, r)
 }
