@@ -41,7 +41,7 @@ func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repo
 	if commitBundle != nil && strings.TrimSpace(resolvedRepository.CommitSHA) == "" {
 		resolvedRepository.CommitSHA = strings.ToLower(strings.TrimSpace(commitBundle.TargetCommitSHA))
 	}
-	if err := s.resolveRepositoryCheckoutCommit(ctx, resolvedRepository); err != nil {
+	if err := s.resolveRepositoryCheckoutCommit(ctx, resolvedRepository, commitBundle); err != nil {
 		return nil, "", nil, err
 	}
 	if err := validateRepositoryCommitBundleForCheckout(resolvedRepository, commitBundle); err != nil {
@@ -63,19 +63,23 @@ func (s *Service) resolveRepositoryCreateSandboxPolicy(ctx context.Context, repo
 	return compiled, "repository:" + source, resolvedRepository, nil
 }
 
-func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repository *repositorycheckout.Checkout) error {
+func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) error {
 	if commitSHA, ok := normalizeRepositoryCommitSHA(repository.CommitSHA); ok {
 		repository.CommitSHA = commitSHA
 		branch := strings.TrimSpace(repository.Branch)
 		if branch == "" {
 			return nil
 		}
+		branchValidationCommit, err := repositoryBranchValidationCommit(commitSHA, commitBundle)
+		if err != nil {
+			return err
+		}
 		hints := repositorystore.FetchHints{Branches: []string{branch}}
 		if err := s.RepositoryStore.Refresh(ctx, repository.RemoteURL, hints); err != nil {
 			return err
 		}
-		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, commitSHA, hints, func(repoDir string) error {
-			if err := validateRepositoryBranchContainsCommit(ctx, repoDir, branch, commitSHA); err != nil {
+		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, branchValidationCommit, hints, func(repoDir string) error {
+			if err := validateRepositoryBranchContainsCommit(ctx, repoDir, branch, branchValidationCommit); err != nil {
 				return err
 			}
 			repository.Branch = branch
@@ -117,6 +121,21 @@ func (s *Service) resolveRepositoryCheckoutCommit(ctx context.Context, repositor
 		repository.CommitSHA = commitSHA
 		return nil
 	})
+}
+
+func repositoryBranchValidationCommit(commitSHA string, commitBundle *repositorybundle.Bundle) (string, error) {
+	commitSHA = strings.ToLower(strings.TrimSpace(commitSHA))
+	if commitBundle == nil || !strings.EqualFold(strings.TrimSpace(commitBundle.TargetCommitSHA), commitSHA) {
+		return commitSHA, nil
+	}
+	prerequisites, err := commitBundle.PrerequisiteCommits()
+	if err != nil {
+		return "", err
+	}
+	if len(prerequisites) == 0 {
+		return commitSHA, nil
+	}
+	return prerequisites[0], nil
 }
 
 func (s *Service) loadRepositoryPolicy(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (*policy.CompiledPolicy, string, policy.RepositoryConfig, error) {

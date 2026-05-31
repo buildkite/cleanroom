@@ -2850,6 +2850,7 @@ func TestCreateSandboxLoadsRepositoryPolicyFromCommitBundle(t *testing.T) {
 		"cleanroom.yaml": testRepositoryPolicyYAML("/base", false, true),
 	})
 	baseCommit := repositoryCheckout.GetCommitSha()
+	baseBranch := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "--abbrev-ref", "HEAD"))
 
 	localRepo := filepath.Join(t.TempDir(), "local")
 	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
@@ -2870,6 +2871,7 @@ func TestCreateSandboxLoadsRepositoryPolicyFromCommitBundle(t *testing.T) {
 		t.Fatal("expected repository commit bundle")
 	}
 	repositoryCheckout.CommitSha = localCommit
+	repositoryCheckout.Branch = baseBranch
 	repositoryCheckout.DestinationDir = ""
 	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
 		switch strings.TrimSpace(commitSHA) {

@@ -102,17 +102,27 @@ func (e *compiledBoolExpression) repositorySourceAuthorized(vars map[string]any,
 	if e == nil || strings.TrimSpace(e.source) == "" {
 		return true
 	}
-	for _, conjunct := range sourceConjuncts(e.source) {
-		if !referencesCELPath(conjunct, "request.repository.remote_url") {
-			continue
-		}
-		compiled, err := compileBoolExpression(conjunct, grantCELRules())
+	for _, disjunct := range sourceDisjuncts(e.source) {
+		disjunctExpr, err := compileBoolExpression(disjunct, grantCELRules())
 		if err != nil {
 			continue
 		}
-		ok, known, err := compiled.evalPartial(vars, unknownPaths...)
-		if err == nil && known && ok {
-			return true
+		ok, known, err := disjunctExpr.evalPartial(vars, unknownPaths...)
+		if err != nil || (known && !ok) {
+			continue
+		}
+		for _, conjunct := range sourceConjuncts(disjunct) {
+			if !referencesCELPath(conjunct, "request.repository.remote_url") {
+				continue
+			}
+			compiled, err := compileBoolExpression(conjunct, grantCELRules())
+			if err != nil {
+				continue
+			}
+			ok, known, err := compiled.evalPartial(vars, unknownPaths...)
+			if err == nil && known && ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -134,6 +144,19 @@ func celAttributePattern(path string) *interpreter.AttributePattern {
 	return pattern
 }
 
+func sourceDisjuncts(source string) []string {
+	source = stripOuterParens(strings.TrimSpace(source))
+	parts := splitTopLevelOr(source)
+	if len(parts) == 1 && parts[0] == source {
+		return []string{source}
+	}
+	var out []string
+	for _, part := range parts {
+		out = append(out, sourceDisjuncts(part)...)
+	}
+	return out
+}
+
 func sourceConjuncts(source string) []string {
 	source = stripOuterParens(strings.TrimSpace(source))
 	parts := splitTopLevelAnd(source)
@@ -147,7 +170,15 @@ func sourceConjuncts(source string) []string {
 	return out
 }
 
+func splitTopLevelOr(source string) []string {
+	return splitTopLevelOperator(source, '|')
+}
+
 func splitTopLevelAnd(source string) []string {
+	return splitTopLevelOperator(source, '&')
+}
+
+func splitTopLevelOperator(source string, op byte) []string {
 	var parts []string
 	start := 0
 	depth := 0
@@ -166,8 +197,8 @@ func splitTopLevelAnd(source string) []string {
 			if depth > 0 {
 				depth--
 			}
-		case '&':
-			if depth == 0 && i+1 < len(source) && source[i+1] == '&' {
+		case op:
+			if depth == 0 && i+1 < len(source) && source[i+1] == op {
 				parts = append(parts, strings.TrimSpace(source[start:i]))
 				i += 2
 				start = i
