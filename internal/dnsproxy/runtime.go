@@ -452,6 +452,17 @@ func (r *Runtime) HostAllowedByPolicy(sandboxID, host string) bool {
 	return state.policy.HostAllowed(host)
 }
 
+func (r *Runtime) SandboxAllowsAllQueries(sandboxID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
+	if !ok {
+		return false
+	}
+	return state.allowsAllConnections()
+}
+
 func (r *Runtime) queryAllowedByPolicy(sandboxID string, sourceIP netip.Addr, resp *dns.Msg, queryName string, now time.Time) bool {
 	sourceIP = normalizeAddr(sourceIP)
 	queryName = normalizeName(queryName)

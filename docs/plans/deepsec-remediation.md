@@ -1,7 +1,7 @@
 # DeepSec Remediation Plan
 
 **Spec reference:** `docs/spec.md`; `docs/api.md`; `docs/tls.md`; `docs/plans/multi-principal-control-server.md`; `docs/plans/stage-scoped-egress.md`
-**Status:** Slice 18 ready for review
+**Status:** Slice 19 ready for review
 **Last reviewed:** 2026-05-31
 
 ## Summary
@@ -24,6 +24,8 @@ host:443 while outbound URL construction could preserve an embedded port.
 Slice 16 closed both critical findings in PR #491. Slice 17 closed the HIGH
 darwin-vz helper resolution finding. Slice 18 closes the HIGH
 execution-scoped gateway credential cleanup finding for Firecracker sandboxes.
+Slice 19 closes the HIGH DNS exfiltration finding by enforcing DNS policy before
+forwarding queries upstream.
 
 This plan tracks each finding separately while keeping implementation in
 reviewable slices. A slice may close several findings when they share the same
@@ -655,6 +657,55 @@ Result: the execution-scoped gateway credential cleanup finding revalidated as
 fixed. DeepSec status now reports 12/12 findings revalidated, with 8 true
 positives and 4 fixed findings.
 
+Slice 19 is implemented and ready for review. The shared DNS forwarder can now
+block disallowed queries before contacting upstream resolvers. When this gate
+is enabled, only query names allowed by the active sandbox policy or static
+gateway records are answered; denied names get `REFUSED`, invoke the deny hook,
+and do not create DNS observations. Policy-gated upstream requests also strip
+answer and authority sections from guest-supplied DNS messages so allowed
+question names cannot carry extra records upstream. For deny-by-default
+policies, they rebuild allowed questions into canonical `IN` address, CNAME,
+HTTPS, or SVCB lookups so header fields, mixed-case QNAME bytes, QCLASS, and
+unsupported QTYPE values do not become covert channels. Allow-default policies
+still permit broader `IN` lookup types, but the forwarder supplies its own DNS
+ID and EDNS capacity before restoring the guest's ID and question casing in the
+response. The gate is enabled for both darwin-vz file-handle DNS and
+Firecracker trusted DNS, and remains disabled when file-handle networking runs
+without a policy runtime.
+
+Focused validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/dnsproxy -run 'TestForwarder(BlocksDisallowedQueryBeforeUpstream|AllowsPolicyQueryWhenBlockingDisallowedQueries|SanitizesAllowedQueryBeforeUpstream|BlocksUnsupportedQueryShapeBeforeUpstream|AllowsAnyINQueryTypeWhenPolicyAllowsAll|BlocksAliasWhenOnlyCNAMETargetAllowed|ServesStaticRecordsWithoutUpstreamObservationOrDeny)'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz -run 'TestStartFileHandleGatewayDoesNotResolveAllowRulesAtStartup|TestNewFileHandleDNSRuntime|TestFileHandleGateway'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/firecracker -run 'TestSetupHostNetworkWithTrustedDNSFactory|TestTrustedDNS'
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/dnsproxy
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/darwinvz
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise exec -- go test ./internal/backend/firecracker
+```
+
+Result: passed.
+
+Repository validation run on 2026-05-31:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/Users/lachlan/.codex/worktrees/28db/cleanroom/mise.toml mise run check
+```
+
+Result: passed.
+
+Targeted DeepSec revalidation on 2026-05-31:
+
+```text
+cd /Users/lachlan/Develop/cleanroom/.deepsec
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec revalidate --project-id cleanroom-v0.10.0 --force --filter internal/backend/darwinvz/filehandle_gateway.go --concurrency 1 --root /Users/lachlan/.codex/worktrees/28db/cleanroom
+npm exec --package=pnpm@9.15.4 -- pnpm deepsec status --project-id cleanroom-v0.10.0
+```
+
+Result: the DNS query exfiltration finding revalidated as fixed. DeepSec status
+now reports 12/12 findings revalidated, with 7 true positives and 5 fixed
+findings.
+
 ## Triage
 
 | Finding | Severity | Decision | Remediation slice |
@@ -663,6 +714,7 @@ positives and 4 fixed findings.
 | Git cache route allows policy port bypass via port smuggling in upstream host | Critical | Fixed by Slice 16 | Slice 16: Git gateway route authority normalization |
 | Helper resolution can execute a repo-local binary on the host | High | Fixed by Slice 17 | Slice 17: gate darwin-vz CWD helper discovery |
 | Execution-scoped gateway credential authorization persists after execution | High | Fixed by Slice 18 | Slice 18: restore gateway scope after execution |
+| Denied workloads can still exfiltrate data through DNS queries | High | Fixed by Slice 19 | Slice 19: DNS pre-query policy gate |
 | File-handle gateway can host-dial private DNS answers | Critical | Needs fix | Slice 1: darwin-vz host-dial destination guard |
 | Submodule mirroring bypasses network policy and accepts file URLs | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
 | Submodule remotes are mirrored from the host without policy validation | Critical | Needs fix | Slice 2: host-side repository mirror policy enforcement |
@@ -711,6 +763,7 @@ positives and 4 fixed findings.
 16. Normalize Git gateway route authorities before policy checks or outbound URL construction.
 17. Gate darwin-vz current-working-directory helper discovery behind explicit local-development opt-in.
 18. Restore registered gateway authorization when Firecracker execution scopes end.
+19. Gate DNS queries against sandbox policy before forwarding to upstream resolvers.
 
 ## Key Learnings From Pressure-Testing
 

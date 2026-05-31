@@ -33,27 +33,29 @@ type StaticRecord struct {
 
 // ForwarderConfig configures a DNS forwarding handler.
 type ForwarderConfig struct {
-	Runtime       *Runtime
-	UpstreamAddr  string
-	ScopeResolver ScopeResolver
-	Client        DNSClient
-	Now           func() time.Time
-	OnObserve     ObserveHook
-	OnDeny        DenyHook
-	StaticRecords []StaticRecord
+	Runtime                *Runtime
+	UpstreamAddr           string
+	ScopeResolver          ScopeResolver
+	Client                 DNSClient
+	Now                    func() time.Time
+	OnObserve              ObserveHook
+	OnDeny                 DenyHook
+	StaticRecords          []StaticRecord
+	BlockDisallowedQueries bool
 }
 
 // Forwarder forwards DNS requests to an upstream resolver and records the
 // answers in the runtime when the caller is mapped to a sandbox scope.
 type Forwarder struct {
-	runtime       *Runtime
-	upstreamAddr  string
-	scopeResolver ScopeResolver
-	client        DNSClient
-	now           func() time.Time
-	onObserve     ObserveHook
-	onDeny        DenyHook
-	staticRecords map[string][]netip.Addr
+	runtime                *Runtime
+	upstreamAddr           string
+	scopeResolver          ScopeResolver
+	client                 DNSClient
+	now                    func() time.Time
+	onObserve              ObserveHook
+	onDeny                 DenyHook
+	staticRecords          map[string][]netip.Addr
+	blockDisallowedQueries bool
 }
 
 // NewForwarder creates a DNS forwarding handler backed by miekg/dns.
@@ -67,14 +69,15 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Forwarder{
-		runtime:       cfg.Runtime,
-		upstreamAddr:  cfg.UpstreamAddr,
-		scopeResolver: cfg.ScopeResolver,
-		client:        client,
-		now:           now,
-		onObserve:     cfg.OnObserve,
-		onDeny:        cfg.OnDeny,
-		staticRecords: normalizeStaticRecords(cfg.StaticRecords),
+		runtime:                cfg.Runtime,
+		upstreamAddr:           cfg.UpstreamAddr,
+		scopeResolver:          cfg.ScopeResolver,
+		client:                 client,
+		now:                    now,
+		onObserve:              cfg.OnObserve,
+		onDeny:                 cfg.OnDeny,
+		staticRecords:          normalizeStaticRecords(cfg.StaticRecords),
+		blockDisallowedQueries: cfg.BlockDisallowedQueries,
 	}
 }
 
@@ -92,17 +95,98 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		_ = writeServerFailure(w, req)
 		return
 	}
-
-	resp, _, err := f.client.Exchange(req.Copy(), f.upstreamAddr)
+	upstreamReq := req.Copy()
+	if f.blockDisallowedQueries {
+		questions, ok := f.questionsAllowedByPolicy(w.RemoteAddr(), req)
+		if !ok {
+			_ = writeRefused(w, req)
+			return
+		}
+		upstreamReq = sanitizedQueryForUpstream(questions, req.Id)
+	}
+	resp, _, err := f.client.Exchange(upstreamReq, f.upstreamAddr)
 	if err != nil || resp == nil {
 		_ = writeServerFailure(w, req)
 		return
+	}
+	if f.blockDisallowedQueries {
+		resp.Id = req.Id
+		resp.Question = append([]dns.Question(nil), req.Question...)
 	}
 
 	if err := w.WriteMsg(resp); err != nil {
 		return
 	}
 	f.observeScopedResponse(w.RemoteAddr(), resp)
+}
+
+func (f *Forwarder) questionsAllowedByPolicy(remoteAddr net.Addr, req *dns.Msg) ([]dns.Question, bool) {
+	if f.runtime == nil || f.scopeResolver == nil || req == nil || len(req.Question) == 0 {
+		return nil, false
+	}
+	sourceIP, ok := addrFromNetAddr(remoteAddr)
+	if !ok {
+		return nil, false
+	}
+	sandboxID, ok := f.scopeResolver(sourceIP)
+	if !ok {
+		return nil, false
+	}
+	allowAll := f.runtime.SandboxAllowsAllQueries(sandboxID)
+
+	allAllowed := true
+	questions := make([]dns.Question, 0, len(req.Question))
+	for _, question := range req.Question {
+		name := normalizeName(question.Name)
+		if name == "" || question.Qclass != dns.ClassINET || (!allowAll && !allowedDNSQuestionType(question.Qtype)) || !f.runtime.HostAllowedByPolicy(sandboxID, name) {
+			allAllowed = false
+			if f.onDeny != nil && name != "" {
+				f.onDeny(sandboxID, name)
+			}
+			continue
+		}
+		questions = append(questions, dns.Question{
+			Name:   dns.Fqdn(name),
+			Qtype:  question.Qtype,
+			Qclass: dns.ClassINET,
+		})
+	}
+	if !allAllowed || len(questions) == 0 {
+		return nil, false
+	}
+	return questions, true
+}
+
+func allowedDNSQuestionType(qtype uint16) bool {
+	switch qtype {
+	case dns.TypeA, dns.TypeAAAA, dns.TypeCNAME, dns.TypeHTTPS, dns.TypeSVCB:
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizedQueryForUpstream(questions []dns.Question, originalID uint16) *dns.Msg {
+	msg := new(dns.Msg)
+	msg.Id = upstreamDNSID(originalID)
+	msg.MsgHdr.Opcode = dns.OpcodeQuery
+	msg.MsgHdr.RecursionDesired = true
+	msg.Question = append([]dns.Question(nil), questions...)
+	msg.SetEdns0(1232, false)
+	return msg
+}
+
+func upstreamDNSID(originalID uint16) uint16 {
+	for i := 0; i < 4; i++ {
+		id := dns.Id()
+		if id != 0 && id != originalID {
+			return id
+		}
+	}
+	if originalID != 1 {
+		return 1
+	}
+	return 2
 }
 
 func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
@@ -171,6 +255,17 @@ func writeServerFailure(w dns.ResponseWriter, req *dns.Msg) error {
 		msg.SetRcode(req, dns.RcodeServerFailure)
 	} else {
 		msg.MsgHdr.Rcode = dns.RcodeServerFailure
+		msg.Response = true
+	}
+	return w.WriteMsg(msg)
+}
+
+func writeRefused(w dns.ResponseWriter, req *dns.Msg) error {
+	msg := new(dns.Msg)
+	if req != nil {
+		msg.SetRcode(req, dns.RcodeRefused)
+	} else {
+		msg.MsgHdr.Rcode = dns.RcodeRefused
 		msg.Response = true
 	}
 	return w.WriteMsg(msg)

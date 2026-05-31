@@ -129,6 +129,7 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), *dns
 			Name:      gateway.GuestGatewayHostname,
 			Addresses: []netip.Addr{cfg.hostIP},
 		}},
+		BlockDisallowedQueries: true,
 	})
 
 	listenAddr := net.JoinHostPort(cfg.hostIP.String(), strconv.Itoa(trustedDNSListenPort))
