@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
@@ -354,7 +355,12 @@ func exitResult(waitErr error) (int, string) {
 		return 0, ""
 	}
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
-		return exitErr.ExitCode(), ""
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return 128 + int(status.Signal()), status.Signal().String()
+		}
+		if code := exitErr.ExitCode(); code >= 0 {
+			return code, ""
+		}
 	}
 	return 1, waitErr.Error()
 }

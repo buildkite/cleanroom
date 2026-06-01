@@ -186,7 +186,7 @@ private func usage() -> String {
       darwin-vz-macos-minimal --bundle <bundle.json|bundle-dir> [options] [-- <command> [args...]]
 
     Options:
-      --metrics <path>       Write result JSON to path. Use '-' for stdout. If omitted, JSON is written to stderr.
+      --metrics <path>       Write result JSON to path. If omitted, JSON is written to stderr.
       --validate-only        Validate the bundle and host support without starting the VM.
       --timeout <seconds>    VM start, connect, and command timeout. Default: 120.
       -h, --help             Show this help.
@@ -218,6 +218,9 @@ private func parseOptions(_ args: [String]) throws -> Options {
             opts.bundlePath = try value()
         case "--metrics":
             opts.metricsPath = try value()
+            if opts.metricsPath == "-" {
+                throw RunnerError.usage("--metrics - is not supported because guest stdout is streamed on stdout; write metrics to a file or omit --metrics")
+            }
         case "--validate-only":
             opts.validateOnly = true
         case "--timeout":
@@ -552,6 +555,9 @@ private func runGuestCommand(connection: VZVirtioSocketConnection, command: [Str
             }
         case "exit":
             let exitCode = frame.exitCode ?? 0
+            if exitCode < 0 {
+                return (1, frame.error ?? "guest command exited without a status")
+            }
             guard (0...255).contains(exitCode) else {
                 throw RunnerError.vm("guest exit_code must be between 0 and 255")
             }

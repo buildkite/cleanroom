@@ -21,6 +21,7 @@ func listenVsock(port uint32) (streamListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open vsock listener: %w", err)
 	}
+	unix.CloseOnExec(fd)
 	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("bind vsock port %d: %w", port, err)
@@ -44,6 +45,7 @@ func (l *vsockListener) Accept() (io.ReadWriteCloser, error) {
 			}
 			return nil, err
 		}
+		unix.CloseOnExec(fd)
 		return os.NewFile(uintptr(fd), "cleanroom-macos-guest-agent-vsock"), nil
 	}
 }

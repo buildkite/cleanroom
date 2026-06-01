@@ -46,6 +46,12 @@ die() {
   exit 1
 }
 
+copy_bundle_file() {
+  local src="$1"
+  local dst="$2"
+  cp -c "${src}" "${dst}" 2>/dev/null || cp "${src}" "${dst}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)
@@ -163,7 +169,7 @@ mkdir -p "${TMP_OUT}"
 
 for name in bundle.json disk.img auxiliary.storage hardware-model.bin machine-identifier.bin; do
   [[ -f "${BASE}/${name}" ]] || die "base bundle missing ${name}: ${BASE}"
-  cp -c "${BASE}/${name}" "${TMP_OUT}/${name}"
+  copy_bundle_file "${BASE}/${name}" "${TMP_OUT}/${name}"
 done
 
 read -r AGENT_PORT MACOS_VERSION MACOS_BUILD < <(

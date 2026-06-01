@@ -68,6 +68,25 @@ func TestHandleExecReportsNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestHandleExecReportsSignaledExit(t *testing.T) {
+	stdout, stderr, res := runExecRequest(t, vsockexec.ExecRequest{
+		Command: []string{"/bin/sh", "-c", "kill -TERM $$"},
+	}, nil)
+
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if got, want := res.ExitCode, 143; got != want {
+		t.Fatalf("exit code = %d, want %d", got, want)
+	}
+	if res.Error == "" {
+		t.Fatal("expected signal error")
+	}
+}
+
 func TestHandleExecAcceptsProbeRequestShape(t *testing.T) {
 	client, done := startTestAgent(t)
 	defer client.Close()
