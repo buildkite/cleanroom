@@ -13,6 +13,7 @@ AGENT_USER="cleanroom"
 AGENT_PASSWORD="cleanroom"
 AGENT_UID="$(id -u)"
 AGENT_GID="$(id -g)"
+USER_CRON_AUTOLOGIN=1
 
 usage() {
   cat <<'EOF'
@@ -28,6 +29,9 @@ Options:
   --agent-password <value> Password for the user-cron user. Default: cleanroom.
   --agent-uid <uid>        UID for the user-cron user. Default: current host UID.
   --agent-gid <gid>        GID for the user-cron user. Default: current host GID.
+  --user-cron-no-autologin
+                            Do not configure autologin or a user LaunchAgent
+                            for user-cron mode.
   --allow-unverified-ownership
                             Continue when root ownership cannot be set. The
                             resulting bundle is for inspection only until a
@@ -98,6 +102,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "missing value for --agent-gid"
       AGENT_GID="$2"
       shift 2
+      ;;
+    --user-cron-no-autologin)
+      USER_CRON_AUTOLOGIN=0
+      shift
       ;;
     --force)
       FORCE=1
@@ -251,7 +259,7 @@ else
     "${MOUNT_POINT}/private/var/db/dslocal/nodes/Default/users" \
     "${MOUNT_POINT}/private/var/db/dslocal/nodes/Default/groups" 2>/dev/null || true
 
-  /usr/bin/python3 - "${MOUNT_POINT}" "${AGENT_USER}" "${AGENT_PASSWORD}" "${AGENT_UID}" "${AGENT_GID}" "${AGENT_PORT}" "${AGENT_VERSION}" "${MACOS_VERSION}" "${MACOS_BUILD}" <<'PY'
+  /usr/bin/python3 - "${MOUNT_POINT}" "${AGENT_USER}" "${AGENT_PASSWORD}" "${AGENT_UID}" "${AGENT_GID}" "${AGENT_PORT}" "${AGENT_VERSION}" "${MACOS_VERSION}" "${MACOS_BUILD}" "${USER_CRON_AUTOLOGIN}" <<'PY'
 import hashlib
 import os
 import plistlib
@@ -268,6 +276,7 @@ port = sys.argv[6]
 version = sys.argv[7]
 macos_version = sys.argv[8]
 macos_build = sys.argv[9]
+autologin = sys.argv[10] == "1"
 guid = str(uuid.uuid4()).upper()
 
 target = mount / "private/var/db/dslocal/nodes/Default"
@@ -372,28 +381,29 @@ setup_values = {
     "SkipExpressSettingsUpdating": True,
     "SkipFirstLoginOptimization": True,
 }
-for rel in [
-    f"Users/{user}/Library/Preferences/com.apple.SetupAssistant.plist",
-    "Library/Preferences/com.apple.SetupAssistant.plist",
-]:
-    write_plist(mount / rel, setup_values)
+if autologin:
+    for rel in [
+        f"Users/{user}/Library/Preferences/com.apple.SetupAssistant.plist",
+        "Library/Preferences/com.apple.SetupAssistant.plist",
+    ]:
+        write_plist(mount / rel, setup_values)
 
-login_values = {
-    "autoLoginUser": user,
-    "GuestEnabled": False,
-    "lastUser": "loggedIn",
-    "lastUserName": user,
-    "MiniBuddyLaunch": False,
-    "MiniBuddyLaunchCount": 0,
-    "oneTimeSSMigrationComplete": True,
-    "RecentUsers": [user],
-}
-write_plist(mount / "Library/Preferences/com.apple.loginwindow.plist", login_values)
-write_plist(mount / f"Users/{user}/Library/Preferences/com.apple.loginwindow.plist", {
-    "MiniBuddyLaunch": False,
-    "MiniBuddyLaunchCount": 0,
-    "oneTimeSSMigrationComplete": True,
-})
+    login_values = {
+        "autoLoginUser": user,
+        "GuestEnabled": False,
+        "lastUser": "loggedIn",
+        "lastUserName": user,
+        "MiniBuddyLaunch": False,
+        "MiniBuddyLaunchCount": 0,
+        "oneTimeSSMigrationComplete": True,
+        "RecentUsers": [user],
+    }
+    write_plist(mount / "Library/Preferences/com.apple.loginwindow.plist", login_values)
+    write_plist(mount / f"Users/{user}/Library/Preferences/com.apple.loginwindow.plist", {
+        "MiniBuddyLaunch": False,
+        "MiniBuddyLaunchCount": 0,
+        "oneTimeSSMigrationComplete": True,
+    })
 
 software_update_values = {
     "AutomaticCheckEnabled": False,
@@ -410,15 +420,16 @@ if macos_build and macos_version:
 write_plist(mount / "Library/Preferences/com.apple.SoftwareUpdate.plist", software_update_values)
 write_plist(mount / f"Users/{user}/Library/Preferences/com.apple.SoftwareUpdate.plist", software_update_values)
 
-key = bytes([0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F])
-plain = bytearray(password + b"\x00")
-while len(plain) % len(key) != 0:
-    plain.append(0)
-encoded = bytes(b ^ key[i % len(key)] for i, b in enumerate(plain))
-kcpassword = mount / "private/etc/kcpassword"
-kcpassword.parent.mkdir(parents=True, exist_ok=True)
-kcpassword.write_bytes(encoded)
-os.chmod(kcpassword, 0o600)
+if autologin:
+    key = bytes([0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F])
+    plain = bytearray(password + b"\x00")
+    while len(plain) % len(key) != 0:
+        plain.append(0)
+    encoded = bytes(b ^ key[i % len(key)] for i, b in enumerate(plain))
+    kcpassword = mount / "private/etc/kcpassword"
+    kcpassword.parent.mkdir(parents=True, exist_ok=True)
+    kcpassword.write_bytes(encoded)
+    os.chmod(kcpassword, 0o600)
 
 for rel in [
     f"Users/{user}/bin",
@@ -436,7 +447,8 @@ cron.write_text(
     "SHELL=/bin/sh\n"
     f"CLEANROOM_VSOCK_PORT={port}\n"
     f"PATH=/usr/bin:/bin:/usr/sbin:/sbin:/Users/{user}/bin\n"
-    f"* * * * * /usr/bin/pgrep -f '/Users/{user}/bin/cleanroom-macos-guest-agent' >/dev/null || "
+    f"* * * * * test -f /private/var/db/cleanroom-macos-guest-agent.finalized && exit 0; "
+    f"/usr/bin/pgrep -f '/Users/{user}/bin/cleanroom-macos-guest-agent' >/dev/null || "
     f"/Users/{user}/bin/cleanroom-macos-guest-agent "
     f">>/Users/{user}/Library/Logs/cleanroom-macos-guest-agent.cron.log "
     f"2>>/Users/{user}/Library/Logs/cleanroom-macos-guest-agent.cron.err\n",
@@ -444,18 +456,23 @@ cron.write_text(
 )
 os.chmod(cron, 0o600)
 
-launch_agent = mount / f"Users/{user}/Library/LaunchAgents/com.buildkite.cleanroom.macos-guest-agent.plist"
-with launch_agent.open("wb") as f:
-    plistlib.dump({
-        "Label": "com.buildkite.cleanroom.macos-guest-agent",
-        "ProgramArguments": [f"/Users/{user}/bin/cleanroom-macos-guest-agent"],
-        "EnvironmentVariables": {"CLEANROOM_VSOCK_PORT": port},
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "StandardOutPath": f"/Users/{user}/Library/Logs/cleanroom-macos-guest-agent.log",
-        "StandardErrorPath": f"/Users/{user}/Library/Logs/cleanroom-macos-guest-agent.err.log",
-    }, f, fmt=plistlib.FMT_BINARY)
-os.chmod(launch_agent, 0o644)
+if autologin:
+    launch_agent = mount / f"Users/{user}/Library/LaunchAgents/com.buildkite.cleanroom.macos-guest-agent.plist"
+    with launch_agent.open("wb") as f:
+        plistlib.dump({
+            "Label": "com.buildkite.cleanroom.macos-guest-agent",
+            "ProgramArguments": [
+                "/bin/sh",
+                "-lc",
+                f"test -f /private/var/db/cleanroom-macos-guest-agent.finalized || exec /Users/{user}/bin/cleanroom-macos-guest-agent",
+            ],
+            "EnvironmentVariables": {"CLEANROOM_VSOCK_PORT": port},
+            "RunAtLoad": True,
+            "KeepAlive": True,
+            "StandardOutPath": f"/Users/{user}/Library/Logs/cleanroom-macos-guest-agent.log",
+            "StandardErrorPath": f"/Users/{user}/Library/Logs/cleanroom-macos-guest-agent.err.log",
+        }, f, fmt=plistlib.FMT_BINARY)
+    os.chmod(launch_agent, 0o644)
 
 print(f"configured user-cron agent user={user} uid={uid} gid={gid} port={port} version={version}")
 PY

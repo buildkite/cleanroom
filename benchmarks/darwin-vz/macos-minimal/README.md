@@ -185,6 +185,30 @@ expected guest ownership. It is meant for the standalone harness while the
 privileged image-finalization path is still being proved; it runs commands as
 the `cleanroom` user, not as root.
 
+To produce a LaunchDaemon-backed bundle without host sudo or GUI automation,
+run the in-guest finalizer:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/finalize-agent-bundle.sh \
+  --base /path/to/cleanroom-macos-base \
+  --out /path/to/cleanroom-macos-finalized \
+  --metrics-dir /tmp/cleanroom-macos-finalize \
+  --force
+```
+
+The finalizer creates a temporary `user-cron` bootstrap bundle without
+configuring autologin, boots it once, uses the bootstrap agent to run `sudo`
+inside the guest, installs
+`/usr/local/bin/cleanroom-macos-guest-agent` and
+`/Library/LaunchDaemons/com.buildkite.cleanroom.macos-guest-agent.plist` as
+`root:wheel`, writes `/private/var/db/cleanroom-macos-guest-agent.finalized`,
+then boots the bundle again to prove exec is served by the LaunchDaemon as
+`root`. Between those boots it removes the temporary user record, home
+directory, and crontab from the cloned Data volume while the VM is stopped. The
+bootstrap cron entry still checks the finalized marker before starting the user
+agent, so a failed finalization leaves an inert bootstrap path after the
+LaunchDaemon marker is written.
+
 ## Validate metadata
 
 ```bash

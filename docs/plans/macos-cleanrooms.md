@@ -384,6 +384,19 @@ commands run as the CI user, startup can wait for cron's next minute tick, and
 the root-owned LaunchDaemon package still needs a privileged in-guest setup
 flow before backend integration.
 
+The next image-prep step is now implemented as
+`finalize-agent-bundle.sh`. It creates a temporary rootless `user-cron`
+bootstrap bundle, boots it once, uses the bootstrap agent to run `sudo` inside
+the guest, installs the agent and LaunchDaemon as `root:wheel`, writes
+`/private/var/db/cleanroom-macos-guest-agent.finalized`, and then boots the
+bundle again to prove commands are served by the system LaunchDaemon as root.
+The finalizer disables autologin for the temporary bootstrap so the bootstrap
+user can be removed offline after the root daemon is installed. The offline
+cleanup removes the bootstrap dslocal record, home directory, and crontab from
+the cloned Data volume before the final smoke boot. The bootstrap cron and
+LaunchAgent now check the finalized marker before starting the user agent, so a
+failed finalization leaves an inert bootstrap path after the marker is written.
+
 ## Delivery Strategy
 
 ### Slice 1: Local macOS VM boot-and-exec probe
@@ -514,6 +527,15 @@ user-cron` now creates a local guest user, installs the agent in that user's
 home directory, writes setup/autologin preferences, and adds a user crontab
 that starts the agent. This path produced a command-runnable bundle from the
 same base without mutating it.
+
+`finalize-agent-bundle.sh` turns that bootstrap into a root-owned
+LaunchDaemon-backed bundle without Tart, SSH, Packer, GUI automation, or host
+sudo. It leaves the original base untouched, validates the finalized bundle
+with a second boot, and fails if the smoke command is not running as uid 0 or
+the temporary bootstrap user still exists. Its bootstrap path uses cron only,
+not autologin, and it removes the temporary dslocal record offline before the
+final smoke boot because macOS can mark the first local account with a secure
+token and refuse an in-guest delete.
 
 Definition of done:
 
@@ -673,9 +695,9 @@ the existing backend.
 Questions that block Slice 1:
 
 - What installation path should make the LaunchDaemon acceptable to launchd?
-  Current answer: use `--install-mode user-cron` for the standalone rootless
-  probe, and keep the generated package as the preferred privileged in-guest
-  finalization path for a root-owned LaunchDaemon.
+  Current answer: use `finalize-agent-bundle.sh` for the standalone harness.
+  It uses `--install-mode user-cron` only as a temporary bootstrap, then
+  performs the root-owned LaunchDaemon install from inside the running guest.
 
 Questions before backend integration:
 
