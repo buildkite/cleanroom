@@ -551,9 +551,7 @@ private func runGuestCommand(connection: VZVirtioSocketConnection, command: [Str
                 try writeAll(fd: STDERR_FILENO, bytes: Array(data))
             }
         case "exit":
-            guard let exitCode = frame.exitCode else {
-                throw RunnerError.vm("guest exit frame missing exit_code")
-            }
+            let exitCode = frame.exitCode ?? 0
             guard (0...255).contains(exitCode) else {
                 throw RunnerError.vm("guest exit_code must be between 0 and 255")
             }

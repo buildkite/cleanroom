@@ -167,6 +167,24 @@ metadata. Its postinstall runs inside the guest as root, writes the agent and
 LaunchDaemon plist as `root:wheel`, then attempts to load and start
 `com.buildkite.cleanroom.macos-guest-agent`.
 
+For a non-root host-side probe, prepare a user-cron bundle:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/prepare-agent-bundle.sh \
+  --base /path/to/cleanroom-macos-base \
+  --out /path/to/cleanroom-macos-usercron \
+  --install-mode user-cron \
+  --force
+```
+
+This experimental mode creates a local `cleanroom` admin user in the guest
+image, installs the agent under `/Users/cleanroom/bin`, and writes a user
+crontab that starts the agent on port 10700. The default UID/GID matches the
+current host user so files created through a rootless APFS mount have the
+expected guest ownership. It is meant for the standalone harness while the
+privileged image-finalization path is still being proved; it runs commands as
+the `cleanroom` user, not as root.
+
 ## Validate metadata
 
 ```bash

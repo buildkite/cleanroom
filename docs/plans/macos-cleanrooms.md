@@ -370,10 +370,19 @@ authorization. The setup viewer boots a bundle in a `VZVirtualMachineView`
 window and can expose `dist/` through the macOS guest automount tag so the
 package is available at `/Volumes/My Shared Files/cleanroom-macos-guest-agent.pkg`.
 The viewer-owned screenshot path works and showed the local prepared image
-stopping at loginwindow with generic name/password fields. The next validation
-step is to run that package during a setup boot or other privileged in-guest
-finalization step, or add a repeatable user/session finalization path, then
-rerun the live smoke.
+stopping at loginwindow with generic name/password fields.
+
+The rootless harness now has a repeatable user-session fallback:
+`prepare-agent-bundle.sh --install-mode user-cron` creates a local `cleanroom`
+admin user, installs the agent under `/Users/cleanroom/bin`, and writes a user
+crontab that starts the agent over virtio socket. This avoids the root-owned
+LaunchDaemon requirement for the standalone probe. A freshly prepared local
+macOS 26.5 build 25F71 bundle passed the live `sw_vers` smoke over the guest
+agent with exit code 0, and a shell command confirmed execution as the
+`cleanroom` user. This is not the production image-finalization answer yet:
+commands run as the CI user, startup can wait for cron's next minute tick, and
+the root-owned LaunchDaemon package still needs a privileged in-guest setup
+flow before backend integration.
 
 ## Delivery Strategy
 
@@ -400,8 +409,10 @@ Virtualization.framework identity data. The viewer builds and signs as
 validate and attach a read-only VirtioFS directory share for setup-time package
 access, and its own `--screenshot` path can capture the VZ window for
 diagnostics. The repository Go suite also passes locally with this harness
-present. Live VM validation is pending a prepared macOS bundle with the guest
-agent installed and started.
+present. Live VM validation passed on a rootless `user-cron` prepared bundle:
+`/usr/bin/sw_vers` returned macOS 26.5 build 25F71 over the virtio-socket guest
+agent, and `/bin/sh -lc 'printf "user=$(id -un) cwd=$PWD\n"'` returned
+`user=cleanroom cwd=/Users/cleanroom`.
 
 Scope:
 
@@ -489,13 +500,20 @@ guest agent into the clone's APFS Data volume, writes the LaunchDaemon plist,
 marks setup complete, and updates `bundle.json` to the installed agent version.
 It leaves the base bundle untouched and fails closed when root ownership cannot
 be set, unless the caller passes the inspection-only rootless override.
-Rootless offline installation has not produced a launchd-started agent yet.
+Rootless offline LaunchDaemon installation has not produced a launchd-started
+agent yet.
 `build-guest-agent-pkg.sh` creates a script-only installer package for an
 in-guest finalization path. The package avoids host-side AppleDouble payload
 entries and uses postinstall to write root-owned files, then tries to bootstrap
 and kickstart the LaunchDaemon. `build-viewer.sh`/`viewer.swift` provide the
 manual setup boot path for that package by showing the VM and exposing a host
 directory with VirtioFS.
+
+For the standalone rootless harness, `prepare-agent-bundle.sh --install-mode
+user-cron` now creates a local guest user, installs the agent in that user's
+home directory, writes setup/autologin preferences, and adds a user crontab
+that starts the agent. This path produced a command-runnable bundle from the
+same base without mutating it.
 
 Definition of done:
 
@@ -655,9 +673,9 @@ the existing backend.
 Questions that block Slice 1:
 
 - What installation path should make the LaunchDaemon acceptable to launchd?
-  Recommended default: run the generated agent package during a setup boot or
-  other privileged in-guest finalization step, then rerun the existing
-  `sw_vers` smoke.
+  Current answer: use `--install-mode user-cron` for the standalone rootless
+  probe, and keep the generated package as the preferred privileged in-guest
+  finalization path for a root-owned LaunchDaemon.
 
 Questions before backend integration:
 
