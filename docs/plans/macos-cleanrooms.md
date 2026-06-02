@@ -615,11 +615,14 @@ Definition of done:
   agent version
 
 Current status: the helper operation boundary is implemented, documented, and
-represented in the Go helper-control request type. The remaining slice 4 work
-is the Go adapter/runtime-config path that clones a prepared local bundle,
-sends `StartMacOSVM`, runs the macOS guest agent through the existing proxy
-socket, reports macOS-specific capability gaps, and fails closed for unsupported
-operations.
+represented in the Go helper-control request type. The benchmark directory now
+also has a helper-backed smoke runner that starts `cleanroom-darwin-vz`, sends
+`StartMacOSVM`, connects to the helper-managed proxy socket, and can run a
+GUI-profile bundle's user-session agent to launch a GUI app. The remaining
+slice 4 work is the Go adapter/runtime-config path that clones a prepared local
+bundle, sends `StartMacOSVM` from the production backend, runs the macOS guest
+agent through the existing proxy socket, reports macOS-specific capability
+gaps, and fails closed for unsupported operations.
 
 ### Slice 5: Policy-compatible networking
 

@@ -265,6 +265,34 @@ dist/darwin-vz-macos-minimal \
   -- /usr/bin/open -a TextEdit
 ```
 
+## Run through the production helper
+
+Build the helper-backed runner:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/build-helper-runner.sh
+```
+
+The helper runner starts `cleanroom-darwin-vz`, sends the experimental
+`StartMacOSVM` helper operation, connects to the helper-managed proxy socket,
+and runs the command through the macOS guest agent. This exercises the
+production helper boundary while still staying outside the public Cleanroom
+adapter path.
+
+```bash
+dist/darwin-vz-macos-helper-runner \
+  --helper dist/cleanroom-darwin-vz.app \
+  --bundle /path/to/cleanroom-macos-gui \
+  --agent user \
+  --metrics /tmp/macos-cleanroom-helper-gui.json \
+  -- /bin/sh -lc '/usr/bin/open -a TextEdit && /bin/sleep 2 && /usr/bin/pgrep -x TextEdit'
+```
+
+For GUI-profile bundles, the `--agent user` flag is required because GUI apps
+need the logged-in Aqua session owned by the bundle's autologin user. The root
+LaunchDaemon can run headless commands, but it cannot launch user-session GUI
+apps.
+
 The guest agent protocol is deliberately tiny for the probe:
 
 - host sends one newline-delimited JSON request:
