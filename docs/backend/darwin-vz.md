@@ -16,6 +16,8 @@ Implemented:
 - launched execution on macOS via `Virtualization.framework`
 - interactive and non-interactive command execution via existing `internal/vsockexec` protocol
 - helper-managed VM lifecycle (`StartVM` / `StopVM` / `PauseVM` / `ResumeVM` / `SetMemoryBalloonTarget`)
+- experimental helper-only macOS guest launch operation (`StartMacOSVM`) for
+  prepared local bundles; this is not wired into the production Go adapter yet
 - `filehandle` network mode with a Cleanroom-owned guest gateway and stable guest IP
 - TCP allowlist egress filtering for the active effective policy in `filehandle` mode
 - allow-all egress for repo-agnostic sandboxes created with `cleanroom sandbox create --dangerously-allow-all`
@@ -40,7 +42,7 @@ Control plane:
 
 - socket: `<run_dir>/vz-helper.sock`
 - protocol: newline-delimited JSON request/response
-- operations: `StartVM`, `StopVM`, `PauseVM`, `ResumeVM`, `SetMemoryBalloonTarget`, `Ping`
+- operations: `StartVM`, `StartMacOSVM`, `StopVM`, `PauseVM`, `ResumeVM`, `SetMemoryBalloonTarget`, `Ping`
 
 Data plane:
 
@@ -67,6 +69,34 @@ High-level flow:
 - `run_dir`
 - `proxy_socket_path`
 - `console_log_path`
+
+`StartMacOSVM` is an experimental helper operation for a prepared Apple
+Silicon macOS guest bundle. It intentionally shares the same helper binary and
+proxy socket model as the Linux path, but uses macOS-specific bundle artifacts
+instead of Linux kernel/rootfs fields.
+
+`StartMacOSVM` request fields:
+
+- `disk_path` absolute path to the writable macOS disk image clone
+- `auxiliary_storage_path` absolute path to `VZMacAuxiliaryStorage`
+- `hardware_model_path` absolute path to the `VZMacHardwareModel` data
+  representation
+- `machine_identifier_path` absolute path to the `VZMacMachineIdentifier` data
+  representation
+- `vcpus`, `memory_mib`, `guest_port`, `launch_seconds`
+- `run_dir`
+- `proxy_socket_path`
+- optional `display_width_px`, `display_height_px`, and
+  `display_pixels_per_inch`
+- optional `network_mode`, which currently must be omitted or set to `none`
+
+The helper starts the VM with `VZMacOSBootLoader`, `VZMacPlatformConfiguration`,
+the configured disk, graphics/input devices required by macOS guests, and a
+virtio socket device for the Cleanroom macOS guest agent. It rejects filehandle
+networking and vmnet-specific settings until macOS guest networking is wired
+through the Cleanroom policy gateway. The production adapter must not advertise
+macOS guest networking, file operations, snapshotting, or workspace support
+until those paths are implemented and reported through capabilities.
 
 `vcpus` and `memory_mib` are effective VM launch ceilings after runtime config
 and policy resource minimums are merged. They are not an exact host reservation

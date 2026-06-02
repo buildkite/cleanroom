@@ -34,6 +34,10 @@ type helperControlRequest struct {
 	KernelPath                      string   `json:"kernel_path,omitempty"`
 	RootFSPath                      string   `json:"rootfs_path,omitempty"`
 	SidecarDiskPaths                []string `json:"sidecar_disk_paths,omitempty"`
+	DiskPath                        string   `json:"disk_path,omitempty"`
+	AuxiliaryStoragePath            string   `json:"auxiliary_storage_path,omitempty"`
+	HardwareModelPath               string   `json:"hardware_model_path,omitempty"`
+	MachineIdentifierPath           string   `json:"machine_identifier_path,omitempty"`
 	BootArgs                        string   `json:"boot_args,omitempty"`
 	NetworkMode                     string   `json:"network_mode,omitempty"`
 	VMNetSubnetCIDR                 string   `json:"vmnet_subnet_cidr,omitempty"`
@@ -53,6 +57,9 @@ type helperControlRequest struct {
 	ProxySocketPath                 string   `json:"proxy_socket_path,omitempty"`
 	ConsoleLogPath                  string   `json:"console_log_path,omitempty"`
 	VMID                            string   `json:"vm_id,omitempty"`
+	DisplayWidthPx                  int64    `json:"display_width_px,omitempty"`
+	DisplayHeightPx                 int64    `json:"display_height_px,omitempty"`
+	DisplayPixelsPerInch            int64    `json:"display_pixels_per_inch,omitempty"`
 }
 
 type helperControlResponse struct {

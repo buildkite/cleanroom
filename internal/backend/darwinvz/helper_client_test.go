@@ -13,6 +13,51 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
+func TestHelperControlRequestEncodesMacOSVMFields(t *testing.T) {
+	payload, err := json.Marshal(helperControlRequest{
+		Op:                    "StartMacOSVM",
+		DiskPath:              "/tmp/macos/disk.img",
+		AuxiliaryStoragePath:  "/tmp/macos/auxiliary.storage",
+		HardwareModelPath:     "/tmp/macos/hardware-model.bin",
+		MachineIdentifierPath: "/tmp/macos/machine-identifier.bin",
+		NetworkMode:           "none",
+		VCPUs:                 4,
+		MemoryMiB:             8192,
+		GuestPort:             10700,
+		LaunchSeconds:         120,
+		RunDir:                "/tmp/macos/run",
+		ProxySocketPath:       "/tmp/macos/run/vz-proxy.sock",
+		DisplayWidthPx:        1024,
+		DisplayHeightPx:       768,
+		DisplayPixelsPerInch:  72,
+	})
+	if err != nil {
+		t.Fatalf("marshal helper request: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode helper request: %v", err)
+	}
+
+	for _, key := range []string{
+		"disk_path",
+		"auxiliary_storage_path",
+		"hardware_model_path",
+		"machine_identifier_path",
+		"display_width_px",
+		"display_height_px",
+		"display_pixels_per_inch",
+	} {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("expected encoded key %q in %s", key, string(payload))
+		}
+	}
+	if got := decoded["op"]; got != "StartMacOSVM" {
+		t.Fatalf("op = %v, want StartMacOSVM", got)
+	}
+}
+
 func TestHelperRequestDecodeErrorIsLifecycleIndeterminate(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

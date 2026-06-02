@@ -11,6 +11,10 @@ private struct ControlRequest: Decodable {
     let kernelPath: String?
     let rootFSPath: String?
     let sidecarDiskPaths: [String]?
+    let diskPath: String?
+    let auxiliaryStoragePath: String?
+    let hardwareModelPath: String?
+    let machineIdentifierPath: String?
     let bootArgs: String?
     let networkMode: String?
     let vmnetSubnetCIDR: String?
@@ -30,12 +34,19 @@ private struct ControlRequest: Decodable {
     let proxySocketPath: String?
     let consoleLogPath: String?
     let vmID: String?
+    let displayWidthPx: Int?
+    let displayHeightPx: Int?
+    let displayPixelsPerInch: Int?
 
     enum CodingKeys: String, CodingKey {
         case op
         case kernelPath = "kernel_path"
         case rootFSPath = "rootfs_path"
         case sidecarDiskPaths = "sidecar_disk_paths"
+        case diskPath = "disk_path"
+        case auxiliaryStoragePath = "auxiliary_storage_path"
+        case hardwareModelPath = "hardware_model_path"
+        case machineIdentifierPath = "machine_identifier_path"
         case bootArgs = "boot_args"
         case networkMode = "network_mode"
         case vmnetSubnetCIDR = "vmnet_subnet_cidr"
@@ -55,6 +66,9 @@ private struct ControlRequest: Decodable {
         case proxySocketPath = "proxy_socket_path"
         case consoleLogPath = "console_log_path"
         case vmID = "vm_id"
+        case displayWidthPx = "display_width_px"
+        case displayHeightPx = "display_height_px"
+        case displayPixelsPerInch = "display_pixels_per_inch"
     }
 }
 
@@ -618,6 +632,157 @@ private final class VMRuntime {
         )
     }
 
+    func startMacOS(from req: ControlRequest) throws -> ControlResponse {
+        guard VZVirtualMachine.isSupported else {
+            throw HelperError.vm("virtualization is not supported on this host")
+        }
+
+        let diskPath = try requireAbsolutePath(req.diskPath, field: "disk_path")
+        let auxiliaryStoragePath = try requireAbsolutePath(req.auxiliaryStoragePath, field: "auxiliary_storage_path")
+        let hardwareModelPath = try requireAbsolutePath(req.hardwareModelPath, field: "hardware_model_path")
+        let machineIdentifierPath = try requireAbsolutePath(req.machineIdentifierPath, field: "machine_identifier_path")
+        let runDir = try requireAbsolutePath(req.runDir, field: "run_dir")
+        let proxySocketPath = try requireAbsolutePath(req.proxySocketPath, field: "proxy_socket_path")
+
+        try requireFile(diskPath, field: "disk_path")
+        try requireFile(auxiliaryStoragePath, field: "auxiliary_storage_path")
+        try requireFile(hardwareModelPath, field: "hardware_model_path")
+        try requireFile(machineIdentifierPath, field: "machine_identifier_path")
+        try ensureDirectory(runDir)
+        try ensureDirectory((proxySocketPath as NSString).deletingLastPathComponent)
+
+        if req.kernelPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            throw HelperError.invalidRequest("StartMacOSVM does not support kernel_path")
+        }
+        if req.rootFSPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            throw HelperError.invalidRequest("StartMacOSVM does not support rootfs_path")
+        }
+        if !(req.sidecarDiskPaths ?? []).isEmpty {
+            throw HelperError.invalidRequest("StartMacOSVM does not support sidecar_disk_paths")
+        }
+        if req.bootArgs?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            throw HelperError.invalidRequest("StartMacOSVM does not support boot_args")
+        }
+        if req.consoleLogPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            throw HelperError.invalidRequest("StartMacOSVM does not support console_log_path yet")
+        }
+
+        let networkMode = req.networkMode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let networkMode, !networkMode.isEmpty, networkMode != "none" {
+            throw HelperError.invalidRequest("StartMacOSVM currently supports only network_mode none")
+        }
+        if req.vmnetSubnetCIDR?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            throw HelperError.invalidRequest("StartMacOSVM does not support vmnet_subnet_cidr yet")
+        }
+        if let fileHandleSocketPath = req.fileHandleSocketPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !fileHandleSocketPath.isEmpty {
+            throw HelperError.invalidRequest("StartMacOSVM does not support filehandle_socket_path yet")
+        }
+        if (req.vmnetExternalInterface?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            || req.vmnetDisableNAT44 == true
+            || req.vmnetDisableNAT66 == true
+            || req.vmnetDisableDNSProxy == true
+            || req.vmnetDisableRouterAdvertisement == true {
+            throw HelperError.invalidRequest("StartMacOSVM does not support vmnet-specific network settings")
+        }
+        if req.initialMemoryBalloonTargetMiB ?? 0 > 0 {
+            throw HelperError.invalidRequest("StartMacOSVM does not support initial_memory_balloon_target_mib")
+        }
+
+        if let requestedVCPUs = req.vcpus, requestedVCPUs <= 0 {
+            throw HelperError.invalidRequest("vcpus must be greater than zero")
+        }
+        if let requestedMemoryMiB = req.memoryMiB, requestedMemoryMiB < 1024 {
+            throw HelperError.invalidRequest("memory_mib must be at least 1024 for StartMacOSVM")
+        }
+        let vcpus = req.vcpus ?? 4
+        let memoryMiB = req.memoryMiB ?? 4096
+        guard memoryMiB <= Int64.max / Int64(1024 * 1024) else {
+            throw HelperError.invalidRequest("memory_mib is too large")
+        }
+        if let requestedGuestPort = req.guestPort, requestedGuestPort == 0 {
+            throw HelperError.invalidRequest("guest_port must be greater than zero")
+        }
+        if let requestedLaunchSeconds = req.launchSeconds, requestedLaunchSeconds <= 0 {
+            throw HelperError.invalidRequest("launch_seconds must be greater than zero")
+        }
+        let guestPort = req.guestPort ?? 10_700
+        let launchSeconds = req.launchSeconds ?? 120
+
+        lock.lock()
+        if vm != nil {
+            lock.unlock()
+            throw HelperError.invalidRequest("vm is already running")
+        }
+        lock.unlock()
+
+        let startedAt = DispatchTime.now()
+        let vmQueue = DispatchQueue(label: "cleanroom.darwin-vz.vm.macos")
+        let vmID = UUID().uuidString
+
+        let vm = try buildMacOSVM(
+            diskPath: diskPath,
+            auxiliaryStoragePath: auxiliaryStoragePath,
+            hardwareModelPath: hardwareModelPath,
+            machineIdentifierPath: machineIdentifierPath,
+            vcpus: vcpus,
+            memoryMiB: memoryMiB,
+            displayWidthPx: req.displayWidthPx,
+            displayHeightPx: req.displayHeightPx,
+            displayPixelsPerInch: req.displayPixelsPerInch,
+            queue: vmQueue
+        )
+        let configBuiltAt = DispatchTime.now()
+
+        let vzStartStartedAt = DispatchTime.now()
+        var stopVMOnFailure = true
+        defer {
+            if stopVMOnFailure {
+                try? stopVM(vm, queue: vmQueue)
+            }
+        }
+        try startVM(vm, queue: vmQueue, timeoutSeconds: launchSeconds)
+        let vzStartedAt = DispatchTime.now()
+
+        let proxyReadyStartedAt = DispatchTime.now()
+        let proxy = try ProxyServer(path: proxySocketPath)
+        self.guestPort = guestPort
+        self.launchTimeout = TimeInterval(launchSeconds)
+        self.serialChannel = nil
+        self.vmQueue = vmQueue
+        self.vm = vm
+        self.vmID = vmID
+        self.proxy = proxy
+        self.memoryMiB = memoryMiB
+        self.fileHandleNetworkAttachment = nil
+        stopVMOnFailure = false
+        proxy.start { [weak self] in
+            guard let self else {
+                throw HelperError.vm("vm runtime no longer available")
+            }
+            return try self.connectGuestChannel()
+        }
+        let proxyReadyAt = DispatchTime.now()
+
+        let timingMS = [
+            "config_build": elapsedMilliseconds(from: startedAt, to: configBuiltAt),
+            "vz_start": elapsedMilliseconds(from: vzStartStartedAt, to: vzStartedAt),
+            "proxy_ready": elapsedMilliseconds(from: proxyReadyStartedAt, to: proxyReadyAt),
+            "vm_ready": elapsedMilliseconds(from: startedAt, to: proxyReadyAt),
+        ]
+        return ControlResponse(
+            ok: true,
+            error: nil,
+            vmID: vmID,
+            proxySocketPath: proxySocketPath,
+            vmnetSubnetCIDR: nil,
+            vmnetGuestIPv4: nil,
+            vmnetGatewayIPv4: nil,
+            vmnetPrefixLen: nil,
+            timingMS: timingMS
+        )
+    }
+
     func stop(vmID requestedID: String?) throws {
         lock.lock()
         let currentID = vmID
@@ -1062,6 +1227,80 @@ private final class VMRuntime {
         return (VZVirtualMachine(configuration: config, queue: queue), channel, networkDetails, fileHandleNetworkAttachment)
     }
 
+    private func buildMacOSVM(
+        diskPath: String,
+        auxiliaryStoragePath: String,
+        hardwareModelPath: String,
+        machineIdentifierPath: String,
+        vcpus: Int,
+        memoryMiB: Int64,
+        displayWidthPx: Int?,
+        displayHeightPx: Int?,
+        displayPixelsPerInch: Int?,
+        queue: DispatchQueue
+    ) throws -> VZVirtualMachine {
+        let diskURL = URL(fileURLWithPath: diskPath)
+        let auxiliaryStorageURL = URL(fileURLWithPath: auxiliaryStoragePath)
+        guard let hardwareModel = VZMacHardwareModel(dataRepresentation: try Data(contentsOf: URL(fileURLWithPath: hardwareModelPath))) else {
+            throw HelperError.invalidRequest("hardware_model_path is not a valid VZMacHardwareModel data representation")
+        }
+        guard hardwareModel.isSupported else {
+            throw HelperError.invalidRequest("hardware_model_path is not supported by this host")
+        }
+        guard let machineIdentifier = VZMacMachineIdentifier(dataRepresentation: try Data(contentsOf: URL(fileURLWithPath: machineIdentifierPath))) else {
+            throw HelperError.invalidRequest("machine_identifier_path is not a valid VZMacMachineIdentifier data representation")
+        }
+
+        let widthPx = displayWidthPx ?? 1024
+        let heightPx = displayHeightPx ?? 768
+        let pixelsPerInch = displayPixelsPerInch ?? 72
+        guard widthPx > 0 else {
+            throw HelperError.invalidRequest("display_width_px must be greater than zero")
+        }
+        guard heightPx > 0 else {
+            throw HelperError.invalidRequest("display_height_px must be greater than zero")
+        }
+        guard pixelsPerInch > 0 else {
+            throw HelperError.invalidRequest("display_pixels_per_inch must be greater than zero")
+        }
+
+        let config = VZVirtualMachineConfiguration()
+        config.bootLoader = VZMacOSBootLoader()
+        config.cpuCount = vcpus
+        config.memorySize = UInt64(memoryMiB) * 1024 * 1024
+
+        let platform = VZMacPlatformConfiguration()
+        platform.hardwareModel = hardwareModel
+        platform.machineIdentifier = machineIdentifier
+        platform.auxiliaryStorage = VZMacAuxiliaryStorage(url: auxiliaryStorageURL)
+        config.platform = platform
+
+        let graphics = VZMacGraphicsDeviceConfiguration()
+        graphics.displays = [
+            VZMacGraphicsDisplayConfiguration(
+                widthInPixels: widthPx,
+                heightInPixels: heightPx,
+                pixelsPerInch: pixelsPerInch
+            )
+        ]
+        config.graphicsDevices = [graphics]
+        config.keyboards = [VZUSBKeyboardConfiguration()]
+        config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+
+        let disk = try VZDiskImageStorageDeviceAttachment(
+            url: diskURL,
+            readOnly: false,
+            cachingMode: .automatic,
+            synchronizationMode: .full
+        )
+        config.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: disk)]
+        config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+        config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+
+        try config.validate()
+        return VZVirtualMachine(configuration: config, queue: queue)
+    }
+
     private func applyMemoryBalloonTarget(
         vm: VZVirtualMachine,
         queue: DispatchQueue,
@@ -1212,8 +1451,14 @@ private final class VMRuntime {
                 usleep(10_000)
             }
             if let lastError {
+                guard serialChannel != nil else {
+                    throw HelperError.timeout("timed out connecting to guest vsock port \(guestPort): \(lastError)")
+                }
                 fputs("cleanroom-darwin-vz: vsock connect fallback to serial after error: \(lastError)\n", stderr)
             } else {
+                guard serialChannel != nil else {
+                    throw HelperError.timeout("timed out connecting to guest vsock port \(guestPort)")
+                }
                 fputs("cleanroom-darwin-vz: vsock connect timed out, falling back to serial\n", stderr)
             }
         }
@@ -1279,6 +1524,8 @@ private final class HelperService {
         switch req.op {
         case "StartVM":
             return try vmRuntime.start(from: req)
+        case "StartMacOSVM":
+            return try vmRuntime.startMacOS(from: req)
         case "StopVM":
             try vmRuntime.stop(vmID: req.vmID)
             return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)

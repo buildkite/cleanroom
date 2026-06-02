@@ -408,6 +408,18 @@ assertion is GUI app launch through the user session. This is evidence that a
 GUI-session image profile can run macOS apps; production GUI automation, VNC,
 clipboard, TCC management, and backend integration remain separate work.
 
+The production `cleanroom-darwin-vz` helper now has an explicit
+`StartMacOSVM` operation boundary. It keeps the existing Linux `StartVM`
+request intact, takes macOS bundle primitives (`disk_path`,
+`auxiliary_storage_path`, `hardware_model_path`, and
+`machine_identifier_path`), starts the guest with `VZMacOSBootLoader` and
+`VZMacPlatformConfiguration`, and exposes the existing proxy socket path for
+guest-agent exec over a virtio socket. The operation currently rejects
+filehandle/vmnet networking and supports only `network_mode: none`, so the Go
+adapter still needs explicit experimental runtime config, bundle cloning,
+capability reporting, and fail-closed checks before this becomes a Cleanroom
+execution path.
+
 ## Delivery Strategy
 
 ### Slice 1: Local macOS VM boot-and-exec probe
@@ -601,6 +613,13 @@ Definition of done:
   fail before execution
 - observability includes guest platform, image metadata, startup timings, and
   agent version
+
+Current status: the helper operation boundary is implemented, documented, and
+represented in the Go helper-control request type. The remaining slice 4 work
+is the Go adapter/runtime-config path that clones a prepared local bundle,
+sends `StartMacOSVM`, runs the macOS guest agent through the existing proxy
+socket, reports macOS-specific capability gaps, and fails closed for unsupported
+operations.
 
 ### Slice 5: Policy-compatible networking
 
