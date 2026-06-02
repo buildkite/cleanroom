@@ -635,12 +635,18 @@ EOF_GUI_SMOKE
 GUI_SMOKE_SCRIPT="${GUI_SMOKE_SCRIPT//__LABEL__/${LABEL}}"
 GUI_SMOKE_SCRIPT="${GUI_SMOKE_SCRIPT//__AGENT_USER__/${AGENT_USER}}"
 
+finalize_status=0
 "${RUNNER}" \
   --bundle "${TMP_BOOTSTRAP}" \
   --timeout "${TIMEOUT}" \
   --metrics "${FINALIZE_METRICS}" \
-  -- /bin/sh -lc "${FINALIZER_SCRIPT}"
-redact_finalize_metrics "${FINALIZE_METRICS}"
+  -- /bin/sh -lc "${FINALIZER_SCRIPT}" || finalize_status=$?
+if [[ -f "${FINALIZE_METRICS}" ]]; then
+  redact_finalize_metrics "${FINALIZE_METRICS}"
+fi
+if [[ "${finalize_status}" -ne 0 ]]; then
+  exit "${finalize_status}"
+fi
 remove_bootstrap_user_offline "${TMP_BOOTSTRAP}" "${AGENT_USER}" "${PROFILE}"
 write_bundle_profile_metadata
 

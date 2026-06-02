@@ -11,6 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const darwinVsockCIDAny = 0xffffffff
+
 type vsockListener struct {
 	fd     int
 	closed atomic.Bool
@@ -22,7 +24,7 @@ func listenVsock(port uint32) (streamListener, error) {
 		return nil, fmt.Errorf("open vsock listener: %w", err)
 	}
 	unix.CloseOnExec(fd)
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: darwinVsockCIDAny, Port: port}); err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("bind vsock port %d: %w", port, err)
 	}
