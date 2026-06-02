@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync/atomic"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -24,6 +25,10 @@ func listenVsock(port uint32) (streamListener, error) {
 		return nil, fmt.Errorf("open vsock listener: %w", err)
 	}
 	unix.CloseOnExec(fd)
+	if err := unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("set vsock listener nonblocking: %w", err)
+	}
 	if err := unix.Bind(fd, &unix.SockaddrVM{CID: darwinVsockCIDAny, Port: port}); err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("bind vsock port %d: %w", port, err)
@@ -37,18 +42,50 @@ func listenVsock(port uint32) (streamListener, error) {
 
 func (l *vsockListener) Accept() (io.ReadWriteCloser, error) {
 	for {
-		fd, _, err := unix.Accept(l.fd)
+		fd := -1
+		var err error
+		syscall.ForkLock.RLock()
+		fd, _, err = unix.Accept(l.fd)
+		if err == nil {
+			unix.CloseOnExec(fd)
+			err = unix.SetNonblock(fd, false)
+		}
+		syscall.ForkLock.RUnlock()
 		if err == unix.EINTR {
 			continue
 		}
+		if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
+			if l.closed.Load() {
+				return nil, errListenerClosed
+			}
+			if err := l.waitReadable(); err != nil {
+				if l.closed.Load() {
+					return nil, errListenerClosed
+				}
+				return nil, err
+			}
+			continue
+		}
 		if err != nil {
+			if fd >= 0 {
+				_ = unix.Close(fd)
+			}
 			if l.closed.Load() {
 				return nil, errListenerClosed
 			}
 			return nil, err
 		}
-		unix.CloseOnExec(fd)
 		return os.NewFile(uintptr(fd), "cleanroom-macos-guest-agent-vsock"), nil
+	}
+}
+
+func (l *vsockListener) waitReadable() error {
+	for {
+		_, err := unix.Poll([]unix.PollFd{{Fd: int32(l.fd), Events: unix.POLLIN}}, 1000)
+		if err == unix.EINTR {
+			continue
+		}
+		return err
 	}
 }
 

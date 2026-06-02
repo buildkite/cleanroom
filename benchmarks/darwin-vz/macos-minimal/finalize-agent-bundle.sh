@@ -666,6 +666,9 @@ if [[ "${PROFILE}" == "gui" ]]; then
 fi
 
 if [[ -e "${OUT}" ]]; then
+  if [[ "${FORCE}" -ne 1 ]]; then
+    die "output appeared during finalization; use --force to replace: ${OUT}"
+  fi
   rm -rf "${OUT}"
 fi
 mv "${TMP_BOOTSTRAP}" "${OUT}"
