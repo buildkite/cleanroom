@@ -190,24 +190,73 @@ private final class VMHandle {
     }
 
     func stop() {
-        let requestStopSem = DispatchSemaphore(value: 0)
-        queue.async {
-            if self.vm.canRequestStop {
-                _ = try? self.vm.requestStop()
-            }
-            requestStopSem.signal()
+        if currentState() == .stopped {
+            return
         }
-        _ = requestStopSem.wait(timeout: .now() + .seconds(3))
+        if requestGracefulStop(), waitUntilStopped(timeoutSeconds: 20) {
+            return
+        }
+        forceStop(timeoutSeconds: 10)
+    }
 
-        let stopSem = DispatchSemaphore(value: 0)
+    private func currentState() -> VZVirtualMachine.State? {
+        let sem = DispatchSemaphore(value: 0)
+        var state: VZVirtualMachine.State?
         queue.async {
-            if self.vm.canStop {
-                self.vm.stop { _ in stopSem.signal() }
+            state = self.vm.state
+            sem.signal()
+        }
+        guard sem.wait(timeout: .now() + .seconds(3)) == .success else {
+            return nil
+        }
+        return state
+    }
+
+    private func requestGracefulStop() -> Bool {
+        let sem = DispatchSemaphore(value: 0)
+        var requested = false
+        queue.async {
+            if self.vm.state == .stopped {
+                requested = true
+            } else if self.vm.canRequestStop {
+                do {
+                    try self.vm.requestStop()
+                    requested = true
+                } catch {
+                    requested = false
+                }
+            }
+            sem.signal()
+        }
+        guard sem.wait(timeout: .now() + .seconds(3)) == .success else {
+            return false
+        }
+        return requested
+    }
+
+    private func waitUntilStopped(timeoutSeconds: Double) -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if currentState() == .stopped {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return currentState() == .stopped
+    }
+
+    private func forceStop(timeoutSeconds: Double) {
+        let sem = DispatchSemaphore(value: 0)
+        queue.async {
+            if self.vm.state == .stopped {
+                sem.signal()
+            } else if self.vm.canStop {
+                self.vm.stop { _ in sem.signal() }
             } else {
-                stopSem.signal()
+                sem.signal()
             }
         }
-        _ = stopSem.wait(timeout: .now() + .seconds(10))
+        _ = sem.wait(timeout: .now() + .milliseconds(Int(timeoutSeconds * 1_000)))
     }
 }
 
@@ -279,8 +328,8 @@ private func parseOptions(_ args: [String]) throws -> Options {
     if opts.command.isEmpty {
         throw RunnerError.invalid("command after -- must not be empty")
     }
-    if opts.command.contains(where: { $0.isEmpty }) {
-        throw RunnerError.invalid("command arguments must not be empty")
+    if opts.command.first?.isEmpty == true {
+        throw RunnerError.invalid("command after -- must not be empty")
     }
     return opts
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
 	"path/filepath"
@@ -154,6 +155,31 @@ func TestDefaultPortFromEnv(t *testing.T) {
 	port, err := defaultPortFromEnv()
 	if err != nil {
 		t.Fatalf("defaultPortFromEnv returned error: %v", err)
+	}
+	if got, want := port, uint32(12000); got != want {
+		t.Fatalf("port = %d, want %d", got, want)
+	}
+}
+
+func TestRunVersionIgnoresInvalidPortEnv(t *testing.T) {
+	t.Setenv("CLEANROOM_VSOCK_PORT", "bogus")
+	var stderr, stdout bytes.Buffer
+	if err := run([]string{"--version"}, &stderr, &stdout); err != nil {
+		t.Fatalf("run --version returned error: %v", err)
+	}
+	if got, want := stdout.String(), "cleanroom-macos-guest-agent "+agentVersion+"\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestResolveListenPortExplicitOverridesInvalidPortEnv(t *testing.T) {
+	t.Setenv("CLEANROOM_VSOCK_PORT", "bogus")
+	port, err := resolveListenPort(12000, true)
+	if err != nil {
+		t.Fatalf("resolveListenPort returned error: %v", err)
 	}
 	if got, want := port, uint32(12000); got != want {
 		t.Fatalf("port = %d, want %d", got, want)

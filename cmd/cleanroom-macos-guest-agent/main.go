@@ -62,14 +62,9 @@ func main() {
 }
 
 func run(args []string, stderr io.Writer, stdout io.Writer) error {
-	defaultPort, err := defaultPortFromEnv()
-	if err != nil {
-		return err
-	}
-
 	fs := flag.NewFlagSet("cleanroom-macos-guest-agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	port := fs.Uint64("port", uint64(defaultPort), "virtio socket port to listen on")
+	port := fs.Uint64("port", uint64(vsockexec.DefaultPort), "virtio socket port to listen on")
 	stdio := fs.Bool("stdio", false, "serve one request over stdin/stdout")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -82,20 +77,38 @@ func run(args []string, stderr io.Writer, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "cleanroom-macos-guest-agent %s\n", agentVersion)
 		return nil
 	}
-	if *port == 0 || *port > math.MaxUint32 {
-		return fmt.Errorf("port must be between 1 and %d", uint64(math.MaxUint32))
-	}
 	if *stdio {
 		handleConn(stdioConn{r: os.Stdin, w: os.Stdout})
 		return nil
 	}
 
-	ln, err := listenVsock(uint32(*port))
+	portExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "port" {
+			portExplicit = true
+		}
+	})
+	listenPort, err := resolveListenPort(*port, portExplicit)
+	if err != nil {
+		return err
+	}
+
+	ln, err := listenVsock(listenPort)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
 	return serve(ln, stderr)
+}
+
+func resolveListenPort(flagPort uint64, explicit bool) (uint32, error) {
+	if !explicit {
+		return defaultPortFromEnv()
+	}
+	if flagPort == 0 || flagPort > math.MaxUint32 {
+		return 0, fmt.Errorf("port must be between 1 and %d", uint64(math.MaxUint32))
+	}
+	return uint32(flagPort), nil
 }
 
 func defaultPortFromEnv() (uint32, error) {
