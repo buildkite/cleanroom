@@ -368,18 +368,73 @@ private final class ViewerAppDelegate: NSObject, NSApplicationDelegate, NSWindow
             return
         }
         stopping = true
+        if currentState(of: vm) == .stopped {
+            return
+        }
+        if requestGracefulStop(of: vm), waitUntilStopped(vm, timeoutSeconds: 20) {
+            return
+        }
+        forceStop(vm, timeoutSeconds: 10)
+    }
+
+    private func currentState(of vm: VZVirtualMachine) -> VZVirtualMachine.State? {
+        let sem = DispatchSemaphore(value: 0)
+        var state: VZVirtualMachine.State?
+        queue.async {
+            state = vm.state
+            sem.signal()
+        }
+        guard sem.wait(timeout: .now() + .seconds(3)) == .success else {
+            return nil
+        }
+        return state
+    }
+
+    private func requestGracefulStop(of vm: VZVirtualMachine) -> Bool {
+        let sem = DispatchSemaphore(value: 0)
+        var requested = false
+        queue.async {
+            if vm.state == .stopped {
+                requested = true
+            } else if vm.canRequestStop {
+                do {
+                    try vm.requestStop()
+                    requested = true
+                } catch {
+                    requested = false
+                }
+            }
+            sem.signal()
+        }
+        guard sem.wait(timeout: .now() + .seconds(3)) == .success else {
+            return false
+        }
+        return requested
+    }
+
+    private func waitUntilStopped(_ vm: VZVirtualMachine, timeoutSeconds: Double) -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if currentState(of: vm) == .stopped {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return currentState(of: vm) == .stopped
+    }
+
+    private func forceStop(_ vm: VZVirtualMachine, timeoutSeconds: Double) {
         let sem = DispatchSemaphore(value: 0)
         queue.async {
-            if vm.canRequestStop {
-                _ = try? vm.requestStop()
-            }
-            if vm.canStop {
+            if vm.state == .stopped {
+                sem.signal()
+            } else if vm.canStop {
                 vm.stop { _ in sem.signal() }
             } else {
                 sem.signal()
             }
         }
-        _ = sem.wait(timeout: .now() + .seconds(10))
+        _ = sem.wait(timeout: .now() + .milliseconds(Int(timeoutSeconds * 1_000)))
     }
 }
 
