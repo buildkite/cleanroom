@@ -1,5 +1,8 @@
 # Remote access
 
+For an end-to-end view of how local and shared Cleanroom servers fit into the
+control plane, start with [Control plane](control-plane.md).
+
 The Cleanroom server supports HTTP and HTTPS listener modes for remote access.
 
 ## HTTP

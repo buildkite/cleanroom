@@ -263,6 +263,8 @@ mise run install:global
 
 ## Docs
 
+- [Getting started](docs/getting-started.md) - first local run, repository policy, shared server setup, and Buildkite OIDC
+- [Control plane](docs/control-plane.md) - client/server architecture, auth, ownership, host gateway, and credential boundaries
 - [Policy](docs/policy.md) - `cleanroom.yaml`, resources, networking, Docker, dependencies, and services
 - [Workspaces](docs/workspaces.md) - repo-aware execution, local edits, copy-in, copy-out, and sync
 - [Networking](docs/networking.md) - deny-by-default egress, DNS, the host gateway, and service exposure
