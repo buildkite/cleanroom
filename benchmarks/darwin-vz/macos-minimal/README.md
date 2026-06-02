@@ -185,8 +185,8 @@ expected guest ownership. It is meant for the standalone harness while the
 privileged image-finalization path is still being proved; it runs commands as
 the `cleanroom` user, not as root.
 
-To produce a LaunchDaemon-backed bundle without host sudo or GUI automation,
-run the in-guest finalizer:
+To produce a LaunchDaemon-backed headless bundle without host sudo or GUI
+automation, run the in-guest finalizer:
 
 ```bash
 benchmarks/darwin-vz/macos-minimal/finalize-agent-bundle.sh \
@@ -208,6 +208,27 @@ directory, and crontab from the cloned Data volume while the VM is stopped. The
 bootstrap cron entry still checks the finalized marker before starting the user
 agent, so a failed finalization leaves an inert bootstrap path after the
 LaunchDaemon marker is written.
+
+To produce a GUI-capable local harness image, pass `--profile gui`:
+
+```bash
+benchmarks/darwin-vz/macos-minimal/finalize-agent-bundle.sh \
+  --base /path/to/cleanroom-macos-base \
+  --out /path/to/cleanroom-macos-gui \
+  --profile gui \
+  --metrics-dir /tmp/cleanroom-macos-gui-finalize \
+  --force
+```
+
+The GUI profile still installs the root LaunchDaemon on `agent.port`, but it
+keeps the `cleanroom` user, leaves autologin configured, and rewrites that
+user's LaunchAgent to serve exec on `user_agent.port`. The finalizer then boots
+the image again, verifies the root daemon, connects to the user agent, launches
+TextEdit with `open -a TextEdit`, and attempts a guest-side `screencapture`.
+The screenshot can be unavailable when the VM is running through the headless
+runner without an attached VZ view, so the hard smoke assertion is app launch
+through the user session. This is a local harness profile for proving GUI
+session mechanics, not production GUI automation support.
 
 ## Validate metadata
 
@@ -233,6 +254,16 @@ dist/darwin-vz-macos-minimal \
 The command defaults to `/usr/bin/sw_vers`. Guest stdout and stderr are
 streamed to the matching host streams. The runner exits with the guest command
 exit code and writes timing metadata to the path provided by `--metrics`.
+
+For GUI-profile bundles, use `--agent user` to connect to the user LaunchAgent
+instead of the root LaunchDaemon:
+
+```bash
+dist/darwin-vz-macos-minimal \
+  --bundle /path/to/cleanroom-macos-gui \
+  --agent user \
+  -- /usr/bin/open -a TextEdit
+```
 
 The guest agent protocol is deliberately tiny for the probe:
 

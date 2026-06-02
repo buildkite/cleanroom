@@ -9,6 +9,7 @@ private struct Options {
     var validateOnly = false
     var timeoutSeconds = 120.0
     var connectIntervalMS: useconds_t = 50
+    var agentName = "root"
 }
 
 private struct BundleManifest: Decodable {
@@ -24,6 +25,7 @@ private struct BundleManifest: Decodable {
     let hardwareModel: String
     let machineIdentifier: String
     let agent: AgentManifest
+    let userAgent: AgentManifest?
     let display: DisplayManifest?
 
     enum CodingKeys: String, CodingKey {
@@ -39,6 +41,7 @@ private struct BundleManifest: Decodable {
         case hardwareModel = "hardware_model"
         case machineIdentifier = "machine_identifier"
         case agent
+        case userAgent = "user_agent"
         case display
     }
 }
@@ -68,6 +71,32 @@ private struct ResolvedBundle {
     let auxiliaryStorageURL: URL
     let hardwareModel: VZMacHardwareModel
     let machineIdentifier: VZMacMachineIdentifier
+}
+
+private func validateAgent(_ agent: AgentManifest, field: String) throws {
+    guard agent.transport == "virtio_socket" else {
+        throw RunnerError.invalid("\(field).transport must be virtio_socket")
+    }
+    guard agent.port > 0 else {
+        throw RunnerError.invalid("\(field).port must be greater than zero")
+    }
+    guard !agent.version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw RunnerError.invalid("\(field).version must not be empty")
+    }
+}
+
+private func selectedAgent(bundle: ResolvedBundle, name: String) throws -> AgentManifest {
+    switch name {
+    case "root":
+        return bundle.manifest.agent
+    case "user":
+        guard let userAgent = bundle.manifest.userAgent else {
+            throw RunnerError.invalid("bundle does not declare user_agent")
+        }
+        return userAgent
+    default:
+        throw RunnerError.invalid("--agent must be root or user")
+    }
 }
 
 private struct ExecRequest: Encodable {
@@ -109,6 +138,7 @@ private struct ProbeResult: Encodable {
     let execResponseMS: Double?
     let exitCode: Int?
     let error: String?
+    let selectedAgent: String
     let macOSVersion: String?
     let macOSBuild: String?
     let agentVersion: String
@@ -124,6 +154,7 @@ private struct ProbeResult: Encodable {
         case execResponseMS = "exec_response_ms"
         case exitCode = "exit_code"
         case error
+        case selectedAgent = "selected_agent"
         case macOSVersion = "macos_version"
         case macOSBuild = "macos_build"
         case agentVersion = "agent_version"
@@ -187,6 +218,7 @@ private func usage() -> String {
 
     Options:
       --metrics <path>       Write result JSON to path. If omitted, JSON is written to stderr.
+      --agent <root|user>    Agent endpoint to use. Default: root.
       --validate-only        Validate the bundle and host support without starting the VM.
       --timeout <seconds>    VM start, connect, and command timeout. Default: 120.
       -h, --help             Show this help.
@@ -220,6 +252,11 @@ private func parseOptions(_ args: [String]) throws -> Options {
             opts.metricsPath = try value()
             if opts.metricsPath == "-" {
                 throw RunnerError.usage("--metrics - is not supported because guest stdout is streamed on stdout; write metrics to a file or omit --metrics")
+            }
+        case "--agent":
+            opts.agentName = try value()
+            guard opts.agentName == "root" || opts.agentName == "user" else {
+                throw RunnerError.invalid("--agent must be root or user")
             }
         case "--validate-only":
             opts.validateOnly = true
@@ -307,14 +344,12 @@ private func loadBundle(path: String) throws -> ResolvedBundle {
     guard manifest.memoryMiB <= UInt64.max / 1024 / 1024 else {
         throw RunnerError.invalid("memory_mib is too large")
     }
-    guard manifest.agent.transport == "virtio_socket" else {
-        throw RunnerError.invalid("agent.transport must be virtio_socket")
-    }
-    guard manifest.agent.port > 0 else {
-        throw RunnerError.invalid("agent.port must be greater than zero")
-    }
-    guard !manifest.agent.version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-        throw RunnerError.invalid("agent.version must not be empty")
+    try validateAgent(manifest.agent, field: "agent")
+    if let userAgent = manifest.userAgent {
+        try validateAgent(userAgent, field: "user_agent")
+        if userAgent.port == manifest.agent.port {
+            throw RunnerError.invalid("user_agent.port must differ from agent.port")
+        }
     }
     if let display = manifest.display {
         if let width = display.widthPx, width <= 0 {
@@ -586,6 +621,7 @@ private func writeMetrics(_ result: ProbeResult, path: String) throws {
 do {
     let opts = try parseOptions(Array(CommandLine.arguments.dropFirst()))
     let bundle = try loadBundle(path: opts.bundlePath)
+    let agent = try selectedAgent(bundle: bundle, name: opts.agentName)
     if opts.validateOnly {
         let queue = DispatchQueue(label: "cleanroom.benchmark.darwin-vz-macos-minimal.validate")
         _ = try buildVM(bundle: bundle, queue: queue)
@@ -598,9 +634,10 @@ do {
             execResponseMS: nil,
             exitCode: nil,
             error: nil,
+            selectedAgent: opts.agentName,
             macOSVersion: bundle.manifest.macOSVersion,
             macOSBuild: bundle.manifest.macOSBuild,
-            agentVersion: bundle.manifest.agent.version,
+            agentVersion: agent.version,
             vcpus: bundle.manifest.vcpus,
             memoryMiB: bundle.manifest.memoryMiB
         )
@@ -617,7 +654,7 @@ do {
     let startMS = msSince(t0)
     let connection = try connectVsock(
         handle: handle,
-        port: bundle.manifest.agent.port,
+        port: agent.port,
         timeoutSeconds: opts.timeoutSeconds,
         intervalMS: opts.connectIntervalMS
     )
@@ -634,9 +671,10 @@ do {
         execResponseMS: execResponseMS,
         exitCode: outcome.0,
         error: outcome.1,
+        selectedAgent: opts.agentName,
         macOSVersion: bundle.manifest.macOSVersion,
         macOSBuild: bundle.manifest.macOSBuild,
-        agentVersion: bundle.manifest.agent.version,
+        agentVersion: agent.version,
         vcpus: bundle.manifest.vcpus,
         memoryMiB: bundle.manifest.memoryMiB
     )

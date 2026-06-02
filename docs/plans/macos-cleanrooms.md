@@ -1,7 +1,7 @@
 # macOS Cleanrooms Tart Replacement Plan
 
 **Status:** Proposed
-**Last reviewed:** 2026-06-01
+**Last reviewed:** 2026-06-02
 **Spec references:** `docs/backends.md`, `docs/backend/darwin-vz.md`, `benchmarks/darwin-vz/minimal/README.md`, `docs/research.md`
 
 ## Summary
@@ -397,6 +397,17 @@ the cloned Data volume before the final smoke boot. The bootstrap cron and
 LaunchAgent now check the finalized marker before starting the user agent, so a
 failed finalization leaves an inert bootstrap path after the marker is written.
 
+The same finalizer now has a local GUI profile. `--profile gui` keeps the
+bootstrap user as a real autologin account, rewrites that user's LaunchAgent to
+serve exec on `user_agent.port`, leaves the root LaunchDaemon on `agent.port`,
+and removes only the bootstrap cron entry offline. Its smoke path verifies the
+root daemon first, then connects to the user agent, launches TextEdit, and
+attempts a guest screenshot with `screencapture`. On the headless runner the
+screenshot can be unavailable without an attached VZ view, so the hard smoke
+assertion is GUI app launch through the user session. This is evidence that a
+GUI-session image profile can run macOS apps; production GUI automation, VNC,
+clipboard, TCC management, and backend integration remain separate work.
+
 ## Delivery Strategy
 
 ### Slice 1: Local macOS VM boot-and-exec probe
@@ -537,6 +548,15 @@ not autologin, and it removes the temporary dslocal record offline before the
 final smoke boot because macOS can mark the first local account with a secure
 token and refuse an in-guest delete.
 
+`finalize-agent-bundle.sh --profile gui` is the local GUI-session variant. It
+keeps a non-admin autologin user, writes `user_agent` metadata into
+`bundle.json`, proves the root daemon and user LaunchAgent can both serve exec,
+and uses the user agent to launch TextEdit. It attempts guest-side screenshot
+capture, but the headless runner does not treat that as required because no VZ
+view is attached. This does not change the first production target:
+Buildkite-style command execution still comes before GUI automation in the
+backend.
+
 Definition of done:
 
 - repeated local runs clone from the same base without mutating it
@@ -674,6 +694,9 @@ the existing backend.
 - First replacement target: Buildkite-style macOS CI command execution. Local
   developer sandboxes and GUI workflows can benefit later, but they should not
   shape the first supported surface.
+- Local GUI proof: a harness-only GUI image profile is acceptable before
+  backend integration as evidence for app/session mechanics. It should not
+  imply production support for GUI automation or user-session policy yet.
 - First PR boundary: standalone `benchmarks/darwin-vz/macos-minimal` harness,
   not production backend integration.
 - Runtime dependency: no `tart` binary in the execution path. Temporary use of

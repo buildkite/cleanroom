@@ -11,6 +11,8 @@ AGENT_USER="cleanroom"
 AGENT_PASSWORD="cleanroom"
 AGENT_UID="$(id -u)"
 AGENT_GID="$(id -g)"
+PROFILE="headless"
+USER_AGENT_PORT=""
 RUNNER="${ROOT_DIR}/dist/darwin-vz-macos-minimal"
 TIMEOUT=240
 METRICS_DIR=""
@@ -29,9 +31,11 @@ Options:
   --agent-user <name>      Temporary bootstrap user. Default: cleanroom.
   --agent-uid <uid>        UID for the temporary bootstrap user. Default: current host UID.
   --agent-gid <gid>        GID for the temporary bootstrap user. Default: current host GID.
+  --profile <name>         Image profile to finalize: headless or gui. Default: headless.
+  --user-agent-port <port> User LaunchAgent vsock port for --profile gui. Default: agent port + 1.
   --runner <path>          macOS runner binary. Default: dist/darwin-vz-macos-minimal.
   --timeout <seconds>      Timeout for each VM boot/exec. Default: 240.
-  --metrics-dir <path>     Keep finalize.json and smoke.json metrics in this directory.
+  --metrics-dir <path>     Keep finalize.json, smoke.json, and optional gui-smoke.json metrics in this directory.
   --keep-bootstrap         Keep the temporary bootstrap bundle after a failure.
   --force                  Replace an existing output directory.
   -h, --help               Show this help.
@@ -39,7 +43,8 @@ Options:
 The script clones a base macOS VM bundle, creates a temporary rootless
 user-cron bootstrap bundle, boots it once to install the root-owned
 LaunchDaemon from inside the guest, then boots it again to prove exec is served
-by the LaunchDaemon as root.
+by the LaunchDaemon as root. The gui profile keeps a real autologin user and
+adds a user LaunchAgent on a separate vsock port.
 EOF
 }
 
@@ -68,6 +73,7 @@ remove_bootstrap_user_offline() (
 
   local bundle="$1"
   local user="$2"
+  local profile="$3"
   local attached_disk=""
   local data_volume=""
 
@@ -122,7 +128,7 @@ remove_bootstrap_user_offline() (
     "${mount_point}/private/var/db/dslocal/nodes/Default/users" \
     "${mount_point}/private/var/db/dslocal/nodes/Default/groups" 2>/dev/null || true
 
-  /usr/bin/python3 - "${mount_point}" "${user}" <<'PY'
+  /usr/bin/python3 - "${mount_point}" "${user}" "${profile}" <<'PY'
 import plistlib
 import shutil
 import sys
@@ -130,11 +136,13 @@ from pathlib import Path
 
 mount = Path(sys.argv[1])
 user = sys.argv[2]
+profile = sys.argv[3]
+remove_user = profile == "headless"
 node = mount / "private/var/db/dslocal/nodes/Default"
 user_path = node / "users" / f"{user}.plist"
 guid = None
 
-if user_path.exists():
+if remove_user and user_path.exists():
     with user_path.open("rb") as f:
         record = plistlib.load(f)
     values = record.get("generateduid") or []
@@ -143,7 +151,7 @@ if user_path.exists():
     user_path.unlink()
 
 groups_dir = node / "groups"
-if groups_dir.is_dir():
+if remove_user and groups_dir.is_dir():
     for group_path in groups_dir.glob("*.plist"):
         with group_path.open("rb") as f:
             group = plistlib.load(f)
@@ -162,7 +170,7 @@ if groups_dir.is_dir():
                 plistlib.dump(group, f, fmt=plistlib.FMT_BINARY)
 
 loginwindow = mount / "Library/Preferences/com.apple.loginwindow.plist"
-if loginwindow.exists():
+if remove_user and loginwindow.exists():
     with loginwindow.open("rb") as f:
         values = plistlib.load(f)
     for key in ["autoLoginUser", "lastUserName"]:
@@ -173,11 +181,14 @@ if loginwindow.exists():
     with loginwindow.open("wb") as f:
         plistlib.dump(values, f, fmt=plistlib.FMT_BINARY)
 
-for rel in [
-    f"Users/{user}",
-    f"private/var/at/tabs/{user}",
-    "private/etc/kcpassword",
-]:
+paths = [f"private/var/at/tabs/{user}"]
+if remove_user:
+    paths.extend([
+        f"Users/{user}",
+        "private/etc/kcpassword",
+    ])
+
+for rel in paths:
     path = mount / rel
     if path.is_dir():
         shutil.rmtree(path)
@@ -190,8 +201,43 @@ PY
   hdiutil detach "${attached_disk}" >/dev/null
   attached_disk=""
 
-  echo "removed offline bootstrap user: ${user}"
+  if [[ "${profile}" == "headless" ]]; then
+    echo "removed offline bootstrap user: ${user}"
+  else
+    echo "removed offline bootstrap cron: ${user}"
+  fi
 )
+
+write_bundle_profile_metadata() {
+  /usr/bin/python3 - "${TMP_BOOTSTRAP}/bundle.json" "${PROFILE}" "${AGENT_VERSION}" "${USER_AGENT_PORT}" "${AGENT_USER}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+profile = sys.argv[2]
+version = sys.argv[3]
+user_agent_port = int(sys.argv[4])
+user = sys.argv[5]
+
+with open(path, "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+
+manifest["image_profile"] = profile
+if profile == "gui":
+    manifest["user_agent"] = {
+        "transport": "virtio_socket",
+        "port": user_agent_port,
+        "version": version,
+        "user": user,
+    }
+else:
+    manifest.pop("user_agent", None)
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -228,6 +274,16 @@ while [[ $# -gt 0 ]]; do
     --agent-gid)
       [[ $# -ge 2 ]] || die "missing value for --agent-gid"
       AGENT_GID="$2"
+      shift 2
+      ;;
+    --profile)
+      [[ $# -ge 2 ]] || die "missing value for --profile"
+      PROFILE="$2"
+      shift 2
+      ;;
+    --user-agent-port)
+      [[ $# -ge 2 ]] || die "missing value for --user-agent-port"
+      USER_AGENT_PORT="$2"
       shift 2
       ;;
     --runner)
@@ -272,6 +328,13 @@ done
 [[ "${AGENT_GID}" =~ ^[0-9]+$ ]] || die "--agent-gid must be numeric"
 [[ "${AGENT_UID}" -ge 501 ]] || die "--agent-uid must be 501 or greater"
 [[ "${AGENT_USER}" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || die "--agent-user must be a simple local account name"
+case "${PROFILE}" in
+  headless|gui)
+    ;;
+  *)
+    die "--profile must be headless or gui"
+    ;;
+esac
 case "${TIMEOUT}" in
   ''|*[!0-9]*)
     die "--timeout must be a positive integer"
@@ -301,10 +364,12 @@ if [[ -n "${METRICS_DIR}" ]]; then
   mkdir -p "${METRICS_DIR}"
   FINALIZE_METRICS="${METRICS_DIR}/finalize.json"
   SMOKE_METRICS="${METRICS_DIR}/smoke.json"
+  GUI_SMOKE_METRICS="${METRICS_DIR}/gui-smoke.json"
 else
   TMP_METRICS="$(mktemp -d "${TMPDIR:-/tmp}/cleanroom-macos-finalize-metrics.XXXXXX")"
   FINALIZE_METRICS="${TMP_METRICS}/finalize.json"
   SMOKE_METRICS="${TMP_METRICS}/smoke.json"
+  GUI_SMOKE_METRICS="${TMP_METRICS}/gui-smoke.json"
 fi
 
 cleanup() {
@@ -319,7 +384,7 @@ trap cleanup EXIT
 
 rm -rf "${TMP_BOOTSTRAP}"
 
-"${ROOT_DIR}/benchmarks/darwin-vz/macos-minimal/prepare-agent-bundle.sh" \
+PREPARE_ARGS=(
   --base "${BASE}" \
   --out "${TMP_BOOTSTRAP}" \
   --agent-bin "${AGENT_BIN}" \
@@ -329,8 +394,13 @@ rm -rf "${TMP_BOOTSTRAP}"
   --agent-password "${AGENT_PASSWORD}" \
   --agent-uid "${AGENT_UID}" \
   --agent-gid "${AGENT_GID}" \
-  --user-cron-no-autologin \
   --force
+)
+if [[ "${PROFILE}" == "headless" ]]; then
+  PREPARE_ARGS+=(--user-cron-no-autologin)
+fi
+
+"${ROOT_DIR}/benchmarks/darwin-vz/macos-minimal/prepare-agent-bundle.sh" "${PREPARE_ARGS[@]}"
 
 AGENT_PORT="$(
   /usr/bin/python3 - "${TMP_BOOTSTRAP}/bundle.json" <<'PY'
@@ -343,6 +413,16 @@ print(manifest.get("agent", {}).get("port", 10700))
 PY
 )"
 [[ "${AGENT_PORT}" =~ ^[0-9]+$ && "${AGENT_PORT}" -gt 0 ]] || die "bundle agent port is invalid: ${AGENT_PORT}"
+if [[ -z "${USER_AGENT_PORT}" ]]; then
+  USER_AGENT_PORT="$((AGENT_PORT + 1))"
+fi
+case "${USER_AGENT_PORT}" in
+  ''|*[!0-9]*)
+    die "--user-agent-port must be a positive integer"
+    ;;
+esac
+[[ "${USER_AGENT_PORT}" -gt 0 ]] || die "--user-agent-port must be a positive integer"
+[[ "${USER_AGENT_PORT}" != "${AGENT_PORT}" ]] || die "--user-agent-port must differ from the root agent port"
 
 PASSWORD_HEX="$(printf '%s' "${AGENT_PASSWORD}" | /usr/bin/xxd -p -c 256)"
 
@@ -389,6 +469,8 @@ set -eu
 
 label="__LABEL__"
 bootstrap_user="__AGENT_USER__"
+profile="__PROFILE__"
+user_agent_port="__USER_AGENT_PORT__"
 marker="__FINALIZED_MARKER__"
 agent_src="/Users/${bootstrap_user}/bin/cleanroom-macos-guest-agent"
 agent_dst="/usr/local/bin/cleanroom-macos-guest-agent"
@@ -415,8 +497,41 @@ fi
 /bin/chmod 0644 "${marker}"
 
 /bin/rm -f "${bootstrap_agent}" >/dev/null 2>&1 || true
-/usr/bin/defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser >/dev/null 2>&1 || true
-/bin/rm -f /private/etc/kcpassword >/dev/null 2>&1 || true
+if [ "${profile}" = "gui" ]; then
+  /bin/mkdir -p "$(/usr/bin/dirname "${bootstrap_agent}")"
+  cat > "${bootstrap_agent}" <<USER_AGENT_PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${agent_dst}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CLEANROOM_VSOCK_PORT</key>
+    <string>${user_agent_port}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/${bootstrap_user}/Library/Logs/cleanroom-macos-guest-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/${bootstrap_user}/Library/Logs/cleanroom-macos-guest-agent.err.log</string>
+</dict>
+</plist>
+USER_AGENT_PLIST
+  /usr/sbin/chown "${bootstrap_user}:staff" "${bootstrap_agent}" >/dev/null 2>&1 || true
+  /bin/chmod 0644 "${bootstrap_agent}"
+else
+  /usr/bin/defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser >/dev/null 2>&1 || true
+  /bin/rm -f /private/etc/kcpassword >/dev/null 2>&1 || true
+fi
 if /usr/bin/dscl . -read "/Users/${bootstrap_user}" >/dev/null 2>&1; then
   /usr/sbin/dseditgroup -o edit -d "${bootstrap_user}" -t user admin >/dev/null 2>&1 || true
 fi
@@ -437,6 +552,8 @@ EOF_FINALIZER
 FINALIZER_SCRIPT="${FINALIZER_SCRIPT//__LABEL__/${LABEL}}"
 FINALIZER_SCRIPT="${FINALIZER_SCRIPT//__AGENT_USER__/${AGENT_USER}}"
 FINALIZER_SCRIPT="${FINALIZER_SCRIPT//__AGENT_PORT__/${AGENT_PORT}}"
+FINALIZER_SCRIPT="${FINALIZER_SCRIPT//__USER_AGENT_PORT__/${USER_AGENT_PORT}}"
+FINALIZER_SCRIPT="${FINALIZER_SCRIPT//__PROFILE__/${PROFILE}}"
 FINALIZER_SCRIPT="${FINALIZER_SCRIPT//__PASSWORD_HEX__/${PASSWORD_HEX}}"
 FINALIZER_SCRIPT="${FINALIZER_SCRIPT//__FINALIZED_MARKER__/${FINALIZED_MARKER}}"
 
@@ -444,6 +561,8 @@ SMOKE_SCRIPT="$(cat <<'EOF_SMOKE'
 set -eu
 label="__LABEL__"
 bootstrap_user="__AGENT_USER__"
+profile="__PROFILE__"
+user_agent_port="__USER_AGENT_PORT__"
 marker="__FINALIZED_MARKER__"
 uid="$(id -u)"
 user="$(id -un)"
@@ -454,17 +573,67 @@ test -f "${marker}"
 /usr/bin/stat -f "%Su:%Sg %Lp %N" /usr/local/bin/cleanroom-macos-guest-agent "/Library/LaunchDaemons/${label}.plist" "${marker}"
 test ! -e "/private/var/at/tabs/${bootstrap_user}"
 echo "bootstrap_cron=absent"
-if /usr/bin/id "${bootstrap_user}" >/dev/null 2>&1; then
-  echo "bootstrap_user=present" >&2
-  exit 1
+if [ "${profile}" = "gui" ]; then
+  /usr/bin/id "${bootstrap_user}" >/dev/null
+  if /usr/bin/dsmemberutil checkmembership -U "${bootstrap_user}" -G admin | /usr/bin/grep -q "is a member"; then
+    echo "bootstrap_user=admin" >&2
+    exit 1
+  fi
+  echo "bootstrap_admin=absent"
+  test -f "/Users/${bootstrap_user}/Library/LaunchAgents/${label}.plist"
+  /usr/bin/grep -q "<string>${user_agent_port}</string>" "/Users/${bootstrap_user}/Library/LaunchAgents/${label}.plist"
+  echo "bootstrap_user=present"
+else
+  if /usr/bin/id "${bootstrap_user}" >/dev/null 2>&1; then
+    echo "bootstrap_user=present" >&2
+    exit 1
+  fi
+  test ! -e "/Users/${bootstrap_user}"
+  echo "bootstrap_user=absent"
 fi
-test ! -e "/Users/${bootstrap_user}"
-echo "bootstrap_user=absent"
 EOF_SMOKE
 )"
 SMOKE_SCRIPT="${SMOKE_SCRIPT//__LABEL__/${LABEL}}"
 SMOKE_SCRIPT="${SMOKE_SCRIPT//__AGENT_USER__/${AGENT_USER}}"
+SMOKE_SCRIPT="${SMOKE_SCRIPT//__PROFILE__/${PROFILE}}"
+SMOKE_SCRIPT="${SMOKE_SCRIPT//__USER_AGENT_PORT__/${USER_AGENT_PORT}}"
 SMOKE_SCRIPT="${SMOKE_SCRIPT//__FINALIZED_MARKER__/${FINALIZED_MARKER}}"
+
+GUI_SMOKE_SCRIPT="$(cat <<'EOF_GUI_SMOKE'
+set -eu
+label="__LABEL__"
+expected_user="__AGENT_USER__"
+uid="$(id -u)"
+user="$(id -un)"
+screenshot="/tmp/cleanroom-gui-smoke.png"
+printf "gui_user=%s uid=%s cwd=%s\n" "${user}" "${uid}" "${PWD}"
+test "${user}" = "${expected_user}"
+test "${uid}" != "0"
+/bin/launchctl print "gui/${uid}/${label}" >/dev/null
+/usr/bin/killall TextEdit >/dev/null 2>&1 || true
+/bin/rm -f "${screenshot}"
+/usr/bin/open -a TextEdit
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  if /usr/bin/pgrep -x TextEdit >/dev/null 2>&1; then
+    break
+  fi
+  /bin/sleep 1
+done
+/usr/bin/pgrep -x TextEdit >/dev/null
+if screenshot_output="$(/usr/sbin/screencapture -x "${screenshot}" 2>&1)"; then
+  test -s "${screenshot}"
+  /usr/bin/stat -f "gui_screenshot=%z %N" "${screenshot}"
+else
+  echo "gui_screenshot=unavailable"
+  if [ -n "${screenshot_output}" ]; then
+    printf "%s\n" "${screenshot_output}" >&2
+  fi
+fi
+/usr/bin/killall TextEdit >/dev/null 2>&1 || true
+EOF_GUI_SMOKE
+)"
+GUI_SMOKE_SCRIPT="${GUI_SMOKE_SCRIPT//__LABEL__/${LABEL}}"
+GUI_SMOKE_SCRIPT="${GUI_SMOKE_SCRIPT//__AGENT_USER__/${AGENT_USER}}"
 
 "${RUNNER}" \
   --bundle "${TMP_BOOTSTRAP}" \
@@ -472,13 +641,23 @@ SMOKE_SCRIPT="${SMOKE_SCRIPT//__FINALIZED_MARKER__/${FINALIZED_MARKER}}"
   --metrics "${FINALIZE_METRICS}" \
   -- /bin/sh -lc "${FINALIZER_SCRIPT}"
 redact_finalize_metrics "${FINALIZE_METRICS}"
-remove_bootstrap_user_offline "${TMP_BOOTSTRAP}" "${AGENT_USER}"
+remove_bootstrap_user_offline "${TMP_BOOTSTRAP}" "${AGENT_USER}" "${PROFILE}"
+write_bundle_profile_metadata
 
 "${RUNNER}" \
   --bundle "${TMP_BOOTSTRAP}" \
   --timeout "${TIMEOUT}" \
   --metrics "${SMOKE_METRICS}" \
   -- /bin/sh -lc "${SMOKE_SCRIPT}"
+
+if [[ "${PROFILE}" == "gui" ]]; then
+  "${RUNNER}" \
+    --bundle "${TMP_BOOTSTRAP}" \
+    --agent user \
+    --timeout "${TIMEOUT}" \
+    --metrics "${GUI_SMOKE_METRICS}" \
+    -- /bin/sh -lc "${GUI_SMOKE_SCRIPT}"
+fi
 
 if [[ -e "${OUT}" ]]; then
   rm -rf "${OUT}"
@@ -487,11 +666,15 @@ mv "${TMP_BOOTSTRAP}" "${OUT}"
 TMP_BOOTSTRAP=""
 
 echo "finalized bundle: ${OUT}"
-/usr/bin/python3 - "${FINALIZE_METRICS}" "${SMOKE_METRICS}" <<'PY'
+SUMMARY_METRICS=("${FINALIZE_METRICS}" "${SMOKE_METRICS}")
+if [[ "${PROFILE}" == "gui" ]]; then
+  SUMMARY_METRICS+=("${GUI_SMOKE_METRICS}")
+fi
+/usr/bin/python3 - "${SUMMARY_METRICS[@]}" <<'PY'
 import json
 import sys
 
-for label, path in [("finalize", sys.argv[1]), ("smoke", sys.argv[2])]:
+for label, path in zip(["finalize", "smoke", "gui_smoke"], sys.argv[1:]):
     with open(path, "r", encoding="utf-8") as f:
         metrics = json.load(f)
     print(
