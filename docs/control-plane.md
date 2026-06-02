@@ -61,8 +61,9 @@ With OIDC enabled, the server:
    snapshots.
 
 Authenticated resource access is exact-owner scoped. A caller can only manage
-resources owned by the same derived principal unless policy grants broaden that
-explicitly.
+resources owned by the same derived principal. Grants can allow or deny actions
+on resources owned by that principal, but they cannot grant access to resources
+owned by a different derived principal.
 
 ## Host gateway and credentials
 

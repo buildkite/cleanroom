@@ -185,6 +185,7 @@ cleanroom exec \
   --host https://cleanroom.example.com:7777 \
   --auth-token-file /tmp/cleanroom.jwt \
   --repo-url "$BUILDKITE_REPO" \
+  --repo-commit "$BUILDKITE_COMMIT" \
   -- go test ./...
 ```
 
