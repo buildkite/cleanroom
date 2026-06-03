@@ -464,6 +464,96 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
+func (a *Adapter) Warmup(ctx context.Context, req backend.WarmupRequest) (*backend.WarmupResult, error) {
+	cfg := req.FirecrackerConfig
+	result := &backend.WarmupResult{
+		Backend:            a.Name(),
+		MinimumRootFSBytes: cfg.MinimumRootFSBytes,
+	}
+
+	kernel, err := bootassets.ResolveKernelPathForHostWithVersion(ctx, a.Name(), cfg.KernelImagePath, a.Version)
+	if err != nil {
+		return nil, fmt.Errorf("warm kernel: %w", err)
+	}
+	result.KernelPath = kernel.Path
+	result.KernelStatus = warmupKernelStatus(kernel)
+
+	rootFSPath, imageRef, imageDigest, rootFSStatus, err := a.warmupRootFS(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	rootFSPath, err = filepath.Abs(rootFSPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve rootfs path: %w", err)
+	}
+	if _, err := os.Stat(rootFSPath); err != nil {
+		return nil, fmt.Errorf("rootfs %s: %w", rootFSPath, err)
+	}
+
+	driver, err := rootFSVolumeDriver(cfg)
+	if err != nil {
+		return nil, err
+	}
+	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
+		BaseID:       strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
+		SourcePath:   rootFSPath,
+		MinimumBytes: cfg.MinimumRootFSBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare base volume: %w", err)
+	}
+	baseRootFSRef := strings.TrimSpace(baseVolume.Ref)
+	if baseRootFSRef == "" {
+		return nil, errors.New("prepare base volume returned empty ref")
+	}
+
+	result.RootFSPath = rootFSPath
+	result.RootFSStatus = rootFSStatus
+	result.BaseRootFSRef = baseRootFSRef
+	result.BaseRootFSStatus = backend.WarmupStatusReady
+	result.ImageRef = imageRef
+	result.ImageDigest = imageDigest
+	return result, nil
+}
+
+func warmupKernelStatus(result bootassets.ResolveResult) string {
+	if !result.Managed {
+		return backend.WarmupStatusConfigured
+	}
+	if result.CacheHit {
+		return backend.WarmupStatusCached
+	}
+	return backend.WarmupStatusFetched
+}
+
+func (a *Adapter) warmupRootFS(ctx context.Context, req backend.WarmupRequest) (path, imageRef, imageDigest, status string, err error) {
+	cfg := req.FirecrackerConfig
+	configuredPath := strings.TrimSpace(cfg.RootFSPath)
+	if configuredPath != "" {
+		if _, statErr := os.Stat(configuredPath); statErr == nil {
+			return configuredPath, "", "", backend.WarmupStatusConfigured, nil
+		}
+	}
+
+	ref := strings.TrimSpace(req.ImageRef)
+	if ref == "" {
+		return "", "", "", "", errors.New("warm rootfs: rootfs is not configured and image_ref is empty")
+	}
+	ensurePrepared := a.ensurePreparedRootFSFn
+	if ensurePrepared == nil {
+		ensurePrepared = a.ensurePreparedRuntimeRootFSFromImage
+	}
+	prepared, err := ensurePrepared(ctx, ref)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("warm rootfs from image %q: %w", ref, err)
+	}
+	status = backend.WarmupStatusPrepared
+	if prepared.Hit {
+		status = backend.WarmupStatusCached
+	}
+	return prepared.Path, prepared.Ref, prepared.Digest, status, nil
+}
+
 func (a *Adapter) SuspendSandbox(ctx context.Context, sandboxID string) error {
 	instance, err := a.lifecycleSandboxInstance(sandboxID)
 	if err != nil {
