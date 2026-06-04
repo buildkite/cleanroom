@@ -7,6 +7,9 @@ ownership, and gateway boundaries, see [Control plane](control-plane.md).
 
 Define a minimal, functional control API for creating and managing Cleanroom sandboxes with durable execution streaming and interactive execution bootstrap.
 
+The published protobuf schema is available in the Buf Schema Registry at
+[buf.build/buildkite/cleanroom](https://buf.build/buildkite/cleanroom).
+
 This document is intentionally small-scope:
 - management plane for sandbox lifecycle
 - execution plane for command runs and streaming output
