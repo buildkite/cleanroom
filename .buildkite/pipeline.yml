@@ -22,7 +22,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+      - test-collector#v1.11.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-go-test-engine.sh
@@ -69,12 +69,25 @@ steps:
   - label: ":test_tube: Test (macOS)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: go test ./...
+      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
+          version: "2026.5.12"
+          install_args: gotestsum
+      - test-collector#v1.11.0:
+          files: "tmp/test-engine/*.xml"
+          format: "junit"
+    command: scripts/ci-go-test-engine.sh
+    artifact_paths:
+      - "tmp/test-engine/*.xml"
+    env:
+      BUILDKITE_TEST_ENGINE_SUITE_SLUG: cleanroom-go-darwin
+      BUILDKITE_TEST_ENGINE_TEST_RUNNER: gotest
+      BUILDKITE_TEST_ENGINE_RETRY_COUNT: "1"
     cache:
       paths:
         - "~/.local/share/mise"
         - "~/.cache/mise"
         - "~/.local/state/mise"
+        - "~/.cache/cleanroom/test-engine"
       size: "20g"
       name: "mise-cache"
     agents:
@@ -121,7 +134,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+      - test-collector#v1.11.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-with-host-lock.sh cleanroom-darwin-vz scripts/ci-examples-darwin-vz.sh
@@ -139,7 +152,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - github.com/buildkite-plugins/test-collector-buildkite-plugin#v1.11.0:
+      - test-collector#v1.11.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-with-host-lock.sh cleanroom-firecracker scripts/ci-examples-firecracker.sh
