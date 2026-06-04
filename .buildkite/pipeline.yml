@@ -160,13 +160,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: buf
-    command: |
-      set -eu
-      if [ -z "${BUF_TOKEN:-}" ]; then
-        echo "BUF_TOKEN is required to publish schema to buf.build/buildkite/cleanroom" >&2
-        exit 1
-      fi
-      buf push --git-metadata
+    command: mise run proto:push
     secrets:
       - BUF_TOKEN
     cache:
