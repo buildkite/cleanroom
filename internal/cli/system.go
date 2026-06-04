@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -24,8 +25,9 @@ import (
 )
 
 type SystemCommand struct {
-	DF    SystemDFCommand    `name:"df" cmd:"" help:"Show cleanroom host storage usage"`
-	Prune SystemPruneCommand `name:"prune" cmd:"" help:"Remove reclaimable cleanroom host storage"`
+	DF     SystemDFCommand     `name:"df" cmd:"" help:"Show cleanroom host storage usage"`
+	Prune  SystemPruneCommand  `name:"prune" cmd:"" help:"Remove reclaimable cleanroom host storage"`
+	Warmup SystemWarmupCommand `name:"warmup" cmd:"" help:"Prepare backend assets used before the first sandbox"`
 }
 
 type SystemDFCommand struct {
@@ -41,6 +43,11 @@ type SystemPruneCommand struct {
 	Table     bool   `help:"Print every prune action as a table"`
 	JSON      bool   `help:"Print prune plan and result as JSON"`
 	OlderThan string `name:"older-than" help:"Include eligible cache entries older than this duration (for example 24h or 7d)"`
+}
+
+type SystemWarmupCommand struct {
+	Backend string `help:"Execution backend to warm (defaults to runtime config or host default)"`
+	JSON    bool   `help:"Print warmup result as JSON"`
 }
 
 var systemInventory = storagegc.Inventory
@@ -121,6 +128,77 @@ func (c *SystemPruneCommand) Run(ctx *runtimeContext) error {
 		return writeSystemPruneTable(stdout(ctx), plan, "reclaimed")
 	}
 	_, err = fmt.Fprintf(stdout(ctx), "reclaimed %s from %d entries\n", formatStorageBytes(result.ReclaimedBytes), result.DeletedEntries)
+	return err
+}
+
+func (c *SystemWarmupCommand) Run(ctx *runtimeContext) error {
+	backendName := resolveBackendName(c.Backend, ctx.Config.DefaultBackend)
+	adapter, ok := ctx.Backends[backendName]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", backendName)
+	}
+	warmer, ok := adapter.(backend.WarmupAdapter)
+	if !ok {
+		return fmt.Errorf("backend %q does not support system warmup", backendName)
+	}
+
+	cfg := runtimeconfig.MergeBackendConfig(ctx.Config, backendName, 0)
+	imageRef, err := resolveSystemWarmupImageRef(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+	result, err := warmer.Warmup(context.Background(), backend.WarmupRequest{
+		FirecrackerConfig: cfg,
+		ImageRef:          imageRef,
+	})
+	if err != nil {
+		return err
+	}
+	if result == nil {
+		return errors.New("backend warmup returned empty result")
+	}
+	if c.JSON {
+		enc := json.NewEncoder(stdout(ctx))
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	}
+	return writeSystemWarmup(stdout(ctx), *result)
+}
+
+func resolveSystemWarmupImageRef(ctx context.Context, cfg backend.FirecrackerConfig) (string, error) {
+	configuredRootFS := strings.TrimSpace(cfg.RootFSPath)
+	if configuredRootFS != "" {
+		if _, err := os.Stat(configuredRootFS); err == nil {
+			return "", nil
+		}
+	}
+	ref, err := resolveReferenceForPolicyUpdate(ctx, defaultBumpRefSource)
+	if err != nil {
+		return "", fmt.Errorf("resolve default sandbox image %q: %w", defaultBumpRefSource, err)
+	}
+	return ref, nil
+}
+
+func writeSystemWarmup(w io.Writer, result backend.WarmupResult) error {
+	fields := []startupField{
+		{Key: "backend", Value: result.Backend},
+		{Key: "kernel_path", Value: result.KernelPath},
+		{Key: "kernel_status", Value: result.KernelStatus},
+		{Key: "rootfs_path", Value: result.RootFSPath},
+		{Key: "rootfs_status", Value: result.RootFSStatus},
+		{Key: "base_rootfs_ref", Value: result.BaseRootFSRef},
+		{Key: "base_rootfs_status", Value: result.BaseRootFSStatus},
+		{Key: "image_ref", Value: result.ImageRef},
+		{Key: "image_digest", Value: result.ImageDigest},
+	}
+	if result.MinimumRootFSBytes > 0 {
+		fields = append(fields, startupField{Key: "minimum_rootfs_bytes", Value: strconv.FormatInt(result.MinimumRootFSBytes, 10)})
+	}
+	_, err := fmt.Fprint(w, renderSummaryBlock(summaryBlock{
+		Title:      "warmed system",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields:     fields,
+	}, false))
 	return err
 }
 

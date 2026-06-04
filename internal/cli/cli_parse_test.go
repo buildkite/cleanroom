@@ -253,6 +253,18 @@ func TestSystemCommandsParse(t *testing.T) {
 	if got, want := c.System.Prune.OlderThan, "7d"; got != want {
 		t.Fatalf("unexpected older-than: got %q want %q", got, want)
 	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"system", "warmup", "--backend", "darwin-vz", "--json"}); err != nil {
+		t.Fatalf("parse system warmup returned error: %v", err)
+	}
+	if got, want := c.System.Warmup.Backend, "darwin-vz"; got != want {
+		t.Fatalf("unexpected warmup backend: got %q want %q", got, want)
+	}
+	if !c.System.Warmup.JSON {
+		t.Fatal("expected system warmup --json flag to be set")
+	}
 }
 
 func TestSandboxCreateParsesExposureFlags(t *testing.T) {

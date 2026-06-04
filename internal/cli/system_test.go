@@ -3,10 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/storagegc"
 )
@@ -90,6 +93,16 @@ func (testSystemZFSImportDatasetStore) DestroyZFSImportDataset(context.Context, 
 	return nil
 }
 
+func writeSystemTestFile(t *testing.T, name string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	return path
+}
+
 func TestSystemPruneThreadsZFSImportDatasetStore(t *testing.T) {
 	previousListSandboxIDs := systemListSandboxIDs
 	previousInventory := systemInventory
@@ -135,6 +148,213 @@ func TestSystemPruneThreadsZFSImportDatasetStore(t *testing.T) {
 
 	if err := (&SystemPruneCommand{Force: true}).Run(&runtimeContext{Stdout: stdout}); err != nil {
 		t.Fatalf("SystemPruneCommand.Run returned error: %v", err)
+	}
+}
+
+type systemWarmupTestAdapter struct {
+	name    string
+	warmup  func(context.Context, backend.WarmupRequest) (*backend.WarmupResult, error)
+	warmups int
+}
+
+func (a *systemWarmupTestAdapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "test"
+}
+
+func (a *systemWarmupTestAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
+
+func (a *systemWarmupTestAdapter) RunInSandbox(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{}, nil
+}
+
+func (a *systemWarmupTestAdapter) TerminateSandbox(context.Context, string) error {
+	return nil
+}
+
+func (a *systemWarmupTestAdapter) Warmup(ctx context.Context, req backend.WarmupRequest) (*backend.WarmupResult, error) {
+	a.warmups++
+	if a.warmup != nil {
+		return a.warmup(ctx, req)
+	}
+	return &backend.WarmupResult{Backend: a.Name()}, nil
+}
+
+type systemWarmupUnsupportedAdapter struct{}
+
+func (systemWarmupUnsupportedAdapter) Name() string { return "unsupported" }
+
+func (systemWarmupUnsupportedAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
+
+func (systemWarmupUnsupportedAdapter) RunInSandbox(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{}, nil
+}
+
+func (systemWarmupUnsupportedAdapter) TerminateSandbox(context.Context, string) error {
+	return nil
+}
+
+func TestSystemWarmupUsesConfiguredDefaultBackend(t *testing.T) {
+	rootFS := writeSystemTestFile(t, "rootfs.ext4")
+	adapter := &systemWarmupTestAdapter{name: "darwin-vz"}
+	adapter.warmup = func(_ context.Context, req backend.WarmupRequest) (*backend.WarmupResult, error) {
+		if got, want := req.FirecrackerConfig.RootFSPath, rootFS; got != want {
+			t.Fatalf("unexpected warmup rootfs config: got %q want %q", got, want)
+		}
+		if req.ImageRef != "" {
+			t.Fatalf("expected no image ref for configured rootfs, got %q", req.ImageRef)
+		}
+		return &backend.WarmupResult{
+			Backend:          "darwin-vz",
+			KernelPath:       "/tmp/kernel",
+			KernelStatus:     backend.WarmupStatusConfigured,
+			RootFSPath:       rootFS,
+			RootFSStatus:     backend.WarmupStatusConfigured,
+			BaseRootFSRef:    rootFS,
+			BaseRootFSStatus: backend.WarmupStatusReady,
+		}, nil
+	}
+
+	stdout, readStdout := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&SystemWarmupCommand{}).Run(&runtimeContext{
+		Stdout: stdout,
+		Config: runtimeconfig.Config{
+			DefaultBackend: "darwin-vz",
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{RootFS: rootFS},
+			},
+		},
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": adapter,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SystemWarmupCommand.Run returned error: %v", err)
+	}
+	if adapter.warmups != 1 {
+		t.Fatalf("expected one warmup call, got %d", adapter.warmups)
+	}
+	assertContainsAll(t, readStdout(), "warmed system", "backend=darwin-vz", "kernel_path=/tmp/kernel", "rootfs_status=configured", "base_rootfs_status=ready")
+}
+
+func TestSystemWarmupResolvesDefaultImageWhenRootFSMissing(t *testing.T) {
+	previousResolve := resolveReferenceForPolicyUpdate
+	t.Cleanup(func() {
+		resolveReferenceForPolicyUpdate = previousResolve
+	})
+
+	const resolvedRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	var gotSource string
+	resolveReferenceForPolicyUpdate = func(_ context.Context, source string) (string, error) {
+		gotSource = source
+		return resolvedRef, nil
+	}
+
+	adapter := &systemWarmupTestAdapter{name: "darwin-vz"}
+	adapter.warmup = func(_ context.Context, req backend.WarmupRequest) (*backend.WarmupResult, error) {
+		if got, want := req.ImageRef, resolvedRef; got != want {
+			t.Fatalf("unexpected warmup image ref: got %q want %q", got, want)
+		}
+		return &backend.WarmupResult{
+			Backend:      "darwin-vz",
+			RootFSPath:   "/tmp/prepared.ext4",
+			RootFSStatus: backend.WarmupStatusPrepared,
+			ImageRef:     req.ImageRef,
+			ImageDigest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&SystemWarmupCommand{Backend: "darwin-vz"}).Run(&runtimeContext{
+		Stdout: stdout,
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{RootFS: "/tmp/missing-cleanroom-rootfs.ext4"},
+			},
+		},
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": adapter,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SystemWarmupCommand.Run returned error: %v", err)
+	}
+	if got, want := gotSource, defaultBumpRefSource; got != want {
+		t.Fatalf("unexpected default image source: got %q want %q", got, want)
+	}
+}
+
+func TestSystemWarmupJSONOutput(t *testing.T) {
+	rootFS := writeSystemTestFile(t, "rootfs.ext4")
+	adapter := &systemWarmupTestAdapter{name: "darwin-vz"}
+	adapter.warmup = func(context.Context, backend.WarmupRequest) (*backend.WarmupResult, error) {
+		return &backend.WarmupResult{
+			Backend:       "darwin-vz",
+			KernelPath:    "/tmp/kernel",
+			KernelStatus:  backend.WarmupStatusConfigured,
+			RootFSPath:    rootFS,
+			RootFSStatus:  backend.WarmupStatusConfigured,
+			BaseRootFSRef: rootFS,
+			ImageRef:      "ghcr.io/buildkite/cleanroom-base/alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			ImageDigest:   "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		}, nil
+	}
+
+	stdout, readStdout := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&SystemWarmupCommand{Backend: "darwin-vz", JSON: true}).Run(&runtimeContext{
+		Stdout: stdout,
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{RootFS: rootFS},
+			},
+		},
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": adapter,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SystemWarmupCommand.Run returned error: %v", err)
+	}
+
+	var payload backend.WarmupResult
+	if err := json.Unmarshal([]byte(readStdout()), &payload); err != nil {
+		t.Fatalf("unmarshal warmup JSON: %v", err)
+	}
+	if got, want := payload.Backend, "darwin-vz"; got != want {
+		t.Fatalf("unexpected backend: got %q want %q", got, want)
+	}
+	if got, want := payload.RootFSStatus, backend.WarmupStatusConfigured; got != want {
+		t.Fatalf("unexpected rootfs status: got %q want %q", got, want)
+	}
+}
+
+func TestSystemWarmupRejectsUnsupportedBackend(t *testing.T) {
+	stdout, _ := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&SystemWarmupCommand{Backend: "firecracker"}).Run(&runtimeContext{
+		Stdout: stdout,
+		Backends: map[string]backend.Adapter{
+			"firecracker": systemWarmupUnsupportedAdapter{},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected unsupported backend error")
+	}
+	if !strings.Contains(err.Error(), `backend "firecracker" does not support system warmup`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
