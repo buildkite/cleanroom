@@ -19,7 +19,7 @@ require (
 	github.com/mdlayher/netlink v1.11.2
 	github.com/mdlayher/vsock v1.3.0
 	github.com/miekg/dns v1.1.72
-	github.com/quic-go/quic-go v0.59.1
+	github.com/quic-go/quic-go v0.60.0
 	github.com/sirupsen/logrus v1.9.4
 	go.jetify.com/typeid v1.3.0
 	go.opentelemetry.io/otel v1.44.0
