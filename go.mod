@@ -56,7 +56,7 @@ require (
 )
 
 require (
-	charm.land/lipgloss/v2 v2.0.3
+	charm.land/lipgloss/v2 v2.0.4
 	charm.land/log/v2 v2.0.0
 	github.com/apparentlymart/go-cidr v1.1.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
