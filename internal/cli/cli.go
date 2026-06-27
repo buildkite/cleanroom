@@ -59,8 +59,11 @@ type CLI struct {
 	Image       ImageCommand       `cmd:"" help:"Manage OCI image cache artifacts"`
 	Inspect     InspectCommand     `cmd:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
 	Snapshot    SnapshotCommand    `cmd:"" help:"Manage snapshots"`
-	Create      CreateCommand      `cmd:"" help:"Create a sandbox using repo policy"`
-	Exec        ExecCommand        `cmd:"" help:"Execute a command in a sandbox"`
+	Create      VMCreateCommand    `cmd:"" help:"Create a named VM using repo policy"`
+	Exec        VMExecCommand      `cmd:"" help:"Execute a command in a named VM"`
+	Capture     VMCaptureCommand   `cmd:"" help:"Snapshot-and-continue a named VM"`
+	Resume      VMResumeCommand    `cmd:"" help:"Resume a spore as a named VM"`
+	Destroy     VMDestroyCommand   `name:"destroy" aliases:"terminate,rm" cmd:"" help:"Destroy a named VM"`
 	Console     ConsoleCommand     `cmd:"" help:"Run a command with an interactive tty in a sandbox"`
 	Copy        CopyCommand        `name:"copy" aliases:"cp" cmd:"" help:"Copy one file into or out of a sandbox"`
 	Workspace   WorkspaceCommand   `cmd:"" help:"Manage sandbox workspace contents"`
@@ -261,8 +264,19 @@ func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
 	case "auth check", "config init", "config validate", "image resolve", "version":
 		return true
 	default:
-		return strings.HasPrefix(command, "image resolve ")
+		return strings.HasPrefix(command, "image resolve ") ||
+			commandIsOrHasArgs(command, "create") ||
+			commandIsOrHasArgs(command, "exec") ||
+			commandIsOrHasArgs(command, "capture") ||
+			commandIsOrHasArgs(command, "resume") ||
+			commandIsOrHasArgs(command, "destroy") ||
+			commandIsOrHasArgs(command, "terminate") ||
+			commandIsOrHasArgs(command, "rm")
 	}
+}
+
+func commandIsOrHasArgs(command, name string) bool {
+	return command == name || strings.HasPrefix(command, name+" ")
 }
 
 func commandUsesStartupObservability(ctx *kong.Context) bool {

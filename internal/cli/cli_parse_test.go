@@ -49,17 +49,17 @@ func TestExecCommandStillRequiresArgs(t *testing.T) {
 	}
 }
 
-func TestExecCommandParsesTTYFlag(t *testing.T) {
+func TestExecCommandParsesNameAndCommand(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"exec", "--tty", "--", "bash"}); err != nil {
-		t.Fatalf("parse exec --tty returned error: %v", err)
+	if _, err := parser.Parse([]string{"exec", "worker", "--", "echo", "hi"}); err != nil {
+		t.Fatalf("parse exec returned error: %v", err)
 	}
-	if !c.Exec.TTY {
-		t.Fatal("expected exec --tty flag to be set")
+	if got, want := c.Exec.Name, "worker"; got != want {
+		t.Fatalf("unexpected exec name: got %q want %q", got, want)
 	}
-	if got, want := trimPassthroughSeparator(c.Exec.Command), []string{"bash"}; !reflect.DeepEqual(got, want) {
+	if got, want := trimPassthroughSeparator(c.Exec.Command), []string{"echo", "hi"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected exec command: got %v want %v", got, want)
 	}
 }
@@ -219,6 +219,89 @@ func TestSandboxCreateParses(t *testing.T) {
 
 	if _, err := parser.Parse([]string{"sandbox", "create"}); err != nil {
 		t.Fatalf("parse sandbox create returned error: %v", err)
+	}
+}
+
+func TestTopLevelLifecycleCommandsParse(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"create", "--wait", "worker", "."}); err != nil {
+		t.Fatalf("parse create returned error: %v", err)
+	}
+	if got, want := c.Create.Name, "worker"; got != want {
+		t.Fatalf("unexpected create name: got %q want %q", got, want)
+	}
+	if got, want := c.Create.Dir, "."; got != want {
+		t.Fatalf("unexpected create dir: got %q want %q", got, want)
+	}
+	if !c.Create.Wait {
+		t.Fatal("expected create --wait flag to be set")
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"exec", "worker", "--", "echo", "hi"}); err != nil {
+		t.Fatalf("parse exec returned error: %v", err)
+	}
+	if got, want := c.Exec.Name, "worker"; got != want {
+		t.Fatalf("unexpected exec name: got %q want %q", got, want)
+	}
+	if got, want := trimPassthroughSeparator(c.Exec.Command), []string{"echo", "hi"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected exec command: got %v want %v", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"capture", "worker", "--out", "./test.spore"}); err != nil {
+		t.Fatalf("parse capture returned error: %v", err)
+	}
+	if got, want := c.Capture.Out, "./test.spore"; got != want {
+		t.Fatalf("unexpected capture out: got %q want %q", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"resume", "./test.spore", "--name", "restored"}); err != nil {
+		t.Fatalf("parse resume returned error: %v", err)
+	}
+	if got, want := c.Resume.SporeDir, "./test.spore"; got != want {
+		t.Fatalf("unexpected resume spore dir: got %q want %q", got, want)
+	}
+	if got, want := c.Resume.Name, "restored"; got != want {
+		t.Fatalf("unexpected resume name: got %q want %q", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"terminate", "worker"}); err != nil {
+		t.Fatalf("parse terminate returned error: %v", err)
+	}
+	if got, want := c.Destroy.Name, "worker"; got != want {
+		t.Fatalf("unexpected destroy name: got %q want %q", got, want)
+	}
+}
+
+func TestNamedLifecycleCommandsBypassStartupRuntimeConfig(t *testing.T) {
+	for _, args := range [][]string{
+		{"create", "worker"},
+		{"exec", "worker", "--", "true"},
+		{"capture", "worker", "--out", "./test.spore"},
+		{"resume", "./test.spore", "--name", "restored"},
+		{"destroy", "worker"},
+		{"terminate", "worker"},
+		{"rm", "worker"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			c := &CLI{}
+			parser := newParserForTest(t, c)
+			ctx, err := parser.Parse(args)
+			if err != nil {
+				t.Fatalf("parse returned error: %v", err)
+			}
+			if !commandBypassesStartupRuntimeConfig(ctx) {
+				t.Fatalf("expected %q to bypass startup runtime config", ctx.Command())
+			}
+		})
 	}
 }
 
@@ -429,158 +512,23 @@ func TestTopLevelCreateParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"create"}); err != nil {
+	if _, err := parser.Parse([]string{"create", "worker"}); err != nil {
 		t.Fatalf("parse create returned error: %v", err)
 	}
+	if got, want := c.Create.Name, "worker"; got != want {
+		t.Fatalf("unexpected create name: got %q want %q", got, want)
+	}
 }
 
-func TestTopLevelCreateParsesImageOverride(t *testing.T) {
+func TestConsoleParsesCopyFlags(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
-
-	imageRef := "ghcr.io/buildkite/cleanroom-base/alpine@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-	if _, err := parser.Parse([]string{"create", "--image", imageRef}); err != nil {
-		t.Fatalf("parse create --image returned error: %v", err)
+	if _, err := parser.Parse([]string{"console", "--copy-in", "--copy-out", "--sync"}); err != nil {
+		t.Fatalf("parse console copy flags returned error: %v", err)
 	}
-	if got, want := c.Create.Image, imageRef; got != want {
-		t.Fatalf("unexpected create image override: got %q want %q", got, want)
+	if !c.Console.CopyIn || !c.Console.CopyOut || !c.Console.Sync {
+		t.Fatalf("expected console copy flags to be set, got %+v", c.Console.workspaceCopyFlags)
 	}
-}
-
-func TestTopLevelCreateParsesFromSnapshot(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"create", "--from", "snap_123"}); err != nil {
-		t.Fatalf("parse create --from returned error: %v", err)
-	}
-	if got, want := c.Create.From, "snap_123"; got != want {
-		t.Fatalf("unexpected create from: got %q want %q", got, want)
-	}
-}
-
-func TestTopLevelCreateParsesDangerouslyAllowAll(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"create", "--dangerously-allow-all"}); err != nil {
-		t.Fatalf("parse create --dangerously-allow-all returned error: %v", err)
-	}
-	if !c.Create.DangerouslyAllowAll {
-		t.Fatal("expected create dangerously-allow-all flag to be set")
-	}
-}
-
-func TestTopLevelCreateParsesExposureFlags(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"create", "--expose", "5432", "--expose-https", "buildkite:3000"}); err != nil {
-		t.Fatalf("parse create exposure flags returned error: %v", err)
-	}
-	if got, want := c.Create.Expose, []string{"5432"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected create --expose values: got %v want %v", got, want)
-	}
-	if got, want := c.Create.ExposeHTTPS, []string{"buildkite:3000"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected create --expose-https values: got %v want %v", got, want)
-	}
-}
-
-func TestTopLevelCommandsParseCopyInFlag(t *testing.T) {
-	t.Run("create", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"create", "--copy-in"}); err != nil {
-			t.Fatalf("parse create --copy-in returned error: %v", err)
-		}
-		if !c.Create.CopyIn {
-			t.Fatal("expected create copy-in flag to be set")
-		}
-	})
-
-	t.Run("exec", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"exec", "--copy-in", "--", "echo", "ok"}); err != nil {
-			t.Fatalf("parse exec --copy-in returned error: %v", err)
-		}
-		if !c.Exec.CopyIn {
-			t.Fatal("expected exec copy-in flag to be set")
-		}
-	})
-
-	t.Run("console", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"console", "--copy-in"}); err != nil {
-			t.Fatalf("parse console --copy-in returned error: %v", err)
-		}
-		if !c.Console.CopyIn {
-			t.Fatal("expected console copy-in flag to be set")
-		}
-	})
-}
-
-func TestTopLevelCommandsParseCopyOutAndSyncFlags(t *testing.T) {
-	t.Run("exec copy-out", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"exec", "--copy-out", "--", "echo", "ok"}); err != nil {
-			t.Fatalf("parse exec --copy-out returned error: %v", err)
-		}
-		if !c.Exec.CopyOut {
-			t.Fatal("expected exec copy-out flag to be set")
-		}
-	})
-
-	t.Run("exec sync", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"exec", "--sync", "--", "echo", "ok"}); err != nil {
-			t.Fatalf("parse exec --sync returned error: %v", err)
-		}
-		if !c.Exec.Sync || !c.Exec.copyIn() || !c.Exec.copyOut() {
-			t.Fatalf("expected exec sync to imply copy-in and copy-out, got %+v", c.Exec.workspaceCopyFlags)
-		}
-	})
-
-	t.Run("console copy-out", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"console", "--copy-out"}); err != nil {
-			t.Fatalf("parse console --copy-out returned error: %v", err)
-		}
-		if !c.Console.CopyOut {
-			t.Fatal("expected console copy-out flag to be set")
-		}
-	})
-
-	t.Run("console sync", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"console", "--sync"}); err != nil {
-			t.Fatalf("parse console --sync returned error: %v", err)
-		}
-		if !c.Console.Sync || !c.Console.copyIn() || !c.Console.copyOut() {
-			t.Fatalf("expected console sync to imply copy-in and copy-out, got %+v", c.Console.workspaceCopyFlags)
-		}
-	})
-
-	t.Run("create rejects copy-out", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"create", "--copy-out"}); err == nil {
-			t.Fatal("expected create --copy-out to be rejected")
-		}
-	})
-
-	t.Run("create rejects sync", func(t *testing.T) {
-		c := &CLI{}
-		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"create", "--sync"}); err == nil {
-			t.Fatal("expected create --sync to be rejected")
-		}
-	})
 }
 
 func TestWorkspaceCopyInParses(t *testing.T) {
@@ -641,94 +589,16 @@ func TestIncludeLocalChangesFlagRejected(t *testing.T) {
 	}
 }
 
-func TestExecParsesImageOverride(t *testing.T) {
+func TestExecRejectsOldControlPlaneFlags(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	imageRef := "ghcr.io/buildkite/cleanroom-base/alpine@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-	if _, err := parser.Parse([]string{"exec", "--image", imageRef, "--", "echo", "ok"}); err != nil {
-		t.Fatalf("parse exec --image returned error: %v", err)
+	_, err := parser.Parse([]string{"exec", "--in", "cr_123", "--", "echo", "ok"})
+	if err == nil {
+		t.Fatal("expected exec --in to be rejected")
 	}
-	if got, want := c.Exec.Image, imageRef; got != want {
-		t.Fatalf("unexpected exec image override: got %q want %q", got, want)
-	}
-}
-
-func TestExecParsesExposureFlags(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"exec", "--expose", "5432", "--expose-https", "buildkite:3000", "--", "npm", "run", "dev"}); err != nil {
-		t.Fatalf("parse exec exposure flags returned error: %v", err)
-	}
-	if got, want := c.Exec.Expose, []string{"5432"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected exec --expose values: got %v want %v", got, want)
-	}
-	if got, want := c.Exec.ExposeHTTPS, []string{"buildkite:3000"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected exec --expose-https values: got %v want %v", got, want)
-	}
-	if got, want := trimPassthroughSeparator(c.Exec.Command), []string{"npm", "run", "dev"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected exec command: got %v want %v", got, want)
-	}
-}
-
-func TestExecParsesDangerouslyAllowAll(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"exec", "--dangerously-allow-all", "--", "echo", "ok"}); err != nil {
-		t.Fatalf("parse exec --dangerously-allow-all returned error: %v", err)
-	}
-	if !c.Exec.DangerouslyAllowAll {
-		t.Fatal("expected exec dangerously-allow-all flag to be set")
-	}
-}
-
-func TestExecParsesInFromAndKeep(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"exec", "--in", "cr_123", "--", "echo", "ok"}); err != nil {
-		t.Fatalf("parse exec --in returned error: %v", err)
-	}
-	if got, want := c.Exec.In, "cr_123"; got != want {
-		t.Fatalf("unexpected exec in: got %q want %q", got, want)
-	}
-
-	c = &CLI{}
-	parser = newParserForTest(t, c)
-	if _, err := parser.Parse([]string{"exec", "--from", "snap_123", "--keep", "--", "echo", "ok"}); err != nil {
-		t.Fatalf("parse exec --from --keep returned error: %v", err)
-	}
-	if got, want := c.Exec.From, "snap_123"; got != want {
-		t.Fatalf("unexpected exec from: got %q want %q", got, want)
-	}
-	if !c.Exec.Keep {
-		t.Fatal("expected exec keep flag to be set")
-	}
-}
-
-func TestExecParsesRepeatedEnvFlags(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"exec", "--env", "OPENAI_API_KEY", "--env", "DEBUG=1", "--", "echo", "ok"}); err != nil {
-		t.Fatalf("parse exec --env returned error: %v", err)
-	}
-	if got, want := c.Exec.Env, []string{"OPENAI_API_KEY", "DEBUG=1"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected exec env flags: got %v want %v", got, want)
-	}
-}
-
-func TestExecParsesLegacySandboxIDFlag(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"exec", "--sandbox-id", "cr_123", "--", "echo", "ok"}); err != nil {
-		t.Fatalf("parse exec --sandbox-id returned error: %v", err)
-	}
-	if got, want := c.Exec.In, "cr_123"; got != want {
-		t.Fatalf("unexpected exec in from --sandbox-id: got %q want %q", got, want)
+	if !strings.Contains(err.Error(), "--in") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -828,7 +698,7 @@ func TestExecAllowsOptionLikeArgsAfterCommandStart(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"exec", "echo", "--with", "snap_123"}); err != nil {
+	if _, err := parser.Parse([]string{"exec", "worker", "echo", "--with", "snap_123"}); err != nil {
 		t.Fatalf("expected option-like args after command start to be allowed, got %v", err)
 	}
 	if got, want := strings.Join(c.Exec.Command, " "), "echo --with snap_123"; got != want {
@@ -840,7 +710,7 @@ func TestExecAllowsOptionLikeArgsAfterSeparator(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"exec", "--", "--with", "snap_123"}); err != nil {
+	if _, err := parser.Parse([]string{"exec", "worker", "--", "--with", "snap_123"}); err != nil {
 		t.Fatalf("expected option-like command after separator to be allowed, got %v", err)
 	}
 	if got, want := strings.Join(c.Exec.Command, " "), "-- --with snap_123"; got != want {

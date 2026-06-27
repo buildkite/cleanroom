@@ -1,6 +1,6 @@
 # Cleanroom As A SporeVM Layer
 
-**Status:** Proposed
+**Status:** Active
 **Last reviewed:** 2026-06-28
 **Related code:** `internal/cli/vm.go`, `internal/sporevm/`
 **Related upstream:** `~/Develop/sporevm` `origin/main` libspore named lifecycle and networking APIs
@@ -175,9 +175,9 @@ cleanroom resume ./test.spore --name worker
 
 ## Current State
 
-The active branch has an uncommitted first slice that points top-level
-`create`, `exec`, `capture`, and `destroy` at a libspore-backed adapter under
-`internal/sporevm/`.
+Slice 1 is implemented in this branch. Top-level `create`, `exec`, `capture`,
+`resume`, and `destroy` point at a libspore-backed adapter under
+`internal/sporevm/`, with `terminate` and `rm` kept as `destroy` aliases.
 
 That adapter currently uses a small cgo wrapper because SporeVM's Go binding on
 `origin/main` exposes host/bundle/pull/system APIs but not named lifecycle
@@ -187,13 +187,14 @@ wrappers yet. This should be temporary.
 
 ### Slice 1: Lock The Simple CLI
 
-- Keep only top-level `create`, `exec`, `capture`, `resume`, `destroy`.
-- Remove the public `vm` command group.
-- Update parser tests and help text.
-- Keep old daemon/control-plane command structs only where existing direct tests
-  still need them.
+Status: implemented in this branch.
 
-Done when the CLI parses the target contract and old top-level flags are gone.
+- Kept only top-level `create`, `exec`, `capture`, `resume`, `destroy` for the
+  named lifecycle subset.
+- Removed the public `vm` command group.
+- Updated parser tests and help text.
+- Kept old daemon/control-plane command structs only where existing direct tests
+  still need them.
 
 ### Slice 2: Use Official Go libspore Bindings
 
