@@ -46,6 +46,21 @@ func (c *client) Close() error {
 	return nil
 }
 
+func (c *client) InspectSpore(ctx context.Context, options InspectSporeOptions) (SporeInspectResult, error) {
+	if err := c.ready(); err != nil {
+		return SporeInspectResult{}, err
+	}
+	result, err := c.inner.InspectSpore(ctx, spore.InspectSporeOptions{
+		SporeDir: options.SporeDir,
+	})
+	if err != nil {
+		return SporeInspectResult{}, err
+	}
+	return SporeInspectResult{
+		Annotations: result.Annotations,
+	}, nil
+}
+
 func (c *client) CreateNamed(ctx context.Context, options CreateNamedOptions) (JSONResult, error) {
 	if err := c.ready(); err != nil {
 		return JSONResult{}, err

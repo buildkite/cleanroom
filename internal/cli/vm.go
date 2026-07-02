@@ -37,9 +37,10 @@ type VMCaptureCommand struct {
 }
 
 type VMResumeCommand struct {
-	SporeDir string `arg:"" name:"spore-dir" required:"" help:"Spore bundle directory"`
-	Name     string `name:"name" required:"" help:"Named VM lifecycle target"`
-	JSON     bool   `help:"Print libspore response as JSON"`
+	SporeDir      string `arg:"" name:"spore-dir" required:"" help:"Spore bundle directory"`
+	Name          string `name:"name" required:"" help:"Named VM lifecycle target"`
+	GatewaySocket string `name:"gateway-socket" help:"Bind an existing Unix socket for a captured Cleanroom gateway service"`
+	JSON          bool   `help:"Print libspore response as JSON"`
 }
 
 type VMDestroyCommand struct {
@@ -159,9 +160,21 @@ func (c *VMResumeCommand) Run(ctx *runtimeContext) error {
 	}
 	defer client.Close()
 
-	result, err := client.ResumeNamed(context.Background(), sporevm.ResumeNamedOptions{
-		SporeDir: strings.TrimSpace(c.SporeDir),
-		Name:     c.Name,
+	runCtx := context.Background()
+	sporeDir := strings.TrimSpace(c.SporeDir)
+	provenance, err := vmInspectCleanroomProvenance(runCtx, client, sporeDir)
+	if err != nil {
+		return err
+	}
+	bindings, err := vmResumeGatewayBindings(ctx.CWD, c.GatewaySocket, provenance.GatewayServices)
+	if err != nil {
+		return err
+	}
+
+	result, err := client.ResumeNamed(runCtx, sporevm.ResumeNamedOptions{
+		SporeDir:             sporeDir,
+		Name:                 c.Name,
+		BoundServiceBindings: bindings,
 	})
 	if err != nil {
 		return err
@@ -183,12 +196,23 @@ func (c *VMDestroyCommand) Run(ctx *runtimeContext) error {
 	return writeVMResult(ctx, result, c.JSON, fmt.Sprintf("destroyed vm %s", c.Name))
 }
 
-func newSporeVMClient() (sporevm.Client, error) {
+var newSporeVMClient = func() (sporevm.Client, error) {
 	client, err := sporevm.New()
 	if err != nil {
 		return nil, fmt.Errorf("connect libspore: %w", err)
 	}
 	return client, nil
+}
+
+type vmCleanroomProvenance struct {
+	NetworkRules    []sporevm.NetworkRule
+	GatewayServices []vmGatewayServiceRequirement
+}
+
+type vmGatewayServiceRequirement struct {
+	Name      string `json:"name"`
+	GuestHost string `json:"guest_host"`
+	GuestPort uint16 `json:"guest_port"`
 }
 
 func validateVMPolicy(compiled *policy.CompiledPolicy) error {
@@ -269,6 +293,137 @@ func vmCreateAnnotations(ctx *runtimeContext, cwd, policySource string, compiled
 	}
 	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"gateway.services", gatewayValue)
 	return annotations, nil
+}
+
+func vmInspectCleanroomProvenance(ctx context.Context, client sporevm.Client, sporeDir string) (vmCleanroomProvenance, error) {
+	sporeDir = strings.TrimSpace(sporeDir)
+	if sporeDir == "" {
+		return vmCleanroomProvenance{}, errors.New("missing spore directory")
+	}
+	result, err := client.InspectSpore(ctx, sporevm.InspectSporeOptions{SporeDir: sporeDir})
+	if err != nil {
+		return vmCleanroomProvenance{}, fmt.Errorf("inspect Cleanroom provenance: %w", err)
+	}
+	return vmCleanroomProvenanceFromAnnotations(result.Annotations)
+}
+
+func vmCleanroomProvenanceFromAnnotations(annotations map[string]string) (vmCleanroomProvenance, error) {
+	version := strings.TrimSpace(annotations[cleanroomAnnotationPrefix+"provenance.version"])
+	if version == "" {
+		return vmCleanroomProvenance{}, errors.New("spore is missing Cleanroom provenance")
+	}
+	if version != "1" {
+		return vmCleanroomProvenance{}, fmt.Errorf("unsupported Cleanroom provenance version %q", version)
+	}
+
+	networkRules, err := vmNetworkRulesFromAnnotation(annotations[cleanroomAnnotationPrefix+"network.rules"])
+	if err != nil {
+		return vmCleanroomProvenance{}, err
+	}
+	gatewayServices, err := vmGatewayServicesFromAnnotation(annotations[cleanroomAnnotationPrefix+"gateway.services"])
+	if err != nil {
+		return vmCleanroomProvenance{}, err
+	}
+	return vmCleanroomProvenance{
+		NetworkRules:    networkRules,
+		GatewayServices: gatewayServices,
+	}, nil
+}
+
+func vmNetworkRulesFromAnnotation(value string) ([]sporevm.NetworkRule, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	type ruleAnnotation struct {
+		Host  string   `json:"host"`
+		Ports []uint16 `json:"ports"`
+	}
+	var raw []ruleAnnotation
+	if err := json.Unmarshal([]byte(value), &raw); err != nil {
+		return nil, fmt.Errorf("decode cleanroom network rule provenance: %w", err)
+	}
+	rules := make([]sporevm.NetworkRule, 0, len(raw))
+	for i, rule := range raw {
+		host := strings.TrimSpace(rule.Host)
+		if host == "" {
+			return nil, fmt.Errorf("cleanroom network rule provenance entry %d is missing host", i)
+		}
+		if len(rule.Ports) == 0 {
+			return nil, fmt.Errorf("cleanroom network rule provenance entry %d is missing ports", i)
+		}
+		for _, port := range rule.Ports {
+			if port == 0 {
+				return nil, fmt.Errorf("cleanroom network rule provenance entry %d contains invalid port 0", i)
+			}
+		}
+		rules = append(rules, sporevm.NetworkRule{
+			Host:  host,
+			Ports: append([]uint16(nil), rule.Ports...),
+		})
+	}
+	return rules, nil
+}
+
+func vmGatewayServicesFromAnnotation(value string) ([]vmGatewayServiceRequirement, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	var services []vmGatewayServiceRequirement
+	if err := json.Unmarshal([]byte(value), &services); err != nil {
+		return nil, fmt.Errorf("decode cleanroom gateway service provenance: %w", err)
+	}
+	if len(services) == 0 {
+		return nil, errors.New("cleanroom gateway service provenance is empty")
+	}
+	for i, service := range services {
+		if strings.TrimSpace(service.Name) == "" {
+			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d is missing name", i)
+		}
+		if strings.TrimSpace(service.GuestHost) == "" {
+			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d is missing guest host", i)
+		}
+		if service.GuestPort == 0 {
+			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d contains invalid guest port 0", i)
+		}
+	}
+	return services, nil
+}
+
+func vmResumeGatewayBindings(base, socketPath string, services []vmGatewayServiceRequirement) ([]sporevm.BoundUnixServiceBinding, error) {
+	socketPath = strings.TrimSpace(socketPath)
+	if len(services) == 0 {
+		if socketPath != "" {
+			return nil, errors.New("captured Cleanroom spore does not require a gateway service")
+		}
+		return nil, nil
+	}
+	if len(services) != 1 {
+		return nil, fmt.Errorf("cleanroom resume supports one gateway service, found %d", len(services))
+	}
+	service := services[0]
+	if service.Name != cleanroomGatewayServiceName {
+		return nil, fmt.Errorf("unsupported Cleanroom gateway service %q", service.Name)
+	}
+	if service.GuestHost != gateway.GuestGatewayHostname || service.GuestPort != gateway.DefaultPort {
+		return nil, fmt.Errorf("unsupported Cleanroom gateway endpoint %s:%d", service.GuestHost, service.GuestPort)
+	}
+	if socketPath == "" {
+		return nil, fmt.Errorf("cleanroom resume requires --gateway-socket for captured service %q", service.Name)
+	}
+
+	boundServices, err := vmGatewayServices(base, socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(boundServices) != 1 {
+		return nil, errors.New("expected one cleanroom gateway service binding")
+	}
+	return []sporevm.BoundUnixServiceBinding{{
+		Name:     service.Name,
+		UnixPath: boundServices[0].UnixPath,
+	}}, nil
 }
 
 func vmCaptureAnnotations(ctx *runtimeContext) map[string]string {

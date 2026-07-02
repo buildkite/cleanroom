@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -213,21 +214,7 @@ func TestVMCreateAnnotationsRecordsGitFactsWhenAvailable(t *testing.T) {
 }
 
 func TestVMGatewayServicesBindsUnixSocket(t *testing.T) {
-	base, err := os.MkdirTemp("/tmp", "cleanroom-gateway-test-*")
-	if err != nil {
-		t.Fatalf("create short temp dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(base); err != nil {
-			t.Fatalf("remove temp dir: %v", err)
-		}
-	})
-	socketPath := filepath.Join(base, "gateway.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen on unix socket: %v", err)
-	}
-	defer listener.Close()
+	base, socketPath := newTestGatewaySocket(t)
 
 	got, err := vmGatewayServices(base, "gateway.sock")
 	if err != nil {
@@ -302,6 +289,117 @@ func TestVMCreateAnnotationsRecordsGatewayServicesWithoutSocketPath(t *testing.T
 	}
 }
 
+func TestVMCleanroomProvenanceFromAnnotationsParsesResumeFacts(t *testing.T) {
+	got, err := vmCleanroomProvenanceFromAnnotations(map[string]string{
+		"dev.buildkite.cleanroom.provenance.version": "1",
+		"dev.buildkite.cleanroom.network.rules":      `[{"host":"github.com","ports":[443,8443]}]`,
+		"dev.buildkite.cleanroom.gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
+	})
+	if err != nil {
+		t.Fatalf("parse provenance: %v", err)
+	}
+	want := vmCleanroomProvenance{
+		NetworkRules: []sporevm.NetworkRule{{
+			Host:  "github.com",
+			Ports: []uint16{443, 8443},
+		}},
+		GatewayServices: []vmGatewayServiceRequirement{{
+			Name:      "cleanroom-gateway",
+			GuestHost: "gateway.cleanroom.internal",
+			GuestPort: 8170,
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("provenance = %#v, want %#v", got, want)
+	}
+}
+
+func TestVMCleanroomProvenanceFromAnnotationsRequiresVersion(t *testing.T) {
+	_, err := vmCleanroomProvenanceFromAnnotations(nil)
+	if err == nil {
+		t.Fatal("expected missing provenance error")
+	}
+	if !strings.Contains(err.Error(), "missing Cleanroom provenance") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestVMResumeGatewayBindingsBindsRequiredService(t *testing.T) {
+	base, socketPath := newTestGatewaySocket(t)
+
+	got, err := vmResumeGatewayBindings(base, "gateway.sock", []vmGatewayServiceRequirement{{
+		Name:      "cleanroom-gateway",
+		GuestHost: "gateway.cleanroom.internal",
+		GuestPort: 8170,
+	}})
+	if err != nil {
+		t.Fatalf("resume gateway bindings: %v", err)
+	}
+	want := []sporevm.BoundUnixServiceBinding{{
+		Name:     "cleanroom-gateway",
+		UnixPath: socketPath,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume gateway bindings = %#v, want %#v", got, want)
+	}
+}
+
+func TestVMResumeGatewayBindingsRequiresSocketForRequiredService(t *testing.T) {
+	_, err := vmResumeGatewayBindings("", "", []vmGatewayServiceRequirement{{
+		Name:      "cleanroom-gateway",
+		GuestHost: "gateway.cleanroom.internal",
+		GuestPort: 8170,
+	}})
+	if err == nil {
+		t.Fatal("expected required socket error")
+	}
+	if !strings.Contains(err.Error(), "requires --gateway-socket") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestVMResumeCommandInspectsProvenanceAndPassesGatewayBinding(t *testing.T) {
+	base, socketPath := newTestGatewaySocket(t)
+	client := &fakeSporeVMClient{
+		inspectResult: sporevm.SporeInspectResult{
+			Annotations: map[string]string{
+				"dev.buildkite.cleanroom.provenance.version": "1",
+				"dev.buildkite.cleanroom.gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
+			},
+		},
+		resumeResult: sporevm.JSONResult{RawJSON: json.RawMessage(`{"action":"resume"}`)},
+	}
+	replaceSporeVMClient(t, client)
+	stdout := newTempFile(t, "stdout-*")
+
+	err := (&VMResumeCommand{
+		SporeDir:      "./captured.spore",
+		Name:          "restored",
+		GatewaySocket: "gateway.sock",
+	}).Run(&runtimeContext{CWD: base, Stdout: stdout})
+	if err != nil {
+		t.Fatalf("resume command: %v", err)
+	}
+
+	if got, want := client.inspectOptions.SporeDir, "./captured.spore"; got != want {
+		t.Fatalf("inspect spore dir = %q, want %q", got, want)
+	}
+	wantResume := sporevm.ResumeNamedOptions{
+		SporeDir: "./captured.spore",
+		Name:     "restored",
+		BoundServiceBindings: []sporevm.BoundUnixServiceBinding{{
+			Name:     "cleanroom-gateway",
+			UnixPath: socketPath,
+		}},
+	}
+	if !reflect.DeepEqual(client.resumeOptions, wantResume) {
+		t.Fatalf("resume options = %#v, want %#v", client.resumeOptions, wantResume)
+	}
+	if !client.closed {
+		t.Fatal("expected resume command to close spore client")
+	}
+}
+
 func TestVMCaptureAnnotationsRecordsContinueAfter(t *testing.T) {
 	got := vmCaptureAnnotations(&runtimeContext{Version: "v0.1.0"})
 
@@ -315,4 +413,98 @@ func TestVMCaptureAnnotationsRecordsContinueAfter(t *testing.T) {
 			t.Fatalf("annotation %s = %q, want %q", key, got[key], want)
 		}
 	}
+}
+
+type fakeSporeVMClient struct {
+	inspectOptions sporevm.InspectSporeOptions
+	inspectResult  sporevm.SporeInspectResult
+	inspectErr     error
+	resumeOptions  sporevm.ResumeNamedOptions
+	resumeResult   sporevm.JSONResult
+	resumeErr      error
+	closed         bool
+}
+
+func (f *fakeSporeVMClient) Close() error {
+	f.closed = true
+	return nil
+}
+
+func (f *fakeSporeVMClient) NetworkCapabilities(context.Context) (sporevm.NetworkCapabilities, error) {
+	return sporevm.NetworkCapabilities{}, nil
+}
+
+func (f *fakeSporeVMClient) InspectSpore(_ context.Context, options sporevm.InspectSporeOptions) (sporevm.SporeInspectResult, error) {
+	f.inspectOptions = options
+	return f.inspectResult, f.inspectErr
+}
+
+func (f *fakeSporeVMClient) CreateNamed(context.Context, sporevm.CreateNamedOptions) (sporevm.JSONResult, error) {
+	return sporevm.JSONResult{}, nil
+}
+
+func (f *fakeSporeVMClient) ExecNamed(context.Context, sporevm.ExecNamedOptions) (sporevm.JSONResult, error) {
+	return sporevm.JSONResult{}, nil
+}
+
+func (f *fakeSporeVMClient) ResumeNamed(_ context.Context, options sporevm.ResumeNamedOptions) (sporevm.JSONResult, error) {
+	f.resumeOptions = options
+	return f.resumeResult, f.resumeErr
+}
+
+func (f *fakeSporeVMClient) SnapshotNamed(context.Context, sporevm.SnapshotNamedOptions) (sporevm.JSONResult, error) {
+	return sporevm.JSONResult{}, nil
+}
+
+func (f *fakeSporeVMClient) RemoveNamed(context.Context, sporevm.RemoveNamedOptions) (sporevm.JSONResult, error) {
+	return sporevm.JSONResult{}, nil
+}
+
+func replaceSporeVMClient(t *testing.T, client sporevm.Client) {
+	t.Helper()
+	previous := newSporeVMClient
+	newSporeVMClient = func() (sporevm.Client, error) {
+		return client, nil
+	}
+	t.Cleanup(func() {
+		newSporeVMClient = previous
+	})
+}
+
+func newTestGatewaySocket(t *testing.T) (string, string) {
+	t.Helper()
+	base, err := os.MkdirTemp("/tmp", "cleanroom-gateway-test-*")
+	if err != nil {
+		t.Fatalf("create short temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(base); err != nil {
+			t.Fatalf("remove temp dir: %v", err)
+		}
+	})
+	socketPath := filepath.Join(base, "gateway.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Fatalf("close unix socket: %v", err)
+		}
+	})
+	return base, socketPath
+}
+
+func newTempFile(t *testing.T, pattern string) *os.File {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), pattern)
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Fatalf("close temp file: %v", err)
+		}
+	})
+	return file
 }

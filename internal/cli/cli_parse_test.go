@@ -282,6 +282,15 @@ func TestTopLevelLifecycleCommandsParse(t *testing.T) {
 
 	c = &CLI{}
 	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"resume", "./test.spore", "--name", "restored", "--gateway-socket", "./gateway.sock"}); err != nil {
+		t.Fatalf("parse resume with gateway socket returned error: %v", err)
+	}
+	if got, want := c.Resume.GatewaySocket, "./gateway.sock"; got != want {
+		t.Fatalf("unexpected resume gateway socket: got %q want %q", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
 	if _, err := parser.Parse([]string{"terminate", "worker"}); err != nil {
 		t.Fatalf("parse terminate returned error: %v", err)
 	}

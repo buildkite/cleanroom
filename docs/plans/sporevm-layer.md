@@ -197,6 +197,11 @@ endpoint in annotations. Cleanroom-managed gateway process startup remains
 deferred; adding it now would pull the old shared gateway/control-plane model
 back into the new thin layer.
 
+`cleanroom resume` now inspects SporeVM annotations before resuming. It requires
+Cleanroom provenance version `1`, validates recorded network and gateway facts,
+and passes restore-time gateway socket bindings to libspore when the captured
+spore declares a Cleanroom gateway service.
+
 ## Delivery Strategy
 
 ### Slice 1: Lock The Simple CLI
@@ -252,6 +257,9 @@ Cleanroom daemon/control-plane path.
 
 ### Slice 5: Add Resume From Cleanroom Provenance
 
+Status: implemented in this branch for annotation inspection and explicit
+gateway socket rebinding.
+
 - Add `cleanroom resume <spore-dir> --name <name>`.
 - Read Cleanroom provenance from SporeVM annotations.
 - Recreate required gateway bindings before `resumeNamed`.
@@ -259,8 +267,8 @@ Cleanroom daemon/control-plane path.
 
 Done when a captured Cleanroom spore resumes with the same Cleanroom setup and
 does not depend on current working-directory policy. The SporeVM annotation
-prerequisite now exists; this slice still needs Cleanroom-side inspect/parsing
-and gateway binding setup.
+prerequisite now exists, and Cleanroom-side inspect/parsing plus explicit
+gateway binding setup is implemented.
 
 ### Slice 6: Add Minimal Workspace Provenance
 

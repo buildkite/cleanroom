@@ -15,6 +15,7 @@ var (
 type Client interface {
 	io.Closer
 	NetworkCapabilities(context.Context) (NetworkCapabilities, error)
+	InspectSpore(context.Context, InspectSporeOptions) (SporeInspectResult, error)
 	CreateNamed(context.Context, CreateNamedOptions) (JSONResult, error)
 	ExecNamed(context.Context, ExecNamedOptions) (JSONResult, error)
 	ResumeNamed(context.Context, ResumeNamedOptions) (JSONResult, error)
@@ -24,6 +25,14 @@ type Client interface {
 
 type JSONResult struct {
 	RawJSON json.RawMessage
+}
+
+type InspectSporeOptions struct {
+	SporeDir string
+}
+
+type SporeInspectResult struct {
+	Annotations map[string]string
 }
 
 type CreateNamedOptions struct {
