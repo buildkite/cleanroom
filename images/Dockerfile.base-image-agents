@@ -2,7 +2,7 @@ FROM alpine:3.24
 
 ARG MISE_VERSION=v2026.5.12
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.142.4
+ARG CODEX_VERSION=0.142.5
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.198
 # renovate: datasource=npm depName=@google/gemini-cli
