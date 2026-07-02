@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
 )
 
 var (
@@ -25,6 +27,36 @@ type Client interface {
 
 type JSONResult struct {
 	RawJSON json.RawMessage
+}
+
+var contextEnvNames = []string{
+	"HOME",
+	"PATH",
+	"XDG_CACHE_HOME",
+	"TMPDIR",
+	"XDG_RUNTIME_DIR",
+	"SPOREVM_KERNEL_CACHE_DIR",
+	"SPOREVM_ROOTFS_CACHE_DIR",
+	"SPOREVM_BUNDLE_CACHE_DIR",
+	"SPOREVM_RUNTIME_DIR",
+}
+
+func contextEnvFromProcess() map[string]string {
+	env := make(map[string]string)
+	for _, name := range contextEnvNames {
+		if value := os.Getenv(name); value != "" {
+			env[name] = value
+		}
+	}
+	return env
+}
+
+func defaultSporeExecutable() string {
+	path, err := exec.LookPath("spore")
+	if err != nil {
+		return "spore"
+	}
+	return path
 }
 
 type InspectSporeOptions struct {

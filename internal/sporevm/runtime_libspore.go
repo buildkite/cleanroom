@@ -11,7 +11,8 @@ import (
 )
 
 type client struct {
-	inner *spore.Client
+	inner           *spore.Client
+	sporeExecutable string
 }
 
 func New() (Client, error) {
@@ -19,7 +20,13 @@ func New() (Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &client{inner: inner}, nil
+	for name, value := range contextEnvFromProcess() {
+		if err := inner.SetEnv(context.Background(), name, value); err != nil {
+			inner.Close()
+			return nil, fmt.Errorf("set libspore environment %s: %w", name, err)
+		}
+	}
+	return &client{inner: inner, sporeExecutable: defaultSporeExecutable()}, nil
 }
 
 func (c *client) NetworkCapabilities(ctx context.Context) (NetworkCapabilities, error) {
@@ -66,16 +73,17 @@ func (c *client) CreateNamed(ctx context.Context, options CreateNamedOptions) (J
 		return JSONResult{}, err
 	}
 	return jsonResult(c.inner.CreateNamed(ctx, spore.CreateNamedOptions{
-		Name:           options.Name,
-		Backend:        options.Backend,
-		ImageRef:       options.ImageRef,
-		MemoryBytes:    options.MemoryBytes,
-		VCPUs:          options.VCPUs,
-		TimeoutMs:      options.TimeoutMS,
-		NetworkEnabled: options.NetworkEnabled,
-		NetworkRules:   sporeNetworkRules(options.NetworkRules),
-		BoundServices:  sporeBoundUnixServices(options.BoundServices),
-		Annotations:    options.Annotations,
+		Name:            options.Name,
+		Backend:         options.Backend,
+		SporeExecutable: c.sporeExecutable,
+		ImageRef:        options.ImageRef,
+		MemoryBytes:     options.MemoryBytes,
+		VCPUs:           options.VCPUs,
+		TimeoutMs:       options.TimeoutMS,
+		NetworkEnabled:  options.NetworkEnabled,
+		NetworkRules:    sporeNetworkRules(options.NetworkRules),
+		BoundServices:   sporeBoundUnixServices(options.BoundServices),
+		Annotations:     options.Annotations,
 	}))
 }
 
@@ -96,6 +104,7 @@ func (c *client) ResumeNamed(ctx context.Context, options ResumeNamedOptions) (J
 	return jsonResult(c.inner.ResumeNamed(ctx, spore.ResumeNamedOptions{
 		SporeDir:             options.SporeDir,
 		Name:                 options.Name,
+		SporeExecutable:      c.sporeExecutable,
 		BoundServiceBindings: sporeBoundUnixServiceBindings(options.BoundServiceBindings),
 	}))
 }
