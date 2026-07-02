@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -43,12 +44,14 @@ type VMDestroyCommand struct {
 	JSON bool   `help:"Print libspore response as JSON"`
 }
 
+const cleanroomAnnotationPrefix = "dev.buildkite.cleanroom."
+
 func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 	cwd, err := resolveCWD(ctx.CWD, c.Dir)
 	if err != nil {
 		return err
 	}
-	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+	compiled, policySource, err := ctx.Loader.LoadAndCompile(cwd)
 	if err != nil {
 		return err
 	}
@@ -56,6 +59,10 @@ func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 	networkRules, err := vmNetworkRules(compiled)
+	if err != nil {
+		return err
+	}
+	annotations, err := vmCreateAnnotations(ctx, cwd, policySource, compiled, networkRules)
 	if err != nil {
 		return err
 	}
@@ -85,6 +92,7 @@ func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 		TimeoutMS:      launchTimeoutMS(c.LaunchSeconds),
 		NetworkEnabled: len(networkRules) > 0,
 		NetworkRules:   networkRules,
+		Annotations:    annotations,
 	})
 	if err != nil {
 		return err
@@ -121,9 +129,10 @@ func (c *VMCaptureCommand) Run(ctx *runtimeContext) error {
 	defer client.Close()
 
 	result, err := client.SnapshotNamed(context.Background(), sporevm.SnapshotNamedOptions{
-		Name:     c.Name,
-		OutDir:   strings.TrimSpace(c.Out),
-		Continue: true,
+		Name:        c.Name,
+		OutDir:      strings.TrimSpace(c.Out),
+		Continue:    true,
+		Annotations: vmCaptureAnnotations(ctx),
 	})
 	if err != nil {
 		return err
@@ -224,6 +233,101 @@ func vmNetworkRules(compiled *policy.CompiledPolicy) ([]sporevm.NetworkRule, err
 		})
 	}
 	return rules, nil
+}
+
+func vmCreateAnnotations(ctx *runtimeContext, cwd, policySource string, compiled *policy.CompiledPolicy, networkRules []sporevm.NetworkRule) (map[string]string, error) {
+	annotations := vmBaseAnnotations(ctx)
+	if compiled != nil {
+		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"policy.hash", compiled.Hash)
+		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"image.ref", compiled.ImageRef)
+		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"image.digest", compiled.ImageDigest)
+	}
+	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"policy.source", vmAnnotationPath(policySource))
+	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"workspace.dir", vmAnnotationPath(cwd))
+	vmAddGitAnnotations(annotations, cwd)
+
+	networkValue, err := vmNetworkRulesAnnotation(networkRules)
+	if err != nil {
+		return nil, err
+	}
+	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"network.rules", networkValue)
+	return annotations, nil
+}
+
+func vmCaptureAnnotations(ctx *runtimeContext) map[string]string {
+	annotations := vmBaseAnnotations(ctx)
+	annotations[cleanroomAnnotationPrefix+"capture.continue_after"] = "true"
+	return annotations
+}
+
+func vmBaseAnnotations(ctx *runtimeContext) map[string]string {
+	annotations := map[string]string{
+		cleanroomAnnotationPrefix + "provenance.version": "1",
+	}
+	if ctx != nil {
+		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"version", ctx.Version)
+	}
+	return annotations
+}
+
+func vmAddGitAnnotations(annotations map[string]string, cwd string) {
+	if annotations == nil || strings.TrimSpace(cwd) == "" {
+		return
+	}
+	if commit, err := gitOutput(cwd, "rev-parse", "HEAD"); err == nil {
+		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"workspace.git.commit", commit)
+	}
+	if remote, err := gitOutput(cwd, "config", "--get", "remote.origin.url"); err == nil {
+		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"workspace.git.remote", remote)
+	}
+	if status, err := gitOutput(cwd, "status", "--porcelain"); err == nil {
+		dirty := "false"
+		if strings.TrimSpace(status) != "" {
+			dirty = "true"
+		}
+		annotations[cleanroomAnnotationPrefix+"workspace.git.dirty"] = dirty
+	}
+}
+
+func vmNetworkRulesAnnotation(rules []sporevm.NetworkRule) (string, error) {
+	if len(rules) == 0 {
+		return "", nil
+	}
+	type ruleAnnotation struct {
+		Host  string   `json:"host"`
+		Ports []uint16 `json:"ports"`
+	}
+	out := make([]ruleAnnotation, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, ruleAnnotation{
+			Host:  rule.Host,
+			Ports: append([]uint16(nil), rule.Ports...),
+		})
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("encode cleanroom network rule annotations: %w", err)
+	}
+	return string(raw), nil
+}
+
+func vmAnnotationPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	return filepath.Clean(path)
+}
+
+func vmSetAnnotation(annotations map[string]string, key, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	annotations[key] = value
 }
 
 func vmMemoryBytes(compiled *policy.CompiledPolicy) uint64 {

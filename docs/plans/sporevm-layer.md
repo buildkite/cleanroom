@@ -185,6 +185,11 @@ Cleanroom-owned C ABI structs.
 host-plus-port rules into libspore create-time network rules and checks
 libspore capabilities before creating the VM.
 
+Minimal Cleanroom provenance now flows through Docker-label-style SporeVM
+annotations under `dev.buildkite.cleanroom.*`. `create` records policy, image,
+workspace, git, and accepted network-rule facts, and `capture` tags the
+snapshot-and-continue operation without creating a sidecar store.
+
 ## Delivery Strategy
 
 ### Slice 1: Lock The Simple CLI
@@ -238,16 +243,21 @@ service and capture does not store host socket paths.
 - Fail closed when required metadata or services are missing.
 
 Done when a captured Cleanroom spore resumes with the same Cleanroom setup and
-does not depend on current working-directory policy. This slice requires the
-SporeVM annotations extension to exist first.
+does not depend on current working-directory policy. The SporeVM annotation
+prerequisite now exists; this slice still needs Cleanroom-side inspect/parsing
+and gateway binding setup.
 
 ### Slice 6: Add Minimal Workspace Provenance
 
+Status: implemented in this branch, ahead of gateway/resume because SporeVM
+annotations are available now.
+
 - Record source directory, git commit, dirty state, and policy hash.
-- Store it in SporeVM annotations at capture time.
+- Store it in SporeVM annotations through the named VM lifecycle.
 - Do not add sync/copy behavior yet.
 
-Done when `capture` writes enough facts to explain what was created.
+Done when a captured Cleanroom spore carries enough facts to explain what was
+created.
 
 ### Slice 7: Delete Old Runtime Surface
 

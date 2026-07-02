@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -121,5 +124,103 @@ func TestVMNetworkRulesTranslatesExactAllows(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected network rules: got %#v want %#v", got, want)
+	}
+}
+
+func TestVMCreateAnnotationsRecordsCleanroomFacts(t *testing.T) {
+	cwd := t.TempDir()
+	compiled := &policy.CompiledPolicy{
+		ImageRef:    "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Hash:        "policy-hash",
+	}
+
+	got, err := vmCreateAnnotations(
+		&runtimeContext{Version: "v0.1.0"},
+		cwd,
+		filepath.Join(cwd, "cleanroom.yaml"),
+		compiled,
+		[]sporevm.NetworkRule{{Host: "github.com", Ports: []uint16{443, 8443}}},
+	)
+	if err != nil {
+		t.Fatalf("create annotations: %v", err)
+	}
+
+	wantPairs := map[string]string{
+		"dev.buildkite.cleanroom.provenance.version": "1",
+		"dev.buildkite.cleanroom.version":            "v0.1.0",
+		"dev.buildkite.cleanroom.policy.hash":        "policy-hash",
+		"dev.buildkite.cleanroom.policy.source":      filepath.Join(cwd, "cleanroom.yaml"),
+		"dev.buildkite.cleanroom.image.ref":          compiled.ImageRef,
+		"dev.buildkite.cleanroom.image.digest":       compiled.ImageDigest,
+		"dev.buildkite.cleanroom.workspace.dir":      cwd,
+	}
+	for key, want := range wantPairs {
+		if got[key] != want {
+			t.Fatalf("annotation %s = %q, want %q", key, got[key], want)
+		}
+	}
+
+	type networkRuleAnnotation struct {
+		Host  string   `json:"host"`
+		Ports []uint16 `json:"ports"`
+	}
+	var networkRules []networkRuleAnnotation
+	if err := json.Unmarshal([]byte(got["dev.buildkite.cleanroom.network.rules"]), &networkRules); err != nil {
+		t.Fatalf("decode network rules annotation: %v", err)
+	}
+	wantRules := []networkRuleAnnotation{{Host: "github.com", Ports: []uint16{443, 8443}}}
+	if !reflect.DeepEqual(networkRules, wantRules) {
+		t.Fatalf("network rules annotation = %#v, want %#v", networkRules, wantRules)
+	}
+}
+
+func TestVMCreateAnnotationsRecordsGitFactsWhenAvailable(t *testing.T) {
+	cwd := t.TempDir()
+	runGitInRepository(t, cwd, "init")
+	runGitInRepository(t, cwd, "config", "user.email", "cleanroom-test@example.com")
+	runGitInRepository(t, cwd, "config", "user.name", "Cleanroom Test")
+	if err := os.WriteFile(filepath.Join(cwd, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitInRepository(t, cwd, "add", "README.md")
+	runGitInRepository(t, cwd, "-c", "commit.gpgsign=false", "commit", "-m", "initial")
+	runGitInRepository(t, cwd, "remote", "add", "origin", "https://example.com/acme/repo.git")
+	if err := os.WriteFile(filepath.Join(cwd, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty.txt: %v", err)
+	}
+
+	got, err := vmCreateAnnotations(nil, cwd, "", &policy.CompiledPolicy{}, nil)
+	if err != nil {
+		t.Fatalf("create annotations: %v", err)
+	}
+
+	wantPairs := map[string]string{
+		"dev.buildkite.cleanroom.workspace.git.commit": headCommit(t, cwd),
+		"dev.buildkite.cleanroom.workspace.git.remote": "https://example.com/acme/repo.git",
+		"dev.buildkite.cleanroom.workspace.git.dirty":  "true",
+	}
+	for key, want := range wantPairs {
+		if got[key] != want {
+			t.Fatalf("annotation %s = %q, want %q", key, got[key], want)
+		}
+	}
+	if _, ok := got["dev.buildkite.cleanroom.network.rules"]; ok {
+		t.Fatalf("network rules annotation should be omitted when there are no rules")
+	}
+}
+
+func TestVMCaptureAnnotationsRecordsContinueAfter(t *testing.T) {
+	got := vmCaptureAnnotations(&runtimeContext{Version: "v0.1.0"})
+
+	wantPairs := map[string]string{
+		"dev.buildkite.cleanroom.provenance.version":     "1",
+		"dev.buildkite.cleanroom.version":                "v0.1.0",
+		"dev.buildkite.cleanroom.capture.continue_after": "true",
+	}
+	for key, want := range wantPairs {
+		if got[key] != want {
+			t.Fatalf("annotation %s = %q, want %q", key, got[key], want)
+		}
 	}
 }

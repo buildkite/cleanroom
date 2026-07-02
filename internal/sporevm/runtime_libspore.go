@@ -58,6 +58,7 @@ func (c *client) CreateNamed(ctx context.Context, options CreateNamedOptions) (J
 		TimeoutMs:      options.TimeoutMS,
 		NetworkEnabled: options.NetworkEnabled,
 		NetworkRules:   sporeNetworkRules(options.NetworkRules),
+		Annotations:    options.Annotations,
 	}))
 }
 
@@ -86,9 +87,10 @@ func (c *client) SnapshotNamed(ctx context.Context, options SnapshotNamedOptions
 		return JSONResult{}, err
 	}
 	return jsonResult(c.inner.SnapshotNamed(ctx, spore.SnapshotNamedOptions{
-		Name:     options.Name,
-		OutDir:   options.OutDir,
-		Continue: options.Continue,
+		Name:        options.Name,
+		OutDir:      options.OutDir,
+		Continue:    options.Continue,
+		Annotations: options.Annotations,
 	}))
 }
 

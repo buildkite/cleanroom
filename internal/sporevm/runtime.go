@@ -35,6 +35,7 @@ type CreateNamedOptions struct {
 	TimeoutMS      uint64
 	NetworkEnabled bool
 	NetworkRules   []NetworkRule
+	Annotations    map[string]string
 }
 
 type NetworkCapabilities struct {
@@ -58,9 +59,10 @@ type ResumeNamedOptions struct {
 }
 
 type SnapshotNamedOptions struct {
-	Name     string
-	OutDir   string
-	Continue bool
+	Name        string
+	OutDir      string
+	Continue    bool
+	Annotations map[string]string
 }
 
 type RemoveNamedOptions struct {
