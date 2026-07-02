@@ -33,6 +33,7 @@ func (c *client) NetworkCapabilities(ctx context.Context) (NetworkCapabilities, 
 	return NetworkCapabilities{
 		Supported:     caps.Supported,
 		ExactHostPort: caps.ExactHostPort,
+		BoundServices: caps.BoundServices,
 	}, nil
 }
 
@@ -58,6 +59,7 @@ func (c *client) CreateNamed(ctx context.Context, options CreateNamedOptions) (J
 		TimeoutMs:      options.TimeoutMS,
 		NetworkEnabled: options.NetworkEnabled,
 		NetworkRules:   sporeNetworkRules(options.NetworkRules),
+		BoundServices:  sporeBoundUnixServices(options.BoundServices),
 		Annotations:    options.Annotations,
 	}))
 }
@@ -77,8 +79,9 @@ func (c *client) ResumeNamed(ctx context.Context, options ResumeNamedOptions) (J
 		return JSONResult{}, err
 	}
 	return jsonResult(c.inner.ResumeNamed(ctx, spore.ResumeNamedOptions{
-		SporeDir: options.SporeDir,
-		Name:     options.Name,
+		SporeDir:             options.SporeDir,
+		Name:                 options.Name,
+		BoundServiceBindings: sporeBoundUnixServiceBindings(options.BoundServiceBindings),
 	}))
 }
 
@@ -128,6 +131,36 @@ func sporeNetworkRules(rules []NetworkRule) []spore.NetworkRule {
 		out = append(out, spore.NetworkRule{
 			Host:  rule.Host,
 			Ports: append([]uint16(nil), rule.Ports...),
+		})
+	}
+	return out
+}
+
+func sporeBoundUnixServices(services []BoundUnixService) []spore.BoundUnixService {
+	if len(services) == 0 {
+		return nil
+	}
+	out := make([]spore.BoundUnixService, 0, len(services))
+	for _, service := range services {
+		out = append(out, spore.BoundUnixService{
+			Name:      service.Name,
+			GuestHost: service.GuestHost,
+			GuestPort: service.GuestPort,
+			UnixPath:  service.UnixPath,
+		})
+	}
+	return out
+}
+
+func sporeBoundUnixServiceBindings(bindings []BoundUnixServiceBinding) []spore.BoundUnixServiceBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]spore.BoundUnixServiceBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		out = append(out, spore.BoundUnixServiceBinding{
+			Name:     binding.Name,
+			UnixPath: binding.UnixPath,
 		})
 	}
 	return out

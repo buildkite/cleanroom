@@ -240,6 +240,15 @@ func TestTopLevelLifecycleCommandsParse(t *testing.T) {
 
 	c = &CLI{}
 	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"create", "--gateway-socket", "./gateway.sock", "worker"}); err != nil {
+		t.Fatalf("parse create with gateway socket returned error: %v", err)
+	}
+	if got, want := c.Create.GatewaySocket, "./gateway.sock"; got != want {
+		t.Fatalf("unexpected create gateway socket: got %q want %q", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
 	if _, err := parser.Parse([]string{"exec", "worker", "--", "echo", "hi"}); err != nil {
 		t.Fatalf("parse exec returned error: %v", err)
 	}

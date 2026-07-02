@@ -35,17 +35,31 @@ type CreateNamedOptions struct {
 	TimeoutMS      uint64
 	NetworkEnabled bool
 	NetworkRules   []NetworkRule
+	BoundServices  []BoundUnixService
 	Annotations    map[string]string
 }
 
 type NetworkCapabilities struct {
 	Supported     bool
 	ExactHostPort bool
+	BoundServices bool
 }
 
 type NetworkRule struct {
 	Host  string
 	Ports []uint16
+}
+
+type BoundUnixService struct {
+	Name      string
+	GuestHost string
+	GuestPort uint16
+	UnixPath  string
+}
+
+type BoundUnixServiceBinding struct {
+	Name     string
+	UnixPath string
 }
 
 type ExecNamedOptions struct {
@@ -54,8 +68,9 @@ type ExecNamedOptions struct {
 }
 
 type ResumeNamedOptions struct {
-	SporeDir string
-	Name     string
+	SporeDir             string
+	Name                 string
+	BoundServiceBindings []BoundUnixServiceBinding
 }
 
 type SnapshotNamedOptions struct {

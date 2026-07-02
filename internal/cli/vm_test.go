@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -141,6 +142,7 @@ func TestVMCreateAnnotationsRecordsCleanroomFacts(t *testing.T) {
 		filepath.Join(cwd, "cleanroom.yaml"),
 		compiled,
 		[]sporevm.NetworkRule{{Host: "github.com", Ports: []uint16{443, 8443}}},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("create annotations: %v", err)
@@ -190,7 +192,7 @@ func TestVMCreateAnnotationsRecordsGitFactsWhenAvailable(t *testing.T) {
 		t.Fatalf("write dirty.txt: %v", err)
 	}
 
-	got, err := vmCreateAnnotations(nil, cwd, "", &policy.CompiledPolicy{}, nil)
+	got, err := vmCreateAnnotations(nil, cwd, "", &policy.CompiledPolicy{}, nil, nil)
 	if err != nil {
 		t.Fatalf("create annotations: %v", err)
 	}
@@ -207,6 +209,96 @@ func TestVMCreateAnnotationsRecordsGitFactsWhenAvailable(t *testing.T) {
 	}
 	if _, ok := got["dev.buildkite.cleanroom.network.rules"]; ok {
 		t.Fatalf("network rules annotation should be omitted when there are no rules")
+	}
+}
+
+func TestVMGatewayServicesBindsUnixSocket(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "cleanroom-gateway-test-*")
+	if err != nil {
+		t.Fatalf("create short temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(base); err != nil {
+			t.Fatalf("remove temp dir: %v", err)
+		}
+	})
+	socketPath := filepath.Join(base, "gateway.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	got, err := vmGatewayServices(base, "gateway.sock")
+	if err != nil {
+		t.Fatalf("gateway services: %v", err)
+	}
+	want := []sporevm.BoundUnixService{{
+		Name:      "cleanroom-gateway",
+		GuestHost: "gateway.cleanroom.internal",
+		GuestPort: 8170,
+		UnixPath:  socketPath,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gateway services = %#v, want %#v", got, want)
+	}
+}
+
+func TestVMGatewayServicesRejectsNonSocket(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "not-a-socket")
+	if err := os.WriteFile(path, []byte("nope\n"), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	_, err := vmGatewayServices(base, path)
+	if err == nil {
+		t.Fatal("expected non-socket error")
+	}
+	if !strings.Contains(err.Error(), "is not a Unix socket") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestVMCreateAnnotationsRecordsGatewayServicesWithoutSocketPath(t *testing.T) {
+	cwd := t.TempDir()
+	got, err := vmCreateAnnotations(
+		nil,
+		cwd,
+		"",
+		&policy.CompiledPolicy{},
+		nil,
+		[]sporevm.BoundUnixService{{
+			Name:      "cleanroom-gateway",
+			GuestHost: "gateway.cleanroom.internal",
+			GuestPort: 8170,
+			UnixPath:  "/tmp/live-cleanroom-gateway.sock",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("create annotations: %v", err)
+	}
+
+	raw := got["dev.buildkite.cleanroom.gateway.services"]
+	if strings.Contains(raw, "/tmp/live-cleanroom-gateway.sock") {
+		t.Fatalf("gateway services annotation leaked host socket path: %s", raw)
+	}
+	type gatewayServiceAnnotation struct {
+		Name      string `json:"name"`
+		GuestHost string `json:"guest_host"`
+		GuestPort uint16 `json:"guest_port"`
+	}
+	var services []gatewayServiceAnnotation
+	if err := json.Unmarshal([]byte(raw), &services); err != nil {
+		t.Fatalf("decode gateway services annotation: %v", err)
+	}
+	want := []gatewayServiceAnnotation{{
+		Name:      "cleanroom-gateway",
+		GuestHost: "gateway.cleanroom.internal",
+		GuestPort: 8170,
+	}}
+	if !reflect.DeepEqual(services, want) {
+		t.Fatalf("gateway services annotation = %#v, want %#v", services, want)
 	}
 }
 

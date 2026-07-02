@@ -190,6 +190,13 @@ annotations under `dev.buildkite.cleanroom.*`. `create` records policy, image,
 workspace, git, and accepted network-rule facts, and `capture` tags the
 snapshot-and-continue operation without creating a sidecar store.
 
+Gateway binding has a first explicit slice: `cleanroom create --gateway-socket`
+binds an existing host Unix socket as `gateway.cleanroom.internal:8170` using
+libspore bound services, and records only the stable service name and guest
+endpoint in annotations. Cleanroom-managed gateway process startup remains
+deferred; adding it now would pull the old shared gateway/control-plane model
+back into the new thin layer.
+
 ## Delivery Strategy
 
 ### Slice 1: Lock The Simple CLI
@@ -228,12 +235,20 @@ unsupported policy fails before VM creation.
 
 ### Slice 4: Add Gateway Bindings
 
+Status: explicit socket binding implemented in this branch; managed gateway
+startup deferred.
+
 - Map Cleanroom gateway services to libspore bound Unix services.
 - Record restore-time service requirements in provenance.
 - Keep service startup local and explicit.
 
 Done when a VM can reach a Cleanroom-provided gateway endpoint through a bound
 service and capture does not store host socket paths.
+
+The first implementation requires the service to already be running and passed
+as `--gateway-socket`. A later managed-startup slice should only start the
+minimal gateway process needed for a named VM and must not resurrect the old
+Cleanroom daemon/control-plane path.
 
 ### Slice 5: Add Resume From Cleanroom Provenance
 

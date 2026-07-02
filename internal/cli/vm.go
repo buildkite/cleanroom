@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/sporevm"
 )
@@ -16,6 +18,7 @@ type VMCreateCommand struct {
 	Name          string `arg:"" required:"" help:"Named VM lifecycle target"`
 	Dir           string `arg:"" optional:"" default:"." help:"Repository directory containing cleanroom policy"`
 	Backend       string `help:"SporeVM backend"`
+	GatewaySocket string `name:"gateway-socket" help:"Bind an existing Unix socket as gateway.cleanroom.internal:8170"`
 	Wait          bool   `help:"Accepted for CLI compatibility; libspore create waits for readiness"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print libspore response as JSON"`
@@ -45,6 +48,7 @@ type VMDestroyCommand struct {
 }
 
 const cleanroomAnnotationPrefix = "dev.buildkite.cleanroom."
+const cleanroomGatewayServiceName = "cleanroom-gateway"
 
 func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 	cwd, err := resolveCWD(ctx.CWD, c.Dir)
@@ -62,7 +66,11 @@ func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	annotations, err := vmCreateAnnotations(ctx, cwd, policySource, compiled, networkRules)
+	boundServices, err := vmGatewayServices(ctx.CWD, c.GatewaySocket)
+	if err != nil {
+		return err
+	}
+	annotations, err := vmCreateAnnotations(ctx, cwd, policySource, compiled, networkRules, boundServices)
 	if err != nil {
 		return err
 	}
@@ -73,13 +81,16 @@ func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 	defer client.Close()
 
 	runCtx := context.Background()
-	if len(networkRules) > 0 {
+	if len(networkRules) > 0 || len(boundServices) > 0 {
 		caps, err := client.NetworkCapabilities(runCtx)
 		if err != nil {
 			return fmt.Errorf("read libspore network capabilities: %w", err)
 		}
-		if !caps.Supported || !caps.ExactHostPort {
+		if len(networkRules) > 0 && (!caps.Supported || !caps.ExactHostPort) {
 			return errors.New("libspore does not support exact host-plus-port network rules")
+		}
+		if len(boundServices) > 0 && (!caps.Supported || !caps.BoundServices) {
+			return errors.New("libspore does not support bound Unix services")
 		}
 	}
 
@@ -90,8 +101,9 @@ func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 		MemoryBytes:    vmMemoryBytes(compiled),
 		VCPUs:          vmVCPUs(compiled),
 		TimeoutMS:      launchTimeoutMS(c.LaunchSeconds),
-		NetworkEnabled: len(networkRules) > 0,
+		NetworkEnabled: len(networkRules) > 0 || len(boundServices) > 0,
 		NetworkRules:   networkRules,
+		BoundServices:  boundServices,
 		Annotations:    annotations,
 	})
 	if err != nil {
@@ -235,7 +247,7 @@ func vmNetworkRules(compiled *policy.CompiledPolicy) ([]sporevm.NetworkRule, err
 	return rules, nil
 }
 
-func vmCreateAnnotations(ctx *runtimeContext, cwd, policySource string, compiled *policy.CompiledPolicy, networkRules []sporevm.NetworkRule) (map[string]string, error) {
+func vmCreateAnnotations(ctx *runtimeContext, cwd, policySource string, compiled *policy.CompiledPolicy, networkRules []sporevm.NetworkRule, boundServices []sporevm.BoundUnixService) (map[string]string, error) {
 	annotations := vmBaseAnnotations(ctx)
 	if compiled != nil {
 		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"policy.hash", compiled.Hash)
@@ -251,6 +263,11 @@ func vmCreateAnnotations(ctx *runtimeContext, cwd, policySource string, compiled
 		return nil, err
 	}
 	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"network.rules", networkValue)
+	gatewayValue, err := vmGatewayServicesAnnotation(boundServices)
+	if err != nil {
+		return nil, err
+	}
+	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"gateway.services", gatewayValue)
 	return annotations, nil
 }
 
@@ -289,6 +306,34 @@ func vmAddGitAnnotations(annotations map[string]string, cwd string) {
 	}
 }
 
+func vmGatewayServices(base, socketPath string) ([]sporevm.BoundUnixService, error) {
+	socketPath = strings.TrimSpace(socketPath)
+	if socketPath == "" {
+		return nil, nil
+	}
+	if !filepath.IsAbs(socketPath) {
+		if strings.TrimSpace(base) != "" {
+			socketPath = filepath.Join(base, socketPath)
+		} else if absolute, err := filepath.Abs(socketPath); err == nil {
+			socketPath = absolute
+		}
+	}
+	socketPath = filepath.Clean(socketPath)
+	info, err := os.Stat(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat gateway socket %q: %w", socketPath, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return nil, fmt.Errorf("gateway socket %q is not a Unix socket", socketPath)
+	}
+	return []sporevm.BoundUnixService{{
+		Name:      cleanroomGatewayServiceName,
+		GuestHost: gateway.GuestGatewayHostname,
+		GuestPort: gateway.DefaultPort,
+		UnixPath:  socketPath,
+	}}, nil
+}
+
 func vmNetworkRulesAnnotation(rules []sporevm.NetworkRule) (string, error) {
 	if len(rules) == 0 {
 		return "", nil
@@ -307,6 +352,30 @@ func vmNetworkRulesAnnotation(rules []sporevm.NetworkRule) (string, error) {
 	raw, err := json.Marshal(out)
 	if err != nil {
 		return "", fmt.Errorf("encode cleanroom network rule annotations: %w", err)
+	}
+	return string(raw), nil
+}
+
+func vmGatewayServicesAnnotation(services []sporevm.BoundUnixService) (string, error) {
+	if len(services) == 0 {
+		return "", nil
+	}
+	type serviceAnnotation struct {
+		Name      string `json:"name"`
+		GuestHost string `json:"guest_host"`
+		GuestPort uint16 `json:"guest_port"`
+	}
+	out := make([]serviceAnnotation, 0, len(services))
+	for _, service := range services {
+		out = append(out, serviceAnnotation{
+			Name:      service.Name,
+			GuestHost: service.GuestHost,
+			GuestPort: service.GuestPort,
+		})
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("encode cleanroom gateway service annotations: %w", err)
 	}
 	return string(raw), nil
 }
