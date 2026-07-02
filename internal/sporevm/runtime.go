@@ -14,6 +14,7 @@ var (
 
 type Client interface {
 	io.Closer
+	NetworkCapabilities(context.Context) (NetworkCapabilities, error)
 	CreateNamed(context.Context, CreateNamedOptions) (JSONResult, error)
 	ExecNamed(context.Context, ExecNamedOptions) (JSONResult, error)
 	ResumeNamed(context.Context, ResumeNamedOptions) (JSONResult, error)
@@ -26,12 +27,24 @@ type JSONResult struct {
 }
 
 type CreateNamedOptions struct {
-	Name        string
-	Backend     string
-	ImageRef    string
-	MemoryBytes uint64
-	VCPUs       uint32
-	TimeoutMS   uint64
+	Name           string
+	Backend        string
+	ImageRef       string
+	MemoryBytes    uint64
+	VCPUs          uint32
+	TimeoutMS      uint64
+	NetworkEnabled bool
+	NetworkRules   []NetworkRule
+}
+
+type NetworkCapabilities struct {
+	Supported     bool
+	ExactHostPort bool
+}
+
+type NetworkRule struct {
+	Host  string
+	Ports []uint16
 }
 
 type ExecNamedOptions struct {

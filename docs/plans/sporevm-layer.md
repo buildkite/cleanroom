@@ -108,8 +108,7 @@ Rejected until mapped safely:
 - wildcard/CIDR/SNI/HTTP network policy
 - live per-exec network policy updates
 
-The first implementation may reject all network allow rules. The next slice
-should translate exact host-plus-port rules after checking libspore
+The implementation translates exact host-plus-port rules after checking libspore
 `networkCapabilities`.
 
 ### Workspace Contract
@@ -175,12 +174,16 @@ cleanroom resume ./test.spore --name worker
 
 ## Current State
 
-Slices 1 and 2 are implemented in this branch. Top-level `create`, `exec`,
+Slices 1 through 3 are implemented in this branch. Top-level `create`, `exec`,
 `capture`, `resume`, and `destroy` point at a libspore-backed adapter under
 `internal/sporevm/`, with `terminate` and `rm` kept as `destroy` aliases.
 
 The adapter now consumes SporeVM's official Go binding instead of declaring
 Cleanroom-owned C ABI structs.
+
+`cleanroom create` now translates global exact `sandbox.network.allow`
+host-plus-port rules into libspore create-time network rules and checks
+libspore capabilities before creating the VM.
 
 ## Delivery Strategy
 
@@ -207,6 +210,8 @@ Status: implemented in this branch.
 Done when Cleanroom does not declare C ABI structs itself.
 
 ### Slice 3: Translate Network Policy
+
+Status: implemented in this branch.
 
 - Add `networkCapabilities` to the Go binding.
 - Translate Cleanroom exact host-plus-port allow rules to libspore create-time

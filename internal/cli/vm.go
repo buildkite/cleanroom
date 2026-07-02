@@ -55,19 +55,36 @@ func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
 	if err := validateVMPolicy(compiled); err != nil {
 		return err
 	}
+	networkRules, err := vmNetworkRules(compiled)
+	if err != nil {
+		return err
+	}
 	client, err := newSporeVMClient()
 	if err != nil {
 		return err
 	}
 	defer client.Close()
 
-	result, err := client.CreateNamed(context.Background(), sporevm.CreateNamedOptions{
-		Name:        c.Name,
-		Backend:     strings.TrimSpace(c.Backend),
-		ImageRef:    strings.TrimSpace(compiled.ImageRef),
-		MemoryBytes: vmMemoryBytes(compiled),
-		VCPUs:       vmVCPUs(compiled),
-		TimeoutMS:   launchTimeoutMS(c.LaunchSeconds),
+	runCtx := context.Background()
+	if len(networkRules) > 0 {
+		caps, err := client.NetworkCapabilities(runCtx)
+		if err != nil {
+			return fmt.Errorf("read libspore network capabilities: %w", err)
+		}
+		if !caps.Supported || !caps.ExactHostPort {
+			return errors.New("libspore does not support exact host-plus-port network rules")
+		}
+	}
+
+	result, err := client.CreateNamed(runCtx, sporevm.CreateNamedOptions{
+		Name:           c.Name,
+		Backend:        strings.TrimSpace(c.Backend),
+		ImageRef:       strings.TrimSpace(compiled.ImageRef),
+		MemoryBytes:    vmMemoryBytes(compiled),
+		VCPUs:          vmVCPUs(compiled),
+		TimeoutMS:      launchTimeoutMS(c.LaunchSeconds),
+		NetworkEnabled: len(networkRules) > 0,
+		NetworkRules:   networkRules,
 	})
 	if err != nil {
 		return err
@@ -163,8 +180,8 @@ func validateVMPolicy(compiled *policy.CompiledPolicy) error {
 	if compiled.HasStageScopedNetwork() {
 		return errors.New("cleanroom create does not yet translate stage-scoped network policy to libspore")
 	}
-	if len(compiled.Allow) > 0 {
-		return errors.New("cleanroom create does not yet translate network allow rules to libspore")
+	if _, err := vmNetworkRules(compiled); err != nil {
+		return err
 	}
 	if compiled.RequiresDockerService() {
 		return errors.New("cleanroom create does not yet translate docker service policy to libspore")
@@ -179,6 +196,34 @@ func validateVMPolicy(compiled *policy.CompiledPolicy) error {
 		return errors.New("cleanroom create does not yet translate run.before hooks to libspore")
 	}
 	return nil
+}
+
+func vmNetworkRules(compiled *policy.CompiledPolicy) ([]sporevm.NetworkRule, error) {
+	if compiled == nil || len(compiled.Allow) == 0 {
+		return nil, nil
+	}
+	rules := make([]sporevm.NetworkRule, 0, len(compiled.Allow))
+	for _, rule := range compiled.Allow {
+		host := strings.TrimSpace(rule.Host)
+		if host == "" {
+			return nil, errors.New("cleanroom create requires network allow rules to include a host")
+		}
+		if len(rule.Ports) == 0 {
+			return nil, fmt.Errorf("cleanroom create requires network allow rule for %s to include at least one port", host)
+		}
+		ports := make([]uint16, 0, len(rule.Ports))
+		for _, port := range rule.Ports {
+			if port < 1 || port > 65535 {
+				return nil, fmt.Errorf("cleanroom create does not support network allow port %d for %s", port, host)
+			}
+			ports = append(ports, uint16(port))
+		}
+		rules = append(rules, sporevm.NetworkRule{
+			Host:  host,
+			Ports: ports,
+		})
+	}
+	return rules, nil
 }
 
 func vmMemoryBytes(compiled *policy.CompiledPolicy) uint64 {

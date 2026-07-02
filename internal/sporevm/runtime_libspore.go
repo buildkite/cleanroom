@@ -22,6 +22,20 @@ func New() (Client, error) {
 	return &client{inner: inner}, nil
 }
 
+func (c *client) NetworkCapabilities(ctx context.Context) (NetworkCapabilities, error) {
+	if err := c.ready(); err != nil {
+		return NetworkCapabilities{}, err
+	}
+	caps, err := c.inner.NetworkCapabilities(ctx)
+	if err != nil {
+		return NetworkCapabilities{}, err
+	}
+	return NetworkCapabilities{
+		Supported:     caps.Supported,
+		ExactHostPort: caps.ExactHostPort,
+	}, nil
+}
+
 func (c *client) Close() error {
 	if c == nil || c.inner == nil {
 		return nil
@@ -36,12 +50,14 @@ func (c *client) CreateNamed(ctx context.Context, options CreateNamedOptions) (J
 		return JSONResult{}, err
 	}
 	return jsonResult(c.inner.CreateNamed(ctx, spore.CreateNamedOptions{
-		Name:        options.Name,
-		Backend:     options.Backend,
-		ImageRef:    options.ImageRef,
-		MemoryBytes: options.MemoryBytes,
-		VCPUs:       options.VCPUs,
-		TimeoutMs:   options.TimeoutMS,
+		Name:           options.Name,
+		Backend:        options.Backend,
+		ImageRef:       options.ImageRef,
+		MemoryBytes:    options.MemoryBytes,
+		VCPUs:          options.VCPUs,
+		TimeoutMs:      options.TimeoutMS,
+		NetworkEnabled: options.NetworkEnabled,
+		NetworkRules:   sporeNetworkRules(options.NetworkRules),
 	}))
 }
 
@@ -99,4 +115,18 @@ func jsonResult[T any](value T, err error) (JSONResult, error) {
 		return JSONResult{}, fmt.Errorf("encode libspore result: %w", err)
 	}
 	return JSONResult{RawJSON: raw}, nil
+}
+
+func sporeNetworkRules(rules []NetworkRule) []spore.NetworkRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]spore.NetworkRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, spore.NetworkRule{
+			Host:  rule.Host,
+			Ports: append([]uint16(nil), rule.Ports...),
+		})
+	}
+	return out
 }
