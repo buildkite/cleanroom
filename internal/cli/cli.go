@@ -53,30 +53,30 @@ type runtimeContext struct {
 }
 
 type CLI struct {
-	Auth        AuthCommand        `cmd:"" help:"Authentication and authorization diagnostics"`
+	Auth        AuthCommand        `cmd:"" hidden:"" help:"Authentication and authorization diagnostics"`
 	Policy      PolicyCommand      `cmd:"" help:"Policy commands"`
 	Config      ConfigCommand      `cmd:"" help:"Runtime config commands"`
 	Image       ImageCommand       `cmd:"" help:"Manage OCI image cache artifacts"`
-	Inspect     InspectCommand     `cmd:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
-	Snapshot    SnapshotCommand    `cmd:"" help:"Manage snapshots"`
+	Inspect     InspectCommand     `cmd:"" hidden:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
+	Snapshot    SnapshotCommand    `cmd:"" hidden:"" help:"Manage snapshots"`
 	Create      VMCreateCommand    `cmd:"" help:"Create a named VM using repo policy"`
 	Exec        VMExecCommand      `cmd:"" help:"Execute a command in a named VM"`
 	Capture     VMCaptureCommand   `cmd:"" help:"Snapshot-and-continue a named VM"`
 	Resume      VMResumeCommand    `cmd:"" help:"Resume a spore as a named VM"`
 	Destroy     VMDestroyCommand   `name:"destroy" aliases:"terminate,rm" cmd:"" help:"Destroy a named VM"`
-	Console     ConsoleCommand     `cmd:"" help:"Run a command with an interactive tty in a sandbox"`
-	Copy        CopyCommand        `name:"copy" aliases:"cp" cmd:"" help:"Copy one file into or out of a sandbox"`
-	Workspace   WorkspaceCommand   `cmd:"" help:"Manage sandbox workspace contents"`
-	Expose      ExposeCommand      `cmd:"" help:"Expose sandbox ports on this client"`
-	PortForward PortForwardCommand `name:"port-forward" cmd:"" help:"Forward local TCP ports to a sandbox"`
-	Serve       ServeCommand       `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
-	Daemon      DaemonCommand      `cmd:"" help:"Manage daemon/service lifecycle"`
-	DNS         DNSCommand         `name:"dns" cmd:"" help:"Manage host DNS for local exposures"`
-	Doctor      DoctorCommand      `cmd:"" help:"Run environment and backend diagnostics"`
-	Execution   ExecutionCommand   `cmd:"" help:"Inspect command executions and diagnostics"`
-	Status      StatusCommand      `cmd:"" help:"Browse retained execution artifacts"`
-	Sandbox     SandboxCommand     `cmd:"" help:"Manage sandboxes"`
-	System      SystemCommand      `cmd:"" help:"Inspect and prune host storage"`
+	Console     ConsoleCommand     `cmd:"" hidden:"" help:"Run a command with an interactive tty in a sandbox"`
+	Copy        CopyCommand        `name:"copy" aliases:"cp" cmd:"" hidden:"" help:"Copy one file into or out of a sandbox"`
+	Workspace   WorkspaceCommand   `cmd:"" hidden:"" help:"Manage sandbox workspace contents"`
+	Expose      ExposeCommand      `cmd:"" hidden:"" help:"Expose sandbox ports on this client"`
+	PortForward PortForwardCommand `name:"port-forward" cmd:"" hidden:"" help:"Forward local TCP ports to a sandbox"`
+	Serve       ServeCommand       `cmd:"" hidden:"" help:"Run the cleanroom control-plane server in the foreground"`
+	Daemon      DaemonCommand      `cmd:"" hidden:"" help:"Manage daemon/service lifecycle"`
+	DNS         DNSCommand         `name:"dns" cmd:"" hidden:"" help:"Manage host DNS for local exposures"`
+	Doctor      DoctorCommand      `cmd:"" hidden:"" help:"Run environment and backend diagnostics"`
+	Execution   ExecutionCommand   `cmd:"" hidden:"" help:"Inspect command executions and diagnostics"`
+	Status      StatusCommand      `cmd:"" hidden:"" help:"Browse retained execution artifacts"`
+	Sandbox     SandboxCommand     `cmd:"" hidden:"" help:"Manage sandboxes"`
+	System      SystemCommand      `cmd:"" hidden:"" help:"Inspect and prune host storage"`
 	Version     VersionCommand     `cmd:"" help:"Print version information"`
 }
 

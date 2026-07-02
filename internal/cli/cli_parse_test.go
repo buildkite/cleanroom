@@ -299,6 +299,32 @@ func TestTopLevelLifecycleCommandsParse(t *testing.T) {
 	}
 }
 
+func TestPublicTopLevelCommandsHideLegacyRuntimeSurface(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	got := make(map[string]bool)
+	for _, command := range parser.Model.Children {
+		if !command.Hidden {
+			got[command.Name] = true
+		}
+	}
+	want := map[string]bool{
+		"policy":  true,
+		"config":  true,
+		"image":   true,
+		"create":  true,
+		"exec":    true,
+		"capture": true,
+		"resume":  true,
+		"destroy": true,
+		"version": true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("public top-level commands = %#v, want %#v", got, want)
+	}
+}
+
 func TestNamedLifecycleCommandsBypassStartupRuntimeConfig(t *testing.T) {
 	for _, args := range [][]string{
 		{"create", "worker"},

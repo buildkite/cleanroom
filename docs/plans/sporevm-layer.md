@@ -202,6 +202,11 @@ Cleanroom provenance version `1`, validates recorded network and gateway facts,
 and passes restore-time gateway socket bindings to libspore when the captured
 spore declares a Cleanroom gateway service.
 
+The old daemon/control-plane runtime commands are hidden from top-level help so
+the public CLI presents the simple named lifecycle first. They still parse for
+now, which keeps existing tests and internal workflows intact while the new
+libspore path settles.
+
 ## Delivery Strategy
 
 ### Slice 1: Lock The Simple CLI
@@ -284,12 +289,17 @@ created.
 
 ### Slice 7: Delete Old Runtime Surface
 
+Status: old daemon/control-plane runtime commands are hidden from public help;
+implementation deletion is deferred.
+
 - Remove or hide daemon-backed top-level UX.
 - Decide whether `sandbox`, `workspace`, `execution`, and `serve` survive as
   separate advanced/internal surfaces.
 - Delete backend adapter paths only after no command depends on them.
 
-Done when Cleanroom no longer has two user-facing runtime models.
+Done when Cleanroom no longer has two user-facing runtime models. The first
+step is complete in the CLI help surface; a later deletion pass can remove code
+once no tests or internal workflows depend on the legacy commands.
 
 ## Verification
 
