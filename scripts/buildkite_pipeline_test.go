@@ -156,55 +156,6 @@ func TestBuildkiteGoTestEngineScriptBootstrapsBktecAndRequiresGotestsum(t *testi
 	}
 }
 
-func TestBuildkiteHostLockWrapperUsesMachineScopedAgentLocks(t *testing.T) {
-	t.Parallel()
-
-	info, err := os.Stat("ci-with-host-lock.sh")
-	if err != nil {
-		t.Fatalf("stat ci-with-host-lock.sh: %v", err)
-	}
-	if info.Mode()&0111 == 0 {
-		t.Fatalf("expected ci-with-host-lock.sh to be executable")
-	}
-
-	content, err := os.ReadFile("ci-with-host-lock.sh")
-	if err != nil {
-		t.Fatalf("read ci-with-host-lock.sh: %v", err)
-	}
-
-	script := string(content)
-	for _, needle := range []string{
-		`trap release_buildkite_lock EXIT`,
-		`buildkite-agent is required for host locks`,
-		`buildkite-agent lock acquire --lock-wait-timeout "$buildkite_lock_wait_timeout" "$lock_key"`,
-		`buildkite-agent lock release "$lock_key" "$token"`,
-		`buildkite-agent lock release failed for: $lock_key`,
-		`CLEANROOM_BUILDKITE_LOCK_WAIT_TIMEOUT:-${BUILDKITE_LOCK_WAIT_TIMEOUT:-45m}`,
-		`"$@"`,
-	} {
-		if !strings.Contains(script, needle) {
-			t.Fatalf("expected ci-with-host-lock.sh to contain %q", needle)
-		}
-	}
-	if strings.Contains(script, `buildkite-agent lock release "$lock_key" "$token" || true`) {
-		t.Fatalf("expected ci-with-host-lock.sh to fail successful jobs when Buildkite lock release fails")
-	}
-	for _, needle := range []string{
-		`falling back to host file lock`,
-		`CLEANROOM_CI_HOST_LOCK_DIR`,
-		`flock`,
-		`lockf`,
-		`CLEANROOM_CI_ISOLATE_WORKSPACE`,
-		`CLEANROOM_CI_WORKSPACE_PARENT`,
-		`git clone`,
-		`cleanroom-ci-workspace`,
-	} {
-		if strings.Contains(script, needle) {
-			t.Fatalf("expected ci-with-host-lock.sh to stay a Buildkite lock wrapper only, found %q", needle)
-		}
-	}
-}
-
 func TestBuildkiteVendoredMisePluginIsRemoved(t *testing.T) {
 	t.Parallel()
 
@@ -247,15 +198,8 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{
-		"ci-cleanroom-e2e.sh",
-		"ci-with-host-lock.sh",
 		"ci-go-test-engine.sh",
 		"ci-auth-oidc-smoke.sh",
-		"ci-example-smoke.sh",
-		"ci-examples-firecracker.sh",
-		"ci-examples-darwin-vz.sh",
-		"ci-darwin-vz-e2e.sh",
-		"ci-darwin-vz-filehandle-e2e.sh",
 		"ci-macos-release-pkg.sh",
 		"ci-buildkite-release.sh",
 	} {
@@ -271,9 +215,6 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 			script := string(content)
 			if strings.Contains(script, "mise run ") || strings.Contains(script, "mise exec ") {
 				t.Fatalf("expected %s to use the Buildkite plugin environment instead of invoking mise directly", path)
-			}
-			if path == "ci-cleanroom-e2e.sh" && strings.Contains(script, "go run ./scripts/download_sandbox_file") {
-				t.Fatalf("expected %s to use the prebuilt download helper instead of `go run`", path)
 			}
 		})
 	}
@@ -311,14 +252,8 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 		`[tasks.lint-shell]`,
 		`.buildkite/hooks/pre-command`,
 		`scripts/base-image-tag.sh`,
-		`scripts/e2e-observability.sh`,
-		`scripts/ci-with-host-lock.sh`,
 		`scripts/ci-go-test-engine.sh`,
 		`scripts/ci-auth-oidc-smoke.sh`,
-		`scripts/ci-example-smoke.sh`,
-		`scripts/ci-examples-firecracker.sh`,
-		`scripts/ci-examples-darwin-vz.sh`,
-		`scripts/ci-darwin-vz-filehandle-e2e.sh`,
 		`scripts/build-macos-release-pkg.sh`,
 		`scripts/notarize-macos-package.sh`,
 		`scripts/ci-macos-release-pkg.sh`,

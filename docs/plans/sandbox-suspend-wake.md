@@ -537,7 +537,6 @@ Runtime smoke:
 ```bash
 mise run build
 CLEANROOM_DARWIN_VZ_E2E=1 mise exec -- go test ./internal/backend/darwinvz -run TestPersistentSandboxSuspendWakeE2E -v
-scripts/ci-darwin-vz-e2e.sh
 ```
 
 Manual installed-daemon proof before recommending or enabling automatic idle
