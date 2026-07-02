@@ -7,7 +7,10 @@ import (
 	"io"
 )
 
-var ErrUnavailable = errors.New("cleanroom was built without libspore support")
+var (
+	ErrUnavailable = errors.New("cleanroom was built without libspore support")
+	ErrClosed      = errors.New("spore client closed")
+)
 
 type Client interface {
 	io.Closer

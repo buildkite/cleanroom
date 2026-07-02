@@ -21,6 +21,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/quic-go/quic-go v0.60.0
 	github.com/sirupsen/logrus v1.9.4
+	github.com/sporevm/sporevm/bindings/go v0.0.0-20260702051850-513e339b55f1
 	go.jetify.com/typeid v1.3.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0

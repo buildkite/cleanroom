@@ -1,7 +1,7 @@
 # Cleanroom As A SporeVM Layer
 
 **Status:** Active
-**Last reviewed:** 2026-06-28
+**Last reviewed:** 2026-07-02
 **Related code:** `internal/cli/vm.go`, `internal/sporevm/`
 **Related upstream:** `~/Develop/sporevm` `origin/main` libspore named lifecycle and networking APIs
 
@@ -175,13 +175,12 @@ cleanroom resume ./test.spore --name worker
 
 ## Current State
 
-Slice 1 is implemented in this branch. Top-level `create`, `exec`, `capture`,
-`resume`, and `destroy` point at a libspore-backed adapter under
+Slices 1 and 2 are implemented in this branch. Top-level `create`, `exec`,
+`capture`, `resume`, and `destroy` point at a libspore-backed adapter under
 `internal/sporevm/`, with `terminate` and `rm` kept as `destroy` aliases.
 
-That adapter currently uses a small cgo wrapper because SporeVM's Go binding on
-`origin/main` exposes host/bundle/pull/system APIs but not named lifecycle
-wrappers yet. This should be temporary.
+The adapter now consumes SporeVM's official Go binding instead of declaring
+Cleanroom-owned C ABI structs.
 
 ## Delivery Strategy
 
@@ -197,6 +196,8 @@ Status: implemented in this branch.
   still need them.
 
 ### Slice 2: Use Official Go libspore Bindings
+
+Status: implemented in this branch.
 
 - Add named lifecycle wrappers to SporeVM's Go binding, or consume them once
   landed.
