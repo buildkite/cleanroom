@@ -13,7 +13,7 @@ require (
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/florianl/go-nflog/v2 v2.3.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/google/cel-go v0.29.0
+	github.com/google/cel-go v0.29.1
 	github.com/google/go-containerregistry v0.21.7
 	github.com/inetaf/tcpproxy v0.0.0-20260515195445-c159a6051109
 	github.com/mdlayher/netlink v1.11.2
