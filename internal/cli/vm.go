@@ -222,6 +222,9 @@ func validateVMPolicy(compiled *policy.CompiledPolicy) error {
 	if strings.TrimSpace(compiled.ImageRef) == "" {
 		return errors.New("cleanroom create requires sandbox.image.ref")
 	}
+	if compiled.Resources != nil && compiled.Resources.DiskBytes > 0 {
+		return errors.New("cleanroom create does not yet translate sandbox.resources.disk to libspore")
+	}
 	if compiled.HasStageScopedNetwork() {
 		return errors.New("cleanroom create does not yet translate stage-scoped network policy to libspore")
 	}
@@ -315,6 +318,9 @@ func vmCleanroomProvenanceFromAnnotations(annotations map[string]string) (vmClea
 	if version != "1" {
 		return vmCleanroomProvenance{}, fmt.Errorf("unsupported Cleanroom provenance version %q", version)
 	}
+	if !vmHasCleanroomCreateProvenance(annotations) {
+		return vmCleanroomProvenance{}, errors.New("spore is missing Cleanroom create provenance")
+	}
 
 	networkRules, err := vmNetworkRulesFromAnnotation(annotations[cleanroomAnnotationPrefix+"network.rules"])
 	if err != nil {
@@ -328,6 +334,11 @@ func vmCleanroomProvenanceFromAnnotations(annotations map[string]string) (vmClea
 		NetworkRules:    networkRules,
 		GatewayServices: gatewayServices,
 	}, nil
+}
+
+func vmHasCleanroomCreateProvenance(annotations map[string]string) bool {
+	return strings.TrimSpace(annotations[cleanroomAnnotationPrefix+"policy.hash"]) != "" ||
+		strings.TrimSpace(annotations[cleanroomAnnotationPrefix+"workspace.dir"]) != ""
 }
 
 func vmNetworkRulesFromAnnotation(value string) ([]sporevm.NetworkRule, error) {

@@ -46,6 +46,16 @@ func TestValidateVMPolicyRejectsUntranslatedFeatures(t *testing.T) {
 		contains string
 	}{
 		{
+			name: "disk resources",
+			policy: &policy.CompiledPolicy{
+				ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				Resources: &policy.Resources{
+					DiskBytes: 16 << 30,
+				},
+			},
+			contains: "sandbox.resources.disk",
+		},
+		{
 			name: "docker service",
 			policy: &policy.CompiledPolicy{
 				ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -292,6 +302,7 @@ func TestVMCreateAnnotationsRecordsGatewayServicesWithoutSocketPath(t *testing.T
 func TestVMCleanroomProvenanceFromAnnotationsParsesResumeFacts(t *testing.T) {
 	got, err := vmCleanroomProvenanceFromAnnotations(map[string]string{
 		"dev.buildkite.cleanroom.provenance.version": "1",
+		"dev.buildkite.cleanroom.workspace.dir":      "/work/repo",
 		"dev.buildkite.cleanroom.network.rules":      `[{"host":"github.com","ports":[443,8443]}]`,
 		"dev.buildkite.cleanroom.gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
 	})
@@ -311,6 +322,18 @@ func TestVMCleanroomProvenanceFromAnnotationsParsesResumeFacts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("provenance = %#v, want %#v", got, want)
+	}
+}
+
+func TestVMCleanroomProvenanceFromAnnotationsRequiresCreateFact(t *testing.T) {
+	_, err := vmCleanroomProvenanceFromAnnotations(map[string]string{
+		"dev.buildkite.cleanroom.provenance.version": "1",
+	})
+	if err == nil {
+		t.Fatal("expected missing create provenance error")
+	}
+	if !strings.Contains(err.Error(), "missing Cleanroom create provenance") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -364,6 +387,7 @@ func TestVMResumeCommandInspectsProvenanceAndPassesGatewayBinding(t *testing.T) 
 		inspectResult: sporevm.SporeInspectResult{
 			Annotations: map[string]string{
 				"dev.buildkite.cleanroom.provenance.version": "1",
+				"dev.buildkite.cleanroom.workspace.dir":      base,
 				"dev.buildkite.cleanroom.gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
 			},
 		},
