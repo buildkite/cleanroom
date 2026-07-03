@@ -120,6 +120,7 @@ func TestValidateVMPolicyRejectsMalformedNetworkAllow(t *testing.T) {
 
 func TestVMNetworkRulesTranslatesExactAllows(t *testing.T) {
 	compiled := &policy.CompiledPolicy{
+		ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Allow: []policy.AllowRule{
 			{Host: "github.com", Ports: []int{443, 8443}},
 			{Host: "api.github.com", Ports: []int{443}},

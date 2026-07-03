@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/bake"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/sporevm"
@@ -48,7 +49,7 @@ type VMDestroyCommand struct {
 	JSON bool   `help:"Print libspore response as JSON"`
 }
 
-const cleanroomAnnotationPrefix = "dev.buildkite.cleanroom."
+const cleanroomAnnotationPrefix = bake.AnnotationPrefix
 const cleanroomGatewayServiceName = "cleanroom-gateway"
 
 func (c *VMCreateCommand) Run(ctx *runtimeContext) error {
@@ -215,81 +216,53 @@ type vmGatewayServiceRequirement struct {
 	GuestPort uint16 `json:"guest_port"`
 }
 
+// validateVMPolicy, vmNetworkRules, and vmCreateAnnotations are transitional
+// wrappers over the bake package, which owns policy translation and
+// provenance. They exist so the legacy create path shares one source of truth
+// until it is deleted (plan Slice 7).
+
 func validateVMPolicy(compiled *policy.CompiledPolicy) error {
-	if compiled == nil {
-		return errors.New("missing compiled policy")
-	}
-	if strings.TrimSpace(compiled.ImageRef) == "" {
-		return errors.New("cleanroom create requires sandbox.image.ref")
-	}
-	if compiled.Resources != nil && compiled.Resources.DiskBytes > 0 {
-		return errors.New("cleanroom create does not yet translate sandbox.resources.disk to libspore")
-	}
-	if compiled.HasStageScopedNetwork() {
-		return errors.New("cleanroom create does not yet translate stage-scoped network policy to libspore")
-	}
-	if _, err := vmNetworkRules(compiled); err != nil {
-		return err
-	}
-	if compiled.RequiresDockerService() {
-		return errors.New("cleanroom create does not yet translate docker service policy to libspore")
-	}
-	if len(compiled.Services.Blocks) > 0 || len(compiled.Services.Command) > 0 {
-		return errors.New("cleanroom create does not yet translate service stages to libspore")
-	}
-	if len(compiled.Dependencies.Blocks) > 0 || len(compiled.Dependencies.Command) > 0 {
-		return errors.New("cleanroom create does not yet translate dependency stages to libspore")
-	}
-	if len(compiled.Run.Before) > 0 {
-		return errors.New("cleanroom create does not yet translate run.before hooks to libspore")
-	}
-	return nil
+	_, err := bake.Compile(compiled)
+	return err
 }
 
 func vmNetworkRules(compiled *policy.CompiledPolicy) ([]sporevm.NetworkRule, error) {
-	if compiled == nil || len(compiled.Allow) == 0 {
+	if compiled == nil {
 		return nil, nil
 	}
-	rules := make([]sporevm.NetworkRule, 0, len(compiled.Allow))
-	for _, rule := range compiled.Allow {
-		host := strings.TrimSpace(rule.Host)
-		if host == "" {
-			return nil, errors.New("cleanroom create requires network allow rules to include a host")
-		}
-		if len(rule.Ports) == 0 {
-			return nil, fmt.Errorf("cleanroom create requires network allow rule for %s to include at least one port", host)
-		}
-		ports := make([]uint16, 0, len(rule.Ports))
-		for _, port := range rule.Ports {
-			if port < 1 || port > 65535 {
-				return nil, fmt.Errorf("cleanroom create does not support network allow port %d for %s", port, host)
-			}
-			ports = append(ports, uint16(port))
-		}
+	inputs, err := bake.Compile(compiled)
+	if err != nil {
+		return nil, err
+	}
+	if len(inputs.NetworkRules) == 0 {
+		return nil, nil
+	}
+	rules := make([]sporevm.NetworkRule, 0, len(inputs.NetworkRules))
+	for _, rule := range inputs.NetworkRules {
 		rules = append(rules, sporevm.NetworkRule{
-			Host:  host,
-			Ports: ports,
+			Host:  rule.Host,
+			Ports: append([]uint16(nil), rule.Ports...),
 		})
 	}
 	return rules, nil
 }
 
 func vmCreateAnnotations(ctx *runtimeContext, cwd, policySource string, compiled *policy.CompiledPolicy, networkRules []sporevm.NetworkRule, boundServices []sporevm.BoundUnixService) (map[string]string, error) {
-	annotations := vmBaseAnnotations(ctx)
-	if compiled != nil {
-		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"policy.hash", compiled.Hash)
-		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"image.ref", compiled.ImageRef)
-		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"image.digest", compiled.ImageDigest)
+	bakeRules := make([]bake.NetworkRule, 0, len(networkRules))
+	for _, rule := range networkRules {
+		bakeRules = append(bakeRules, bake.NetworkRule{
+			Host:  rule.Host,
+			Ports: append([]uint16(nil), rule.Ports...),
+		})
 	}
-	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"policy.source", vmAnnotationPath(policySource))
-	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"workspace.dir", vmAnnotationPath(cwd))
-	vmAddGitAnnotations(annotations, cwd)
-
-	networkValue, err := vmNetworkRulesAnnotation(networkRules)
+	version := ""
+	if ctx != nil {
+		version = ctx.Version
+	}
+	annotations, err := bake.Stamp(cwd, policySource, compiled, version, bakeRules)
 	if err != nil {
 		return nil, err
 	}
-	vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"network.rules", networkValue)
 	gatewayValue, err := vmGatewayServicesAnnotation(boundServices)
 	if err != nil {
 		return nil, err
@@ -453,25 +426,6 @@ func vmBaseAnnotations(ctx *runtimeContext) map[string]string {
 	return annotations
 }
 
-func vmAddGitAnnotations(annotations map[string]string, cwd string) {
-	if annotations == nil || strings.TrimSpace(cwd) == "" {
-		return
-	}
-	if commit, err := gitOutput(cwd, "rev-parse", "HEAD"); err == nil {
-		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"workspace.git.commit", commit)
-	}
-	if remote, err := gitOutput(cwd, "config", "--get", "remote.origin.url"); err == nil {
-		vmSetAnnotation(annotations, cleanroomAnnotationPrefix+"workspace.git.remote", remote)
-	}
-	if status, err := gitOutput(cwd, "status", "--porcelain"); err == nil {
-		dirty := "false"
-		if strings.TrimSpace(status) != "" {
-			dirty = "true"
-		}
-		annotations[cleanroomAnnotationPrefix+"workspace.git.dirty"] = dirty
-	}
-}
-
 func vmGatewayServices(base, socketPath string) ([]sporevm.BoundUnixService, error) {
 	socketPath = strings.TrimSpace(socketPath)
 	if socketPath == "" {
@@ -500,28 +454,6 @@ func vmGatewayServices(base, socketPath string) ([]sporevm.BoundUnixService, err
 	}}, nil
 }
 
-func vmNetworkRulesAnnotation(rules []sporevm.NetworkRule) (string, error) {
-	if len(rules) == 0 {
-		return "", nil
-	}
-	type ruleAnnotation struct {
-		Host  string   `json:"host"`
-		Ports []uint16 `json:"ports"`
-	}
-	out := make([]ruleAnnotation, 0, len(rules))
-	for _, rule := range rules {
-		out = append(out, ruleAnnotation{
-			Host:  rule.Host,
-			Ports: append([]uint16(nil), rule.Ports...),
-		})
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return "", fmt.Errorf("encode cleanroom network rule annotations: %w", err)
-	}
-	return string(raw), nil
-}
-
 func vmGatewayServicesAnnotation(services []sporevm.BoundUnixService) (string, error) {
 	if len(services) == 0 {
 		return "", nil
@@ -544,17 +476,6 @@ func vmGatewayServicesAnnotation(services []sporevm.BoundUnixService) (string, e
 		return "", fmt.Errorf("encode cleanroom gateway service annotations: %w", err)
 	}
 	return string(raw), nil
-}
-
-func vmAnnotationPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	if absolute, err := filepath.Abs(path); err == nil {
-		path = absolute
-	}
-	return filepath.Clean(path)
 }
 
 func vmSetAnnotation(annotations map[string]string, key, value string) {

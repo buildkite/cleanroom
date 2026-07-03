@@ -311,6 +311,8 @@ func TestPublicTopLevelCommandsHideLegacyRuntimeSurface(t *testing.T) {
 	}
 	want := map[string]bool{
 		"policy":  true,
+		"compile": true,
+		"stamp":   true,
 		"config":  true,
 		"image":   true,
 		"create":  true,
@@ -325,8 +327,30 @@ func TestPublicTopLevelCommandsHideLegacyRuntimeSurface(t *testing.T) {
 	}
 }
 
+func TestBakeStageCommandsParse(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"compile", "./repo"}); err != nil {
+		t.Fatalf("parse compile returned error: %v", err)
+	}
+	if got, want := c.Compile.Dir, "./repo"; got != want {
+		t.Fatalf("unexpected compile dir: got %q want %q", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"stamp"}); err != nil {
+		t.Fatalf("parse stamp returned error: %v", err)
+	}
+	if got, want := c.Stamp.Dir, "."; got != want {
+		t.Fatalf("unexpected stamp dir: got %q want %q", got, want)
+	}
+}
+
 func TestNamedLifecycleCommandsBypassStartupRuntimeConfig(t *testing.T) {
 	for _, args := range [][]string{
+		{"compile", "."},
+		{"stamp", "."},
 		{"create", "worker"},
 		{"exec", "worker", "--", "true"},
 		{"capture", "worker", "--out", "./test.spore"},

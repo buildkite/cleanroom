@@ -287,13 +287,22 @@ daemon/control-plane commands. Mapping into this plan:
 
 ### Slice 1: Compile And Stamp As Pure Stages
 
-- Extract policy compilation and provenance-fact collection from `vm.go` into
-  pure, unit-tested functions producing spore create inputs and annotation
-  sets. Expose as `cleanroom compile` / `cleanroom stamp` plumbing commands
-  for CI policy linting and composition.
+Status: implemented in this branch.
 
-Done when unsupported policy fails closed with the existing messages and the
-argv output drives a manual `spore create` on a host with spore installed.
+- Extracted policy compilation and provenance-fact collection into
+  `internal/bake` (`Compile`, `Stamp`, `AnnotationArgs`, `QuoteArgs`), with
+  `cleanroom compile` / `cleanroom stamp` plumbing commands and the legacy
+  create path delegating to the same functions.
+- Verified end to end: `spore create <name> $(cleanroom compile <dir>)` boots
+  a VM with translated image, memory, and vCPUs; unsupported policy fails
+  closed with the established messages.
+- Implementation notes: cleanroom policy sizes are decimal (`1gb` = 10^9)
+  while spore's `--memory` requires host-page alignment (16KiB on macOS
+  arm64, 4KiB on Linux), so compile rounds memory up to the next 16KiB —
+  portable to both. Network rules emit `--allow-host-port`, which today's
+  spore rejects; that path lights up when Slice 2 lands (fails loudly, never
+  widens). Stamp output contains shell-quoted values, so composed invocations
+  go through `eval`; the Slice 3 spec file removes that requirement.
 
 ### Slice 2: Upstream CLI Parity
 

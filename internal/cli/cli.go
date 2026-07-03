@@ -55,6 +55,8 @@ type runtimeContext struct {
 type CLI struct {
 	Auth        AuthCommand        `cmd:"" hidden:"" help:"Authentication and authorization diagnostics"`
 	Policy      PolicyCommand      `cmd:"" help:"Policy commands"`
+	Compile     CompileCommand     `cmd:"" help:"Compile repo policy into spore create arguments"`
+	Stamp       StampCommand       `cmd:"" help:"Emit provenance annotations as spore create arguments"`
 	Config      ConfigCommand      `cmd:"" help:"Runtime config commands"`
 	Image       ImageCommand       `cmd:"" help:"Manage OCI image cache artifacts"`
 	Inspect     InspectCommand     `cmd:"" hidden:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
@@ -265,6 +267,8 @@ func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
 		return true
 	default:
 		return strings.HasPrefix(command, "image resolve ") ||
+			commandIsOrHasArgs(command, "compile") ||
+			commandIsOrHasArgs(command, "stamp") ||
 			commandIsOrHasArgs(command, "create") ||
 			commandIsOrHasArgs(command, "exec") ||
 			commandIsOrHasArgs(command, "capture") ||
