@@ -314,7 +314,18 @@ Done when annotations, exact host-port rules, and socket bindings flow through
 
 ### Slice 3: Bake
 
-Status: implemented in this branch; end-to-end completion blocked upstream.
+Status: done. Verified end to end against spore 0.4.0 (upstream #347/#348/#349
+fixed the SPIO bulk transport, inspect's v1-manifest rejection, and the
+socket-path panic): bake of a real git workspace with a dependency-installing
+warmup, restore via `spore run --from` using the installed dependency,
+idempotent rebake no-op, and `spore fork --count 3` of the baked artifact
+with per-child generation identity visible in-guest.
+
+Residual upstream items, tracked for later slices: netd public egress times
+out (DNS proxies, TCP connect never completes; affects old `--allow-host`
+too), so network-fetching warmup steps are blocked until the outbound proxy
+works; `spore fork` supports only 1-vCPU spores, so fan-out-destined bakes
+must not set `resources.vcpus` above 1.
 
 - Implemented the bake pipeline (`internal/bake/bake.go`, `cleanroom bake`):
   compile → create builder → copy-in → warmup → suspend → verify, with the
@@ -324,22 +335,15 @@ Status: implemented in this branch; end-to-end completion blocked upstream.
   list) added to the policy schema and covered by the policy hash.
 - Removed the libspore adapter (`internal/sporevm/`), the top-level
   lifecycle commands, the libspore build tag, and the Go bindings dependency.
-- Blocked: the end-to-end done criterion fails on an upstream SporeVM bug —
-  the named exec/copy SPIO transport cannot move more than ~3KB in either
-  direction on darwin-hvf (`spore copy-in` of any real directory fails with
-  "transfer failed"; `spore exec -i` stdin >= 4000 bytes and bulk guest
-  stdout both fail with "guest vsock stream failed", and a failed stream
-  wedges the session). Verified on spore 0.3.1 main and pre-#341 main; the
-  upstream copy smoke passes only because it copies tiny files. Create,
-  small exec, suspend, inspect, and the full pipeline orchestration are
-  verified live; the pipeline is unit-tested end to end against a fake
-  runner.
+- The three upstream bugs this slice surfaced (SPIO bulk transfer capped at
+  ~3KB, inspect rejecting v1 multi-vCPU manifests, monitor panic on oversized
+  socket paths) were fixed in sporevm #347/#348/#349.
 
 Done when `cleanroom bake . --out repo.spore` then
 `spore run --from repo.spore '/bin/sh -c "cd /workspace && make test"'`
 works end to end on a repo with dependencies, and rebaking without input
-changes is a no-op. Re-run the live criterion once the upstream transport
-fix lands.
+changes is a no-op. Met on 2026-07-04 (network-fetching warmup variant
+deferred behind the netd egress fix).
 
 ### Slice 4: Verify
 
