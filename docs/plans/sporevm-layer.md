@@ -321,11 +321,15 @@ warmup, restore via `spore run --from` using the installed dependency,
 idempotent rebake no-op, and `spore fork --count 3` of the baked artifact
 with per-child generation identity visible in-guest.
 
-Residual upstream items, tracked for later slices: netd public egress times
-out (DNS proxies, TCP connect never completes; affects old `--allow-host`
-too), so network-fetching warmup steps are blocked until the outbound proxy
-works; `spore fork` supports only 1-vCPU spores, so fan-out-destined bakes
-must not set `resources.vcpus` above 1.
+All residual upstream items are resolved: sporevm #354 fixed netd egress
+(CNAME-chain answer learning plus named-guest wall clocks), and the
+network-warmup variant of the done criterion now passes verbatim — a
+deny-by-default policy allowing only `dl-cdn.alpinelinux.org:443`, warmup
+`apk add make` over HTTPS, then `spore run --from` running `make test` from
+the restored artifact, with disallowed hosts still failing closed. Note for
+policy authors: 443-only allow rules require HTTPS package mirrors (alpine
+defaults to http). Multi-vCPU fork also landed upstream, so fan-out bakes
+may set `resources.vcpus` freely.
 
 - Implemented the bake pipeline (`internal/bake/bake.go`, `cleanroom bake`):
   compile → create builder → copy-in → warmup → suspend → verify, with the
@@ -342,8 +346,8 @@ must not set `resources.vcpus` above 1.
 Done when `cleanroom bake . --out repo.spore` then
 `spore run --from repo.spore '/bin/sh -c "cd /workspace && make test"'`
 works end to end on a repo with dependencies, and rebaking without input
-changes is a no-op. Met on 2026-07-04 (network-fetching warmup variant
-deferred behind the netd egress fix).
+changes is a no-op. Met in full on 2026-07-04, including the
+network-fetching warmup variant.
 
 ### Slice 4: Verify
 
