@@ -49,7 +49,12 @@ type rawPolicy struct {
 		Resources    rawResources       `yaml:"resources"`
 		Network      rawSandboxNetwork  `yaml:"network"`
 		Warmup       []string           `yaml:"warmup"`
+		Mediation    rawMediation       `yaml:"mediation"`
 	} `yaml:"sandbox"`
+}
+
+type rawMediation struct {
+	Services []string `yaml:"services"`
 }
 
 type rawRepository struct {
@@ -150,6 +155,7 @@ type CompiledPolicy struct {
 	Run            Run                   `json:"run"`
 	Resources      *Resources            `json:"resources,omitempty"`
 	Warmup         []string              `json:"warmup,omitempty"`
+	Mediation      []string              `json:"mediation,omitempty"`
 	Hash           string                `json:"hash"`
 }
 
@@ -565,6 +571,10 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	mediation, err := normalizeMediation(raw.Sandbox.Mediation)
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:        raw.Version,
@@ -579,6 +589,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		Run:            run,
 		Resources:      resources,
 		Warmup:         warmup,
+		Mediation:      mediation,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -2053,6 +2064,41 @@ func normalizeWarmup(raw []string) ([]string, error) {
 		steps = append(steps, trimmed)
 	}
 	return steps, nil
+}
+
+func normalizeMediation(raw rawMediation) ([]string, error) {
+	if len(raw.Services) == 0 {
+		return nil, nil
+	}
+	services := make([]string, 0, len(raw.Services))
+	seen := map[string]bool{}
+	for i, service := range raw.Services {
+		name := strings.TrimSpace(service)
+		if name == "" {
+			return nil, fmt.Errorf("sandbox.mediation.services entry %d is empty", i)
+		}
+		if !isMediationServiceName(name) {
+			return nil, fmt.Errorf("sandbox.mediation.services entry %d has invalid name %q: use letters, digits, '.', '_', '-'", i, name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("sandbox.mediation.services entry %d duplicates %q", i, name)
+		}
+		seen[name] = true
+		services = append(services, name)
+	}
+	return services, nil
+}
+
+func isMediationServiceName(name string) bool {
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return name != ""
 }
 
 func hashPolicy(p *CompiledPolicy) (string, error) {

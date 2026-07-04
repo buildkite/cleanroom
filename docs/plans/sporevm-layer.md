@@ -382,17 +382,40 @@ plus the drift case: a new commit in the source repository fails the
 
 ### Slice 5: Gateway Per Lineage
 
-- `cleanroom gateway serve --for <spore> --socket <path>` hosting the
-  mediation service: verify provenance, resolve requested ∩ granted from the
-  grants runtime config, serve only that scope.
-- Mediation requests in the policy schema and provenance.
-- Bake-time binding for warmup credentials, fail-closed on raw secret env.
-- Guest attribution via generation identity in requests.
+Status: implemented in this branch; OCI-guest reachability blocked upstream.
+
+- `cleanroom gateway serve --for <spore>` (verifies provenance) or `--dir
+  <repo>` (bake-time) resolves requested ∩ granted from the XDG grants config
+  (`internal/mediation/config.go`) and serves that scope on a Unix socket
+  (`internal/mediation/server.go`). Requested-but-ungranted or undefined
+  services fail closed; dirty lineages receive no grants.
+- `sandbox.mediation.services` added to the policy schema (hash-covered) and
+  recorded in provenance alongside the `cleanroom-gateway` bound-service
+  requirement. `cleanroom verify` reports when a spore needs a gateway.
+- The server injects host-side credentials from the environment at request
+  time (never stored, never in the artifact), strips guest-supplied
+  `Authorization`/attribution before forwarding, and logs per-request
+  attribution from the guest-presented `X-Cleanroom-Client` header
+  (authorization is by socket, never by that header).
+- `cleanroom bake --gateway-socket` binds the live gateway during warmup;
+  mediation-without-socket and socket-without-mediation both fail closed.
+- Verified live on the minimal initrd: guest → bound socket → cleanroom
+  gateway → credential injection → canary-guarded upstream returns
+  `mediated-ok`; a guest-forged credential is ignored (gateway injects the
+  real one); host-side grant resolution and fail-closed paths are unit-tested.
+- Blocked: bound-service `NAME.spore.internal` DNS returns SERVFAIL for
+  OCI/musl guests (netd answers on `100.96.0.1`; works for the minimal
+  initrd), so bake-time and OCI-guest mediation cannot resolve the gateway
+  host yet. Same DNS-answer class as the egress bug. Filing upstream; the
+  gateway, policy, provenance, verify, and bake wiring are all complete and
+  will light up when that lands.
 
 Done when a fan-out batch of forked children all reach one gateway through a
 shared bound socket, per-child attribution appears in gateway logs, and no
 credential material appears in the captured spore (checked by grepping guest
-disk and a memory-chunk scan for a known canary secret).
+disk and a memory-chunk scan for a known canary secret). The composition is
+proven on the minimal initrd; the OCI-guest and fork variants wait on the
+upstream bound-service DNS fix.
 
 ### Slice 6: Release And CI
 

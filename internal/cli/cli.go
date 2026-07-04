@@ -64,6 +64,7 @@ type CLI struct {
 	Snapshot    SnapshotCommand    `cmd:"" hidden:"" help:"Manage snapshots"`
 	Bake        BakeCommand        `cmd:"" help:"Bake repo policy into a warm spore (consume with spore run --from, fork, fanout)"`
 	Verify      VerifyCommand      `cmd:"" help:"Verify cleanroom provenance of a spore and report required bindings"`
+	Gateway     GatewayCommand     `cmd:"" help:"Lineage gateway: mediate credentialed upstream access for baked spores"`
 	Console     ConsoleCommand     `cmd:"" hidden:"" help:"Run a command with an interactive tty in a sandbox"`
 	Copy        CopyCommand        `name:"copy" aliases:"cp" cmd:"" hidden:"" help:"Copy one file into or out of a sandbox"`
 	Workspace   WorkspaceCommand   `cmd:"" hidden:"" help:"Manage sandbox workspace contents"`
@@ -268,7 +269,8 @@ func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
 			commandIsOrHasArgs(command, "compile") ||
 			commandIsOrHasArgs(command, "stamp") ||
 			commandIsOrHasArgs(command, "bake") ||
-			commandIsOrHasArgs(command, "verify")
+			commandIsOrHasArgs(command, "verify") ||
+			commandIsOrHasArgs(command, "gateway")
 	}
 }
 

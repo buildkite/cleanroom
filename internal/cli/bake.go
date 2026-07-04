@@ -5,9 +5,10 @@ import (
 )
 
 type BakeCommand struct {
-	Dir   string `arg:"" optional:"" default:"." help:"Repository directory containing cleanroom policy"`
-	Out   string `name:"out" required:"" help:"Output spore directory"`
-	Spore string `help:"spore executable" default:"spore"`
+	Dir           string `arg:"" optional:"" default:"." help:"Repository directory containing cleanroom policy"`
+	Out           string `name:"out" required:"" help:"Output spore directory"`
+	GatewaySocket string `name:"gateway-socket" help:"Live gateway Unix socket to bind as gateway.cleanroom.internal:8170 (required when policy requests mediation services)"`
+	Spore         string `help:"spore executable" default:"spore"`
 }
 
 func (c *BakeCommand) Run(ctx *runtimeContext) error {
@@ -25,12 +26,13 @@ func (c *BakeCommand) Run(ctx *runtimeContext) error {
 		Stderr: ctx.stderr(),
 	}
 	_, err = bake.Run(compiled, bake.Options{
-		Dir:          cwd,
-		PolicySource: policySource,
-		Out:          c.Out,
-		Version:      ctx.Version,
-		Runner:       runner,
-		Log:          ctx.Stdout,
+		Dir:           cwd,
+		PolicySource:  policySource,
+		Out:           c.Out,
+		GatewaySocket: c.GatewaySocket,
+		Version:       ctx.Version,
+		Runner:        runner,
+		Log:           ctx.Stdout,
 	})
 	return err
 }

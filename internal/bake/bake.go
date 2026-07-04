@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/mediation"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -22,6 +23,10 @@ type Options struct {
 	PolicySource string
 	// Out is the output spore directory.
 	Out string
+	// GatewaySocket is a live Unix socket serving the lineage gateway.
+	// Required when the policy requests mediation services; rejected
+	// otherwise.
+	GatewaySocket string
 	// Version is the cleanroom version recorded in provenance.
 	Version string
 	// Runner runs spore commands.
@@ -76,8 +81,14 @@ func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 	}
 	annotations[AnnotationPrefix+"bake.key"] = key
 
+	gatewayArgs, err := gatewayCreateArgs(compiled, options.GatewaySocket, len(inputs.NetworkRules) > 0)
+	if err != nil {
+		return Result{}, err
+	}
+
 	builder := builderName(key)
-	createArgs := append(inputs.Args(), AnnotationArgs(annotations)...)
+	createArgs := append(inputs.Args(), gatewayArgs...)
+	createArgs = append(createArgs, AnnotationArgs(annotations)...)
 	fmt.Fprintf(options.Log, "cleanroom bake: creating builder %s\n", builder)
 	if err := options.Runner.Create(builder, createArgs); err != nil {
 		return Result{}, fmt.Errorf("create builder VM: %w", err)
@@ -158,6 +169,41 @@ func verifyArtifact(runner Runner, out, key string) error {
 		return fmt.Errorf("baked artifact records bake key %.12s, expected %.12s", got, key)
 	}
 	return nil
+}
+
+// gatewayCreateArgs translates the policy's mediation requests plus a live
+// gateway socket into spore create arguments. Mediation without a socket and
+// a socket without mediation both fail closed.
+func gatewayCreateArgs(compiled *policy.CompiledPolicy, socketPath string, networkAlreadyEnabled bool) ([]string, error) {
+	socketPath = strings.TrimSpace(socketPath)
+	if len(compiled.Mediation) == 0 {
+		if socketPath != "" {
+			return nil, errors.New("cleanroom bake: --gateway-socket was given but the policy requests no mediation services")
+		}
+		return nil, nil
+	}
+	if socketPath == "" {
+		return nil, fmt.Errorf("cleanroom bake: the policy requests mediation services %v; serve them with cleanroom gateway serve and pass --gateway-socket", compiled.Mediation)
+	}
+	info, err := os.Stat(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat gateway socket %q: %w", socketPath, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return nil, fmt.Errorf("gateway socket %q is not a Unix socket", socketPath)
+	}
+	if !networkAlreadyEnabled {
+		// spore create with bare --net (no allow rules) permits all public
+		// egress, which would let a compromised warmup exfiltrate around the
+		// gateway. Require an allow rule so networking is deny-by-default;
+		// bound-service routing happens before egress policy, so mediation
+		// itself does not need open egress. Lifts once spore create gains a
+		// create-time default-deny flag (filed upstream alongside the
+		// bound-service DNS fix).
+		return nil, errors.New("cleanroom bake: the policy requests mediation but declares no network allow rules; add a sandbox.network.allow rule so builder networking stays deny-by-default")
+	}
+	declaration := fmt.Sprintf("%s:%d=unix:%s", mediation.BoundServiceName, mediation.GuestPort, socketPath)
+	return []string{"--bind-service", declaration}, nil
 }
 
 func builderName(key string) string {

@@ -50,6 +50,11 @@ func (c *VerifyCommand) Run(ctx *runtimeContext) error {
 			return err
 		}
 	}
+	if len(prov.MediationServices) > 0 {
+		if _, err := fmt.Fprintln(ctx.Stdout, "requires a lineage gateway: cleanroom gateway serve --for <spore-dir> --socket <path>"); err != nil {
+			return err
+		}
+	}
 	if c.SporeDir != "" {
 		if _, err := fmt.Fprintln(ctx.Stdout, "run               : "+prov.RunFromInvocation(c.SporeDir)); err != nil {
 			return err

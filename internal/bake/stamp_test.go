@@ -142,3 +142,30 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+func TestStampRecordsMediationAndGatewayServices(t *testing.T) {
+	compiled := &policy.CompiledPolicy{
+		ImageRef:  testImageRef,
+		Hash:      "policy-hash",
+		Mediation: []string{"anthropic-inference", "github-token"},
+	}
+	got, err := Stamp(t.TempDir(), "", compiled, "v0.1.0", nil)
+	if err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+	var services []string
+	if err := json.Unmarshal([]byte(got["dev.buildkite.cleanroom.mediation.services"]), &services); err != nil {
+		t.Fatalf("decode mediation annotation: %v", err)
+	}
+	if !reflect.DeepEqual(services, compiled.Mediation) {
+		t.Fatalf("mediation services = %v", services)
+	}
+	var gateways []GatewayService
+	if err := json.Unmarshal([]byte(got["dev.buildkite.cleanroom.gateway.services"]), &gateways); err != nil {
+		t.Fatalf("decode gateway annotation: %v", err)
+	}
+	want := []GatewayService{{Name: "cleanroom-gateway", GuestHost: "cleanroom-gateway.spore.internal", GuestPort: 8170}}
+	if !reflect.DeepEqual(gateways, want) {
+		t.Fatalf("gateway services = %#v", gateways)
+	}
+}

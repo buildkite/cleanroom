@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/mediation"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -39,6 +40,23 @@ func Stamp(cwd, policySource string, compiled *policy.CompiledPolicy, cleanroomV
 		return nil, err
 	}
 	setAnnotation(annotations, AnnotationPrefix+"network.rules", networkValue)
+
+	if compiled != nil && len(compiled.Mediation) > 0 {
+		mediationValue, err := json.Marshal(compiled.Mediation)
+		if err != nil {
+			return nil, fmt.Errorf("encode cleanroom mediation annotations: %w", err)
+		}
+		annotations[AnnotationPrefix+"mediation.services"] = string(mediationValue)
+		gatewayValue, err := json.Marshal([]GatewayService{{
+			Name:      mediation.BoundServiceName,
+			GuestHost: mediation.GuestHostname,
+			GuestPort: mediation.GuestPort,
+		}})
+		if err != nil {
+			return nil, fmt.Errorf("encode cleanroom gateway service annotations: %w", err)
+		}
+		annotations[AnnotationPrefix+"gateway.services"] = string(gatewayValue)
+	}
 	return annotations, nil
 }
 

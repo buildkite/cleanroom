@@ -3,6 +3,7 @@ package bake
 import (
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,5 +232,51 @@ func TestCompareVersions(t *testing.T) {
 		if got := compareVersions(tc.a, tc.b); got != tc.want {
 			t.Fatalf("compareVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
 		}
+	}
+}
+
+func TestGatewayCreateArgs(t *testing.T) {
+	base := &policy.CompiledPolicy{ImageRef: testImageRef, Hash: "h"}
+	mediated := &policy.CompiledPolicy{ImageRef: testImageRef, Hash: "h", Mediation: []string{"svc"}}
+
+	// no mediation, no socket -> no args
+	if args, err := gatewayCreateArgs(base, "", false); err != nil || args != nil {
+		t.Fatalf("no-mediation: args=%v err=%v", args, err)
+	}
+	// no mediation, socket given -> fail closed
+	if _, err := gatewayCreateArgs(base, "/tmp/x.sock", false); err == nil || !strings.Contains(err.Error(), "requests no mediation") {
+		t.Fatalf("socket-without-mediation: %v", err)
+	}
+	// mediation, no socket -> fail closed
+	if _, err := gatewayCreateArgs(mediated, "", true); err == nil || !strings.Contains(err.Error(), "serve them with cleanroom gateway") {
+		t.Fatalf("mediation-without-socket: %v", err)
+	}
+}
+
+func TestGatewayCreateArgsRequiresAllowRuleForDenyByDefault(t *testing.T) {
+	mediated := &policy.CompiledPolicy{ImageRef: testImageRef, Hash: "h", Mediation: []string{"svc"}}
+	dir, err := os.MkdirTemp("/tmp", "cr-bake-gw-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "gw.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	// no network allow rules -> refuse to enable bare --net (open egress)
+	if _, err := gatewayCreateArgs(mediated, socket, false); err == nil || !strings.Contains(err.Error(), "deny-by-default") {
+		t.Fatalf("expected deny-by-default refusal, got %v", err)
+	}
+	// with network already enabled by allow rules -> just the bind-service
+	args, err := gatewayCreateArgs(mediated, socket, true)
+	if err != nil {
+		t.Fatalf("with-allow-rules: %v", err)
+	}
+	if len(args) != 2 || args[0] != "--bind-service" || !strings.HasPrefix(args[1], "cleanroom-gateway:8170=unix:") {
+		t.Fatalf("unexpected args: %v", args)
 	}
 }

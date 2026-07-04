@@ -20,19 +20,20 @@ type GatewayService struct {
 
 // Provenance is the cleanroom fact set parsed from a spore's annotations.
 type Provenance struct {
-	Version          string           `json:"provenance_version"`
-	CleanroomVersion string           `json:"cleanroom_version,omitempty"`
-	BakeKey          string           `json:"bake_key,omitempty"`
-	PolicyHash       string           `json:"policy_hash,omitempty"`
-	PolicySource     string           `json:"policy_source,omitempty"`
-	ImageRef         string           `json:"image_ref,omitempty"`
-	ImageDigest      string           `json:"image_digest,omitempty"`
-	WorkspaceDir     string           `json:"workspace_dir,omitempty"`
-	GitCommit        string           `json:"git_commit,omitempty"`
-	GitRemote        string           `json:"git_remote,omitempty"`
-	GitDirty         bool             `json:"git_dirty"`
-	NetworkRules     []NetworkRule    `json:"network_rules,omitempty"`
-	GatewayServices  []GatewayService `json:"gateway_services,omitempty"`
+	Version           string           `json:"provenance_version"`
+	CleanroomVersion  string           `json:"cleanroom_version,omitempty"`
+	BakeKey           string           `json:"bake_key,omitempty"`
+	PolicyHash        string           `json:"policy_hash,omitempty"`
+	PolicySource      string           `json:"policy_source,omitempty"`
+	ImageRef          string           `json:"image_ref,omitempty"`
+	ImageDigest       string           `json:"image_digest,omitempty"`
+	WorkspaceDir      string           `json:"workspace_dir,omitempty"`
+	GitCommit         string           `json:"git_commit,omitempty"`
+	GitRemote         string           `json:"git_remote,omitempty"`
+	GitDirty          bool             `json:"git_dirty"`
+	NetworkRules      []NetworkRule    `json:"network_rules,omitempty"`
+	GatewayServices   []GatewayService `json:"gateway_services,omitempty"`
+	MediationServices []string         `json:"mediation_services,omitempty"`
 }
 
 // ParseProvenance validates and extracts cleanroom provenance from spore
@@ -98,7 +99,33 @@ func ParseProvenance(annotations map[string]string) (Provenance, error) {
 		return Provenance{}, err
 	}
 	prov.GatewayServices = services
+
+	mediationServices, err := parseMediationServicesAnnotation(annotations[AnnotationPrefix+"mediation.services"])
+	if err != nil {
+		return Provenance{}, err
+	}
+	prov.MediationServices = mediationServices
 	return prov, nil
+}
+
+func parseMediationServicesAnnotation(value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	var services []string
+	if err := json.Unmarshal([]byte(value), &services); err != nil {
+		return nil, fmt.Errorf("decode cleanroom mediation service provenance: %w", err)
+	}
+	if len(services) == 0 {
+		return nil, errors.New("cleanroom mediation service provenance is empty")
+	}
+	for i, name := range services {
+		if !isServiceToken(name) {
+			return nil, fmt.Errorf("cleanroom mediation service provenance entry %d has invalid name %q", i, name)
+		}
+	}
+	return services, nil
 }
 
 func containsControlCharacters(value string) bool {
@@ -254,6 +281,9 @@ func (p Provenance) Summary() []string {
 		}
 		sort.Strings(endpoints)
 		lines = append(lines, "network rules     : "+strings.Join(endpoints, " "))
+	}
+	if len(p.MediationServices) > 0 {
+		lines = append(lines, "mediation services: "+strings.Join(p.MediationServices, " "))
 	}
 	if len(p.GatewayServices) > 0 {
 		names := make([]string, 0, len(p.GatewayServices))

@@ -197,6 +197,7 @@ func TestPublicTopLevelCommandsHideLegacyRuntimeSurface(t *testing.T) {
 		"stamp":   true,
 		"bake":    true,
 		"verify":  true,
+		"gateway": true,
 		"config":  true,
 		"image":   true,
 		"version": true,
@@ -269,6 +270,23 @@ func TestVerifyCommandParses(t *testing.T) {
 	}
 }
 
+func TestGatewayServeParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"gateway", "serve", "--for", "./repo.spore", "--socket", "/tmp/gw.sock", "--grants", "./gw.yaml"}); err != nil {
+		t.Fatalf("parse gateway serve returned error: %v", err)
+	}
+	if got, want := c.Gateway.Serve.For, "./repo.spore"; got != want {
+		t.Fatalf("unexpected gateway for: got %q want %q", got, want)
+	}
+	if got, want := c.Gateway.Serve.Socket, "/tmp/gw.sock"; got != want {
+		t.Fatalf("unexpected gateway socket: got %q want %q", got, want)
+	}
+	if got, want := c.Gateway.Serve.Grants, "./gw.yaml"; got != want {
+		t.Fatalf("unexpected gateway grants: got %q want %q", got, want)
+	}
+}
+
 func TestNamedLifecycleCommandsBypassStartupRuntimeConfig(t *testing.T) {
 	for _, args := range [][]string{
 		{"compile", "."},
@@ -276,6 +294,7 @@ func TestNamedLifecycleCommandsBypassStartupRuntimeConfig(t *testing.T) {
 		{"bake", ".", "--out", "./test.spore"},
 		{"verify", "./test.spore"},
 		{"verify"},
+		{"gateway", "serve", "--socket", "./gw.sock", "--dir", "."},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			c := &CLI{}
