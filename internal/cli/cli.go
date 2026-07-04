@@ -44,6 +44,7 @@ type runtimeContext struct {
 	CWD           string
 	Stdout        *os.File
 	Stderr        *os.File
+	Stdin         *os.File
 	Loader        policyLoader
 	Config        runtimeconfig.Config
 	ConfigPath    string
@@ -62,6 +63,7 @@ type CLI struct {
 	Inspect     InspectCommand     `cmd:"" hidden:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
 	Snapshot    SnapshotCommand    `cmd:"" hidden:"" help:"Manage snapshots"`
 	Bake        BakeCommand        `cmd:"" help:"Bake repo policy into a warm spore (consume with spore run --from, fork, fanout)"`
+	Verify      VerifyCommand      `cmd:"" help:"Verify cleanroom provenance of a spore and report required bindings"`
 	Console     ConsoleCommand     `cmd:"" hidden:"" help:"Run a command with an interactive tty in a sandbox"`
 	Copy        CopyCommand        `name:"copy" aliases:"cp" cmd:"" hidden:"" help:"Copy one file into or out of a sandbox"`
 	Workspace   WorkspaceCommand   `cmd:"" hidden:"" help:"Manage sandbox workspace contents"`
@@ -265,7 +267,8 @@ func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
 		return strings.HasPrefix(command, "image resolve ") ||
 			commandIsOrHasArgs(command, "compile") ||
 			commandIsOrHasArgs(command, "stamp") ||
-			commandIsOrHasArgs(command, "bake")
+			commandIsOrHasArgs(command, "bake") ||
+			commandIsOrHasArgs(command, "verify")
 	}
 }
 
@@ -322,6 +325,13 @@ func (ctx *runtimeContext) stderr() *os.File {
 		return ctx.Stderr
 	}
 	return os.Stderr
+}
+
+func (ctx *runtimeContext) stdin() *os.File {
+	if ctx != nil && ctx.Stdin != nil {
+		return ctx.Stdin
+	}
+	return os.Stdin
 }
 
 func reportObservabilityShutdown(runErr *error, stderr io.Writer, shutdownErr error) {

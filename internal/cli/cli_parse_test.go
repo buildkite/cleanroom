@@ -196,6 +196,7 @@ func TestPublicTopLevelCommandsHideLegacyRuntimeSurface(t *testing.T) {
 		"compile": true,
 		"stamp":   true,
 		"bake":    true,
+		"verify":  true,
 		"config":  true,
 		"image":   true,
 		"version": true,
@@ -242,11 +243,39 @@ func TestBakeCommandParses(t *testing.T) {
 	}
 }
 
+func TestVerifyCommandParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"verify", "./repo.spore", "--dir", "./repo", "--json"}); err != nil {
+		t.Fatalf("parse verify returned error: %v", err)
+	}
+	if got, want := c.Verify.SporeDir, "./repo.spore"; got != want {
+		t.Fatalf("unexpected verify spore dir: got %q want %q", got, want)
+	}
+	if got, want := c.Verify.Dir, "./repo"; got != want {
+		t.Fatalf("unexpected verify dir: got %q want %q", got, want)
+	}
+	if !c.Verify.JSON {
+		t.Fatal("expected verify --json flag to be set")
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"verify"}); err != nil {
+		t.Fatalf("parse bare verify returned error: %v", err)
+	}
+	if c.Verify.SporeDir != "" {
+		t.Fatalf("unexpected default spore dir: %q", c.Verify.SporeDir)
+	}
+}
+
 func TestNamedLifecycleCommandsBypassStartupRuntimeConfig(t *testing.T) {
 	for _, args := range [][]string{
 		{"compile", "."},
 		{"stamp", "."},
 		{"bake", ".", "--out", "./test.spore"},
+		{"verify", "./test.spore"},
+		{"verify"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			c := &CLI{}

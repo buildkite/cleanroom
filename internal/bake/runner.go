@@ -71,7 +71,9 @@ func (r *CLIRunner) Remove(name string) error {
 }
 
 func (r *CLIRunner) InspectAnnotations(sporeDir string) (map[string]string, error) {
-	out, err := exec.Command(r.Spore, "--json", "inspect", sporeDir).Output()
+	cmd := exec.Command(r.Spore, "--json", "inspect", sporeDir)
+	cmd.Stderr = r.Stderr
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("spore inspect %s: %w", sporeDir, err)
 	}

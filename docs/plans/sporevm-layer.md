@@ -139,9 +139,12 @@ must not supervise anything that outlives the bake invocation.
 A warm spore is not bit-reproducible; it is repeatable in the lockfile sense:
 pinned inputs, recorded facts, equivalent rebake.
 
-The bake key is the hash of: policy hash, resolved image digest, declared
-input files (lockfiles by default, or the repo commit), and the warmup step
-definitions. All components are recorded as annotations. `bake` is idempotent:
+The bake key is the hash of: the policy hash (which covers the
+digest-pinned image ref, network rules, resources, and warmup steps — policy
+compilation rejects non-digest-pinned refs, so the image digest is always
+keyed) plus the workspace commit and dirty flag. Keying on declared input
+files (lockfiles) instead of the commit is a possible later refinement via a
+key-version bump. All components are recorded as annotations. `bake` is idempotent:
 when `--out` already contains a spore whose recorded key matches, it no-ops.
 `verify` audits the same facts, so a spore someone hands you is checkable
 against the repo that claims to have produced it.
@@ -351,11 +354,31 @@ network-fetching warmup variant.
 
 ### Slice 4: Verify
 
-- `cleanroom verify` against `spore --json inspect` output: provenance checks,
-  bake-key audit, and required-binding reporting with runnable invocations.
+Status: done, verified live on 2026-07-04.
+
+- `cleanroom verify [spore-dir]` invokes `spore --json inspect` (or reads its
+  output from stdin), fails closed on missing/unsupported/malformed
+  provenance, prints the fact summary and the runnable `spore run --from`
+  invocation including `--bind-service` placeholders for recorded gateway
+  services, and `--dir` audits the bake key against a repository's current
+  policy and commit.
+- Annotation values are treated as attacker-influenced when verifying foreign
+  artifacts: string facts reject control characters, network hosts and
+  gateway service names/hosts are restricted to strict token charsets, and
+  suggested invocations shell-quote recorded values. Verify remains integrity
+  and UX, not the security boundary: a hostile artifact can copy a genuine
+  bake key, but it cannot forge terminal output or a booby-trapped suggested
+  command through verify.
+- The provenance parser is pinned against a real recorded
+  `spore --json inspect` fixture (`internal/bake/testdata/inspect-baked.json`)
+  so an upstream change to annotation merge-through-snapshot fails loudly.
+- Gateway-binding reporting is fixture-tested only until Slice 5 produces
+  real gateway spores.
 
 Done when a baked spore verifies, a foreign spore fails closed, and the
-reported `spore run --from` command works verbatim.
+reported `spore run --from` command works verbatim. All three verified live,
+plus the drift case: a new commit in the source repository fails the
+`--dir` audit with both keys named.
 
 ### Slice 5: Gateway Per Lineage
 
