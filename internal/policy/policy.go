@@ -48,6 +48,7 @@ type rawPolicy struct {
 		Services     rawPolicyBlocks    `yaml:"services"`
 		Resources    rawResources       `yaml:"resources"`
 		Network      rawSandboxNetwork  `yaml:"network"`
+		Warmup       []string           `yaml:"warmup"`
 	} `yaml:"sandbox"`
 }
 
@@ -148,6 +149,7 @@ type CompiledPolicy struct {
 	Dependencies   Dependencies          `json:"dependencies"`
 	Run            Run                   `json:"run"`
 	Resources      *Resources            `json:"resources,omitempty"`
+	Warmup         []string              `json:"warmup,omitempty"`
 	Hash           string                `json:"hash"`
 }
 
@@ -559,6 +561,10 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	warmup, err := normalizeWarmup(raw.Sandbox.Warmup)
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:        raw.Version,
@@ -572,6 +578,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		Dependencies:   dependencies,
 		Run:            run,
 		Resources:      resources,
+		Warmup:         warmup,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -2031,6 +2038,21 @@ func commandShellLine(command []string) string {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func normalizeWarmup(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	steps := make([]string, 0, len(raw))
+	for i, step := range raw {
+		trimmed := strings.TrimSpace(step)
+		if trimmed == "" {
+			return nil, fmt.Errorf("sandbox.warmup entry %d is empty", i)
+		}
+		steps = append(steps, trimmed)
+	}
+	return steps, nil
 }
 
 func hashPolicy(p *CompiledPolicy) (string, error) {

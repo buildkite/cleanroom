@@ -79,19 +79,43 @@ func networkRulesAnnotation(rules []NetworkRule) (string, error) {
 	return string(raw), nil
 }
 
-func addGitAnnotations(annotations map[string]string, cwd string) {
+// GitFacts are the workspace version-control facts recorded in provenance and
+// folded into the bake key.
+type GitFacts struct {
+	Commit string
+	Remote string
+	Dirty  bool
+	HasGit bool
+}
+
+// CollectGitFacts reads git facts for a workspace directory. Missing git or a
+// non-repository directory yields zero facts, not an error.
+func CollectGitFacts(cwd string) GitFacts {
 	if strings.TrimSpace(cwd) == "" {
-		return
+		return GitFacts{}
 	}
+	facts := GitFacts{}
 	if commit, err := gitOutput(cwd, "rev-parse", "HEAD"); err == nil {
-		setAnnotation(annotations, AnnotationPrefix+"workspace.git.commit", commit)
+		facts.Commit = commit
+		facts.HasGit = true
 	}
 	if remote, err := gitOutput(cwd, "config", "--get", "remote.origin.url"); err == nil {
-		setAnnotation(annotations, AnnotationPrefix+"workspace.git.remote", remote)
+		facts.Remote = remote
 	}
 	if status, err := gitOutput(cwd, "status", "--porcelain"); err == nil {
+		facts.Dirty = strings.TrimSpace(status) != ""
+		facts.HasGit = true
+	}
+	return facts
+}
+
+func addGitAnnotations(annotations map[string]string, cwd string) {
+	facts := CollectGitFacts(cwd)
+	setAnnotation(annotations, AnnotationPrefix+"workspace.git.commit", facts.Commit)
+	setAnnotation(annotations, AnnotationPrefix+"workspace.git.remote", facts.Remote)
+	if facts.HasGit {
 		dirty := "false"
-		if strings.TrimSpace(status) != "" {
+		if facts.Dirty {
 			dirty = "true"
 		}
 		annotations[AnnotationPrefix+"workspace.git.dirty"] = dirty

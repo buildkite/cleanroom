@@ -15,9 +15,6 @@ func TestBuildGoBootstrapsLinuxGuestAgentBinary(t *testing.T) {
 	}
 
 	script := string(content)
-	if !strings.Contains(script, "go build -tags libspore -ldflags \"-X main.version=$VERSION\" -o dist/cleanroom ./cmd/cleanroom") {
-		t.Fatalf("expected build-go.sh to build the cleanroom CLI with libspore support")
-	}
 	if !strings.Contains(script, "HOST_ARCH=$(go env GOARCH)") {
 		t.Fatalf("expected build-go.sh to resolve the host architecture for linux guest-agent cross-compiles")
 	}

@@ -314,15 +314,32 @@ Done when annotations, exact host-port rules, and socket bindings flow through
 
 ### Slice 3: Bake
 
-- Implement the bake pipeline: create → copy-in → warmup → suspend → verify,
-  with the bake key, idempotent no-op, and fail-closed secret handling for
-  warmup steps. Add warmup steps to the policy schema.
-- Remove the libspore adapter and top-level lifecycle commands; document the
-  spore equivalents.
+Status: implemented in this branch; end-to-end completion blocked upstream.
+
+- Implemented the bake pipeline (`internal/bake/bake.go`, `cleanroom bake`):
+  compile → create builder → copy-in → warmup → suspend → verify, with the
+  bake key (`internal/bake/key.go`), idempotent no-op for clean workspaces,
+  dirty-workspace fail-closed rebake, ephemeral builder cleanup on failure,
+  and a spore >= 0.3.1 version gate. `sandbox.warmup` (flat shell-command
+  list) added to the policy schema and covered by the policy hash.
+- Removed the libspore adapter (`internal/sporevm/`), the top-level
+  lifecycle commands, the libspore build tag, and the Go bindings dependency.
+- Blocked: the end-to-end done criterion fails on an upstream SporeVM bug —
+  the named exec/copy SPIO transport cannot move more than ~3KB in either
+  direction on darwin-hvf (`spore copy-in` of any real directory fails with
+  "transfer failed"; `spore exec -i` stdin >= 4000 bytes and bulk guest
+  stdout both fail with "guest vsock stream failed", and a failed stream
+  wedges the session). Verified on spore 0.3.1 main and pre-#341 main; the
+  upstream copy smoke passes only because it copies tiny files. Create,
+  small exec, suspend, inspect, and the full pipeline orchestration are
+  verified live; the pipeline is unit-tested end to end against a fake
+  runner.
 
 Done when `cleanroom bake . --out repo.spore` then
-`spore run --from repo.spore 'make test'` works end to end on a repo with
-dependencies, and rebaking without input changes is a no-op.
+`spore run --from repo.spore '/bin/sh -c "cd /workspace && make test"'`
+works end to end on a repo with dependencies, and rebaking without input
+changes is a no-op. Re-run the live criterion once the upstream transport
+fix lands.
 
 ### Slice 4: Verify
 
