@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/ociref"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -103,6 +104,23 @@ func ParseProvenance(annotations map[string]string) (Provenance, error) {
 			return Provenance{}, fmt.Errorf("spore is missing cleanroom create provenance (%s)", core.name)
 		}
 	}
+	// Presence is not enough: these values are attacker-influenced, so each
+	// core fact must also carry the shape cleanroom stamps. The bake key and
+	// policy hash are SHA-256 hex, and the image ref must be a digest-pinned
+	// OCI reference whose digest matches the recorded image digest.
+	if !isHexSHA256(prov.BakeKey) {
+		return Provenance{}, fmt.Errorf("cleanroom provenance bake.key %q is not a SHA-256 hash", prov.BakeKey)
+	}
+	if !isHexSHA256(prov.PolicyHash) {
+		return Provenance{}, fmt.Errorf("cleanroom provenance policy.hash %q is not a SHA-256 hash", prov.PolicyHash)
+	}
+	parsedRef, err := ociref.ParseDigestReference(prov.ImageRef)
+	if err != nil {
+		return Provenance{}, fmt.Errorf("cleanroom provenance image.ref is invalid: %w", err)
+	}
+	if parsedRef.Digest() != prov.ImageDigest {
+		return Provenance{}, fmt.Errorf("cleanroom provenance image.digest %q does not match image.ref digest %q", prov.ImageDigest, parsedRef.Digest())
+	}
 
 	rules, err := parseNetworkRulesAnnotation(annotations[AnnotationPrefix+"network.rules"])
 	if err != nil {
@@ -121,7 +139,30 @@ func ParseProvenance(annotations map[string]string) (Provenance, error) {
 		return Provenance{}, err
 	}
 	prov.MediationServices = mediationServices
+	// Stamp writes mediation.services and gateway.services together: the
+	// former declares what the lineage may reach, the latter how to bind it.
+	// One without the other means verify would either omit the required
+	// --bind-service from the run hint or advertise an unrequested gateway.
+	if (len(prov.MediationServices) > 0) != (len(prov.GatewayServices) > 0) {
+		return Provenance{}, errors.New("cleanroom provenance mediation.services and gateway.services must be recorded together")
+	}
 	return prov, nil
+}
+
+// isHexSHA256 reports whether the value is a lowercase 64-character hex
+// string, the shape of every hash cleanroom stamps.
+func isHexSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseMediationServicesAnnotation(value string) ([]string, error) {

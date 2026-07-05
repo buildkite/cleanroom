@@ -60,8 +60,8 @@ func TestParseProvenanceFromRecordedInspectOutput(t *testing.T) {
 func coreAnnotations() map[string]string {
 	return map[string]string{
 		AnnotationPrefix + "provenance.version": "1",
-		AnnotationPrefix + "bake.key":           "k",
-		AnnotationPrefix + "policy.hash":        "h",
+		AnnotationPrefix + "bake.key":           "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+		AnnotationPrefix + "policy.hash":        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		AnnotationPrefix + "image.digest":       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		AnnotationPrefix + "workspace.dir":      "/repo",
@@ -153,6 +153,55 @@ func TestParseProvenanceFailsClosed(t *testing.T) {
 			contains: "missing cleanroom create provenance (workspace.dir)",
 		},
 		{
+			name: "bake key not a hash",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "bake.key": "k",
+			}),
+			contains: "bake.key \"k\" is not a SHA-256 hash",
+		},
+		{
+			name: "policy hash not a hash",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "policy.hash": "h",
+			}),
+			contains: "policy.hash \"h\" is not a SHA-256 hash",
+		},
+		{
+			name: "image ref not digest pinned",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "image.ref": "ghcr.io/x:latest",
+			}),
+			contains: "image.ref is invalid",
+		},
+		{
+			name: "image digest does not match ref",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "image.digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			}),
+			contains: "does not match image.ref digest",
+		},
+		{
+			name: "image digest malformed",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "image.digest": "not-a-digest",
+			}),
+			contains: "does not match image.ref digest",
+		},
+		{
+			name: "mediation services without gateway services",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "mediation.services": `["github-token"]`,
+			}),
+			contains: "must be recorded together",
+		},
+		{
+			name: "gateway services without mediation services",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "gateway.services": `[{"name":"cleanroom-gateway","guest_host":"cleanroom-gateway.spore.internal","guest_port":8170}]`,
+			}),
+			contains: "must be recorded together",
+		},
+		{
 			name: "malformed network rules",
 			annotations: withAnnotations(map[string]string{
 				AnnotationPrefix + "network.rules": "{not json",
@@ -217,7 +266,8 @@ func TestParseProvenanceFailsClosed(t *testing.T) {
 
 func TestParseProvenanceGatewayServices(t *testing.T) {
 	prov, err := ParseProvenance(withAnnotations(map[string]string{
-		AnnotationPrefix + "gateway.services": `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
+		AnnotationPrefix + "mediation.services": `["github-token"]`,
+		AnnotationPrefix + "gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
 	}))
 	if err != nil {
 		t.Fatalf("parse provenance: %v", err)

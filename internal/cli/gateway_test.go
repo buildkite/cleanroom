@@ -30,7 +30,7 @@ func TestGatewayServeRefusesForgedSpore(t *testing.T) {
 	compiled := &policy.CompiledPolicy{
 		ImageRef:    "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		ImageDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		Hash:        "policy-hash",
+		Hash:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Mediation:   []string{"github-token"},
 	}
 
@@ -52,13 +52,14 @@ grants:
 	// inputs, so any forged key fails the audit.
 	forged := map[string]string{
 		bake.AnnotationPrefix + "provenance.version":  bake.ProvenanceVersion,
-		bake.AnnotationPrefix + "bake.key":            "forged-key",
+		bake.AnnotationPrefix + "bake.key":            "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
 		bake.AnnotationPrefix + "policy.hash":         compiled.Hash,
 		bake.AnnotationPrefix + "image.ref":           compiled.ImageRef,
 		bake.AnnotationPrefix + "image.digest":        compiled.ImageDigest,
 		bake.AnnotationPrefix + "workspace.dir":       repo,
 		bake.AnnotationPrefix + "workspace.git.dirty": "false",
 		bake.AnnotationPrefix + "mediation.services":  `["github-token"]`,
+		bake.AnnotationPrefix + "gateway.services":    `[{"name":"cleanroom-gateway","guest_host":"cleanroom-gateway.spore.internal","guest_port":8170}]`,
 	}
 	inspectJSON, err := json.Marshal(map[string]any{"annotations": forged})
 	if err != nil {

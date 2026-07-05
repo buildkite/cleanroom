@@ -46,7 +46,7 @@ func TestVerifyDirAuditsInRepoArtifact(t *testing.T) {
 	compiled := &policy.CompiledPolicy{
 		ImageRef:    "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		ImageDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		Hash:        "policy-hash",
+		Hash:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 
 	// The spore artifact bake wrote inside the repo: untracked, and its key
