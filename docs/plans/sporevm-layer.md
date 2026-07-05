@@ -417,13 +417,21 @@ rejection, and socket permissions are unit-tested.
 
 ### Slice 6: Release And CI
 
-- goreleaser stays `CGO_ENABLED=0`; drop the libspore build tag from
-  `scripts/build-go.sh`.
-- CI smoke: install pinned spore via mise; bake → run --from → fork → verify →
-  destroy.
+Status: done, verified 2026-07-05.
+
+- goreleaser stays `CGO_ENABLED=0` (verified: darwin and linux arm64/amd64
+  cross-builds succeed); the libspore build tag and bindings dependency were
+  already removed in Slice 3, so there are zero libspore references in
+  `go.mod`, `go.sum`, `scripts/build-go.sh`, or `.goreleaser.yml`.
+- `scripts/ci-bake-smoke.sh` installs pinned spore via mise
+  (`github:sporevm/sporevm`) and runs bake → run --from → idempotent rebake
+  → fork → verify; added as the ":cook: Bake E2E (macOS)" pipeline step on
+  the `cleanroom-mac` queue and to the shellcheck lint list. Verified live
+  end to end against a real spore.
 
 Done when a released binary bakes on a clean host with only spore installed
-and CI exercises the full pipeline.
+and CI exercises the full pipeline. Release build shape and the smoke are
+both verified; the pipeline step will exercise it on the mac queue.
 
 ### Slice 7: Delete Old Runtime Surface
 
