@@ -44,10 +44,14 @@ func (c *StampCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	annotations, err := bake.Stamp(cwd, policySource, compiled, ctx.Version, inputs.NetworkRules)
+	facts := bake.CollectGitFacts(cwd)
+	annotations, err := bake.Stamp(cwd, policySource, compiled, ctx.Version, inputs.NetworkRules, facts)
 	if err != nil {
 		return err
 	}
+	// Record the bake key so spores created by hand from stamp output carry
+	// the same core provenance contract as cleanroom bake and pass verify.
+	annotations[bake.AnnotationPrefix+"bake.key"] = bake.Key(compiled, facts)
 	_, err = fmt.Fprintln(ctx.Stdout, bake.QuoteArgs(bake.AnnotationArgs(annotations)))
 	return err
 }

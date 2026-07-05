@@ -18,10 +18,12 @@ const AnnotationPrefix = "dev.buildkite.cleanroom."
 // ProvenanceVersion is the current cleanroom provenance schema version.
 const ProvenanceVersion = "1"
 
-// Stamp collects provenance facts for a bake: policy identity, image
-// identity, workspace facts, git facts when available, and the network rules
-// accepted by Compile. It reads the local filesystem only.
-func Stamp(cwd, policySource string, compiled *policy.CompiledPolicy, cleanroomVersion string, rules []NetworkRule) (map[string]string, error) {
+// Stamp renders provenance facts for a bake: policy identity, image
+// identity, workspace facts, the supplied git facts, and the network rules
+// accepted by Compile. Callers collect facts once (see CollectGitFacts) so
+// the recorded annotations and the bake key always describe the same
+// workspace state.
+func Stamp(cwd, policySource string, compiled *policy.CompiledPolicy, cleanroomVersion string, rules []NetworkRule, facts GitFacts) (map[string]string, error) {
 	annotations := map[string]string{
 		AnnotationPrefix + "provenance.version": ProvenanceVersion,
 	}
@@ -33,7 +35,7 @@ func Stamp(cwd, policySource string, compiled *policy.CompiledPolicy, cleanroomV
 	}
 	setAnnotation(annotations, AnnotationPrefix+"policy.source", annotationPath(policySource))
 	setAnnotation(annotations, AnnotationPrefix+"workspace.dir", annotationPath(cwd))
-	addGitAnnotations(annotations, cwd)
+	addGitAnnotations(annotations, facts)
 
 	networkValue, err := networkRulesAnnotation(rules)
 	if err != nil {
@@ -146,8 +148,7 @@ func CollectGitFactsExcluding(cwd string, excludeRel []string) GitFacts {
 	return facts
 }
 
-func addGitAnnotations(annotations map[string]string, cwd string) {
-	facts := CollectGitFacts(cwd)
+func addGitAnnotations(annotations map[string]string, facts GitFacts) {
 	setAnnotation(annotations, AnnotationPrefix+"workspace.git.commit", facts.Commit)
 	setAnnotation(annotations, AnnotationPrefix+"workspace.git.remote", facts.Remote)
 	if facts.HasGit {

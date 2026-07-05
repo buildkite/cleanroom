@@ -94,6 +94,13 @@ func networkRules(compiled *policy.CompiledPolicy) ([]NetworkRule, error) {
 		if host == "" {
 			return nil, errors.New("cleanroom compile requires network allow rules to include a host")
 		}
+		// Hosts must survive the stamp/verify round-trip: provenance parsing
+		// accepts only hostname characters, so anything else (IPv6 literals
+		// in particular) would bake a spore that fails its own verify. Fail
+		// closed until SporeVM has a supported encoding.
+		if !isServiceToken(host) {
+			return nil, fmt.Errorf("cleanroom compile does not yet support network allow host %q (IPv6 literals and non-hostname characters are not translatable to SporeVM)", host)
+		}
 		if len(rule.Ports) == 0 {
 			return nil, fmt.Errorf("cleanroom compile requires network allow rule for %s to include at least one port", host)
 		}

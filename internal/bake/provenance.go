@@ -84,12 +84,24 @@ func ParseProvenance(annotations map[string]string) (Provenance, error) {
 	default:
 		return Provenance{}, fmt.Errorf("cleanroom provenance workspace.git.dirty has invalid value %q", dirty)
 	}
-	// A cleanroom-produced spore always carries the compiled policy hash and
-	// image ref (stamp records both from the compiled policy). Requiring them
-	// means a foreign manifest cannot pass verify by forging only the
-	// provenance version plus a workspace directory.
-	if prov.PolicyHash == "" || prov.ImageRef == "" {
-		return Provenance{}, errors.New("spore is missing cleanroom create provenance (policy hash and image ref)")
+	// A cleanroom-produced spore always carries the full core fact set:
+	// stamp records the policy hash, digest-pinned image ref and digest, and
+	// the workspace dir, and both bake and the stamp CLI record the bake
+	// key. Requiring all of them means a foreign manifest cannot reach
+	// "verified" by forging a version marker plus a few weak facts.
+	for _, core := range []struct {
+		name  string
+		value string
+	}{
+		{"bake.key", prov.BakeKey},
+		{"policy.hash", prov.PolicyHash},
+		{"image.ref", prov.ImageRef},
+		{"image.digest", prov.ImageDigest},
+		{"workspace.dir", prov.WorkspaceDir},
+	} {
+		if core.value == "" {
+			return Provenance{}, fmt.Errorf("spore is missing cleanroom create provenance (%s)", core.name)
+		}
 	}
 
 	rules, err := parseNetworkRulesAnnotation(annotations[AnnotationPrefix+"network.rules"])

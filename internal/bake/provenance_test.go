@@ -55,6 +55,27 @@ func TestParseProvenanceFromRecordedInspectOutput(t *testing.T) {
 	}
 }
 
+// coreAnnotations returns the minimal fact set every cleanroom-produced
+// spore carries; fail-closed tests overlay malformed extras on top of it.
+func coreAnnotations() map[string]string {
+	return map[string]string{
+		AnnotationPrefix + "provenance.version": "1",
+		AnnotationPrefix + "bake.key":           "k",
+		AnnotationPrefix + "policy.hash":        "h",
+		AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		AnnotationPrefix + "image.digest":       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		AnnotationPrefix + "workspace.dir":      "/repo",
+	}
+}
+
+func withAnnotations(extra map[string]string) map[string]string {
+	annotations := coreAnnotations()
+	for key, value := range extra {
+		annotations[key] = value
+	}
+	return annotations
+}
+
 func TestParseProvenanceFailsClosed(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -105,72 +126,79 @@ func TestParseProvenanceFailsClosed(t *testing.T) {
 			contains: "missing cleanroom create provenance",
 		},
 		{
+			name: "missing bake key",
+			annotations: func() map[string]string {
+				annotations := coreAnnotations()
+				delete(annotations, AnnotationPrefix+"bake.key")
+				return annotations
+			}(),
+			contains: "missing cleanroom create provenance (bake.key)",
+		},
+		{
+			name: "missing image digest",
+			annotations: func() map[string]string {
+				annotations := coreAnnotations()
+				delete(annotations, AnnotationPrefix+"image.digest")
+				return annotations
+			}(),
+			contains: "missing cleanroom create provenance (image.digest)",
+		},
+		{
+			name: "missing workspace dir",
+			annotations: func() map[string]string {
+				annotations := coreAnnotations()
+				delete(annotations, AnnotationPrefix+"workspace.dir")
+				return annotations
+			}(),
+			contains: "missing cleanroom create provenance (workspace.dir)",
+		},
+		{
 			name: "malformed network rules",
-			annotations: map[string]string{
-				AnnotationPrefix + "provenance.version": "1",
-				AnnotationPrefix + "policy.hash":        "h",
-				AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				AnnotationPrefix + "network.rules":      "{not json",
-			},
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "network.rules": "{not json",
+			}),
 			contains: "decode cleanroom network rule provenance",
 		},
 		{
 			name: "network rule without ports",
-			annotations: map[string]string{
-				AnnotationPrefix + "provenance.version": "1",
-				AnnotationPrefix + "policy.hash":        "h",
-				AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				AnnotationPrefix + "network.rules":      `[{"host":"github.com","ports":[]}]`,
-			},
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "network.rules": `[{"host":"github.com","ports":[]}]`,
+			}),
 			contains: "missing ports",
 		},
 		{
 			name: "gateway service without name",
-			annotations: map[string]string{
-				AnnotationPrefix + "provenance.version": "1",
-				AnnotationPrefix + "policy.hash":        "h",
-				AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				AnnotationPrefix + "gateway.services":   `[{"guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
-			},
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "gateway.services": `[{"guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
+			}),
 			contains: "missing name",
 		},
 		{
 			name: "control characters in fact",
-			annotations: map[string]string{
-				AnnotationPrefix + "provenance.version": "1",
-				AnnotationPrefix + "policy.hash":        "h",
-				AnnotationPrefix + "image.ref":          "ghcr.io/x\x1b[31mforged",
-			},
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "image.ref": "ghcr.io/x\x1b[31mforged",
+			}),
 			contains: "control characters",
 		},
 		{
 			name: "gateway service name with shell metacharacters",
-			annotations: map[string]string{
-				AnnotationPrefix + "provenance.version": "1",
-				AnnotationPrefix + "policy.hash":        "h",
-				AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				AnnotationPrefix + "gateway.services":   `[{"name":"g=unix:x '; rm -rf ~","guest_host":"gateway.internal","guest_port":8170}]`,
-			},
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "gateway.services": `[{"name":"g=unix:x '; rm -rf ~","guest_host":"gateway.internal","guest_port":8170}]`,
+			}),
 			contains: "invalid name",
 		},
 		{
 			name: "network host with spaces",
-			annotations: map[string]string{
-				AnnotationPrefix + "provenance.version": "1",
-				AnnotationPrefix + "policy.hash":        "h",
-				AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				AnnotationPrefix + "network.rules":      `[{"host":"evil host","ports":[443]}]`,
-			},
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "network.rules": `[{"host":"evil host","ports":[443]}]`,
+			}),
 			contains: "invalid host",
 		},
 		{
 			name: "invalid dirty value",
-			annotations: map[string]string{
-				AnnotationPrefix + "provenance.version":  "1",
-				AnnotationPrefix + "policy.hash":         "h",
-				AnnotationPrefix + "image.ref":           "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			annotations: withAnnotations(map[string]string{
 				AnnotationPrefix + "workspace.git.dirty": "1",
-			},
+			}),
 			contains: "invalid value",
 		},
 	}
@@ -188,12 +216,9 @@ func TestParseProvenanceFailsClosed(t *testing.T) {
 }
 
 func TestParseProvenanceGatewayServices(t *testing.T) {
-	prov, err := ParseProvenance(map[string]string{
-		AnnotationPrefix + "provenance.version": "1",
-		AnnotationPrefix + "policy.hash":        "h",
-		AnnotationPrefix + "image.ref":          "ghcr.io/x@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		AnnotationPrefix + "gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
-	})
+	prov, err := ParseProvenance(withAnnotations(map[string]string{
+		AnnotationPrefix + "gateway.services": `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
+	}))
 	if err != nil {
 		t.Fatalf("parse provenance: %v", err)
 	}

@@ -26,6 +26,7 @@ func TestStampRecordsCleanroomFacts(t *testing.T) {
 		compiled,
 		"v0.1.0",
 		[]NetworkRule{{Host: "github.com", Ports: []uint16{443, 8443}}},
+		CollectGitFacts(cwd),
 	)
 	if err != nil {
 		t.Fatalf("stamp: %v", err)
@@ -61,7 +62,7 @@ func TestStampRecordsCleanroomFacts(t *testing.T) {
 }
 
 func TestStampOmitsNetworkRulesWhenEmpty(t *testing.T) {
-	got, err := Stamp(t.TempDir(), "", &policy.CompiledPolicy{}, "", nil)
+	got, err := Stamp(t.TempDir(), "", &policy.CompiledPolicy{}, "", nil, GitFacts{})
 	if err != nil {
 		t.Fatalf("stamp: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestStampRecordsGitFactsWhenAvailable(t *testing.T) {
 		t.Fatalf("write dirty.txt: %v", err)
 	}
 
-	got, err := Stamp(cwd, "", &policy.CompiledPolicy{}, "", nil)
+	got, err := Stamp(cwd, "", &policy.CompiledPolicy{}, "", nil, CollectGitFacts(cwd))
 	if err != nil {
 		t.Fatalf("stamp: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestStampRecordsMediationAndGatewayServices(t *testing.T) {
 		Hash:      "policy-hash",
 		Mediation: []string{"anthropic-inference", "github-token"},
 	}
-	got, err := Stamp(t.TempDir(), "", compiled, "v0.1.0", nil)
+	got, err := Stamp(t.TempDir(), "", compiled, "v0.1.0", nil, GitFacts{})
 	if err != nil {
 		t.Fatalf("stamp: %v", err)
 	}

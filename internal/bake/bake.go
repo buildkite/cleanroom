@@ -63,7 +63,7 @@ func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	facts := CollectGitFactsExcluding(options.Dir, outExclusions(options.Dir, out))
+	facts := CollectGitFactsExcluding(options.Dir, ArtifactExclusions(options.Dir, out))
 	key := Key(compiled, facts)
 	if facts.Dirty {
 		fmt.Fprintln(options.Log, "cleanroom bake: workspace has uncommitted changes; artifact records workspace.git.dirty=true and is never treated as cache-fresh")
@@ -76,7 +76,7 @@ func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 		return Result{UpToDate: true, Key: key, Out: out}, nil
 	}
 
-	annotations, err := Stamp(options.Dir, options.PolicySource, compiled, options.Version, inputs.NetworkRules)
+	annotations, err := Stamp(options.Dir, options.PolicySource, compiled, options.Version, inputs.NetworkRules, facts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -207,10 +207,11 @@ func gatewayCreateArgs(compiled *policy.CompiledPolicy, socketPath string, netwo
 	return []string{"--bind-service", declaration}, nil
 }
 
-// outExclusions returns the output spore path relative to the repository dir
-// when the output lives inside it, so git dirty detection ignores the
-// artifact bake itself writes. An output outside the repo needs no exclusion.
-func outExclusions(dir, out string) []string {
+// ArtifactExclusions returns the artifact path relative to the repository dir
+// when the artifact lives inside it, so git dirty detection ignores the spore
+// bake itself writes (and verify --dir audits). An artifact outside the repo
+// needs no exclusion.
+func ArtifactExclusions(dir, out string) []string {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil

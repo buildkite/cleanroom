@@ -123,6 +123,10 @@ func TestCompileRejectsMalformedNetworkAllow(t *testing.T) {
 		{name: "empty host", rule: policy.AllowRule{Ports: []int{443}}, contains: "include a host"},
 		{name: "missing ports", rule: policy.AllowRule{Host: "github.com"}, contains: "at least one port"},
 		{name: "bad port", rule: policy.AllowRule{Host: "github.com", Ports: []int{0}}, contains: "port 0"},
+		// Policy accepts IPv6 literal hosts, but provenance parsing rejects
+		// ':' so a baked spore would fail its own verify; compile must fail
+		// closed until SporeVM has a supported encoding.
+		{name: "ipv6 literal host", rule: policy.AllowRule{Host: "2606:4700:4700::1111", Ports: []int{443}}, contains: "does not yet support network allow host"},
 	}
 
 	for _, tc := range tests {

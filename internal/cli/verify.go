@@ -35,7 +35,19 @@ func (c *VerifyCommand) Run(ctx *runtimeContext) error {
 		if err != nil {
 			return err
 		}
-		if err := bake.AuditKey(prov, compiled, bake.CollectGitFacts(cwd)); err != nil {
+		// Exclude the audited spore from dirty detection when it lives
+		// inside the repository, matching how bake computed the key: an
+		// in-repo `bake --out repo.spore` must still pass `verify --dir`.
+		var exclusions []string
+		if c.SporeDir != "" {
+			sporeDir, err := resolveCWD(ctx.CWD, c.SporeDir)
+			if err != nil {
+				return err
+			}
+			exclusions = bake.ArtifactExclusions(cwd, sporeDir)
+		}
+		facts := bake.CollectGitFactsExcluding(cwd, exclusions)
+		if err := bake.AuditKey(prov, compiled, facts); err != nil {
 			return err
 		}
 	}

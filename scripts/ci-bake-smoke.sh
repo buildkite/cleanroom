@@ -22,7 +22,10 @@ cleanroom() { ./dist/cleanroom "$@"; }
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/cleanroom-bake-smoke.XXXXXX")"
 repo="${workdir}/repo"
-spore_out="${workdir}/repo.spore"
+# The artifact lives inside the repo, matching the documented
+# `cleanroom bake . --out repo.spore` flow: rebake idempotency and
+# `verify --dir` must not mistake the artifact for uncommitted source.
+spore_out="${repo}/repo.spore"
 forks="${workdir}/forks"
 mkdir -p "$repo"
 
