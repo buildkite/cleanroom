@@ -261,4 +261,11 @@ func TestAuditKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Fatalf("expected dirty rejection, got %v", err)
 	}
+	// Without git facts the key has no content input; a matching key proves
+	// nothing about the directory's files, so the audit must refuse.
+	nonGit := GitFacts{}
+	err = AuditKey(Provenance{BakeKey: Key(compiled, nonGit)}, compiled, nonGit)
+	if err == nil || !strings.Contains(err.Error(), "no git metadata") {
+		t.Fatalf("expected non-git rejection, got %v", err)
+	}
 }

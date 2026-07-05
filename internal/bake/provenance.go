@@ -257,6 +257,12 @@ func AuditKey(prov Provenance, compiled *policy.CompiledPolicy, facts GitFacts) 
 	if prov.BakeKey == "" {
 		return errors.New("spore records no bake key; it was not produced by cleanroom bake")
 	}
+	if !facts.HasGit {
+		// Without git facts the key has no content input, so a match would
+		// only prove the policy is the same — not that the artifact reflects
+		// this directory's files.
+		return errors.New("directory has no git metadata; the bake key cannot be audited without a commit")
+	}
 	expected := Key(compiled, facts)
 	if prov.BakeKey != expected {
 		return fmt.Errorf("bake key mismatch: spore records %.12s, repository state computes %.12s (policy, commit, or dirty state differ)", prov.BakeKey, expected)

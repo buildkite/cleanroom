@@ -103,6 +103,20 @@ func testOptions(t *testing.T, runner Runner) Options {
 	}
 }
 
+// initGitWorkspace turns an options dir into a clean git checkout so tests
+// can exercise the cache-fresh paths, which non-git workspaces never hit.
+func initGitWorkspace(t *testing.T, dir string) {
+	t.Helper()
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "cleanroom-test@example.com")
+	runGit(t, dir, "config", "user.name", "Cleanroom Test")
+	if err := os.WriteFile(filepath.Join(dir, "cleanroom.yaml"), []byte("policy\n"), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "-c", "commit.gpgsign=false", "commit", "-m", "initial")
+}
+
 func TestRunBakesEndToEnd(t *testing.T) {
 	compiled := testPolicy()
 	runner := &fakeRunner{version: "0.3.1"}
@@ -172,7 +186,8 @@ func TestRunNoOpsWhenArtifactMatches(t *testing.T) {
 	compiled := testPolicy()
 	runner := &fakeRunner{version: "0.3.1"}
 	options := testOptions(t, runner)
-	key := Key(compiled, CollectGitFacts(options.Dir))
+	initGitWorkspace(t, options.Dir)
+	key := Key(compiled, CollectGitFactsExcluding(options.Dir, ArtifactExclusions(options.Dir, options.Out)))
 	runner.annotations = map[string]string{
 		AnnotationPrefix + "provenance.version": ProvenanceVersion,
 		AnnotationPrefix + "bake.key":           key,
@@ -199,6 +214,7 @@ func TestRunRefusesStaleArtifact(t *testing.T) {
 	compiled := testPolicy()
 	runner := &fakeRunner{version: "0.3.1"}
 	options := testOptions(t, runner)
+	initGitWorkspace(t, options.Dir)
 	runner.annotations = map[string]string{
 		AnnotationPrefix + "provenance.version": ProvenanceVersion,
 		AnnotationPrefix + "bake.key":           "0000stalekey0000",
@@ -210,6 +226,28 @@ func TestRunRefusesStaleArtifact(t *testing.T) {
 	_, err := Run(compiled, options)
 	if err == nil || !strings.Contains(err.Error(), "different bake key") {
 		t.Fatalf("expected stale-artifact error, got %v", err)
+	}
+}
+
+// TestRunNonGitWorkspaceNeverCacheFresh: without git facts the bake key has
+// no content input, so an existing artifact must never be reported up to
+// date — changed files would otherwise silently serve a stale spore.
+func TestRunNonGitWorkspaceNeverCacheFresh(t *testing.T) {
+	compiled := testPolicy()
+	runner := &fakeRunner{version: "0.3.1"}
+	options := testOptions(t, runner)
+	key := Key(compiled, CollectGitFacts(options.Dir))
+	runner.annotations = map[string]string{
+		AnnotationPrefix + "provenance.version": ProvenanceVersion,
+		AnnotationPrefix + "bake.key":           key,
+	}
+	if err := os.MkdirAll(options.Out, 0o755); err != nil {
+		t.Fatalf("create out dir: %v", err)
+	}
+
+	_, err := Run(compiled, options)
+	if err == nil || !strings.Contains(err.Error(), "never cache-fresh") {
+		t.Fatalf("expected non-git cache refusal, got %v", err)
 	}
 }
 

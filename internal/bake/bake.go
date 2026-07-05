@@ -65,7 +65,9 @@ func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 
 	facts := CollectGitFactsExcluding(options.Dir, ArtifactExclusions(options.Dir, out))
 	key := Key(compiled, facts)
-	if facts.Dirty {
+	if !facts.HasGit {
+		fmt.Fprintln(options.Log, "cleanroom bake: workspace is not a git repository; artifact records no git facts and is never treated as cache-fresh")
+	} else if facts.Dirty {
 		fmt.Fprintln(options.Log, "cleanroom bake: workspace has uncommitted changes; artifact records workspace.git.dirty=true and is never treated as cache-fresh")
 	}
 
@@ -162,6 +164,11 @@ func existingArtifactMatches(runner Runner, out, key string, facts GitFacts) (bo
 	existing := annotations[AnnotationPrefix+"bake.key"]
 	if existing == "" {
 		return false, fmt.Errorf("%s exists but carries no cleanroom bake key; remove it or choose another --out", out)
+	}
+	if !facts.HasGit {
+		// Without git the key has no content input, so an unchanged key
+		// proves nothing about the workspace files.
+		return false, fmt.Errorf("%s exists and the workspace has no git metadata; non-git bakes are never cache-fresh, remove it to rebake", out)
 	}
 	if facts.Dirty {
 		return false, fmt.Errorf("%s exists and the workspace has uncommitted changes; dirty bakes are never cache-fresh, remove it to rebake", out)
