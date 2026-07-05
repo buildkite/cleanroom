@@ -54,6 +54,48 @@ func TestStageWorkspaceCopiesGitVisibleFileSet(t *testing.T) {
 	}
 }
 
+// TestExclusionsAreLiteralNotGlob: exclusion paths derive from the
+// user-supplied --out, so pathspec glob characters must be inert. An output
+// named "*" must not blank the dirty decision or the staged file set.
+func TestExclusionsAreLiteralNotGlob(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "cleanroom-test@example.com")
+	runGit(t, repo, "config", "user.name", "Cleanroom Test")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatalf("write tracked.txt: %v", err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "-c", "commit.gpgsign=false", "commit", "-m", "initial")
+
+	// The artifact dir literally named "*" plus a genuinely dirty file.
+	if err := os.MkdirAll(filepath.Join(repo, "*"), 0o755); err != nil {
+		t.Fatalf("mkdir *: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "*", "manifest.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty.txt: %v", err)
+	}
+
+	if facts := CollectGitFactsExcluding(repo, []string{"*"}); !facts.Dirty {
+		t.Fatal("a glob-named exclusion must not hide genuinely dirty files")
+	}
+
+	staged, cleanup, err := StageWorkspace(repo, []string{"*"})
+	if err != nil {
+		t.Fatalf("stage workspace: %v", err)
+	}
+	defer cleanup()
+	if _, err := os.Stat(filepath.Join(staged, "tracked.txt")); err != nil {
+		t.Fatalf("a glob-named exclusion must not blank the staged file set: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(staged, "*")); !os.IsNotExist(err) {
+		t.Fatalf("the artifact dir itself must be excluded, stat err = %v", err)
+	}
+}
+
 func TestStageWorkspacePreservesModeAndSymlinks(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init")

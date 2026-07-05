@@ -132,16 +132,7 @@ func CollectGitFactsExcluding(cwd string, excludeRel []string) GitFacts {
 		facts.Remote = sanitizeRemote(remote)
 	}
 	statusArgs := []string{"status", "--porcelain"}
-	if len(excludeRel) > 0 {
-		statusArgs = append(statusArgs, "--", ".")
-		for _, rel := range excludeRel {
-			rel = strings.TrimSpace(rel)
-			if rel == "" {
-				continue
-			}
-			statusArgs = append(statusArgs, ":(exclude)"+rel, ":(exclude)"+rel+"/**")
-		}
-	}
+	statusArgs = append(statusArgs, exclusionPathspecs(excludeRel)...)
 	if status, err := gitOutput(cwd, statusArgs...); err == nil {
 		facts.Dirty = strings.TrimSpace(status) != ""
 		facts.HasGit = true
@@ -159,6 +150,26 @@ func addGitAnnotations(annotations map[string]string, facts GitFacts) {
 		}
 		annotations[AnnotationPrefix+"workspace.git.dirty"] = dirty
 	}
+}
+
+// exclusionPathspecs renders exclusions as literal git pathspecs. The paths
+// derive from the user-supplied --out, so pathspec glob characters must not
+// be interpreted: a plain ":(exclude)" would let an output named "*" exclude
+// the whole tree from dirty detection and staging. The literal magic also
+// matches directory contents by prefix, covering the spore directory's files.
+func exclusionPathspecs(excludeRel []string) []string {
+	specs := []string{}
+	for _, rel := range excludeRel {
+		rel = strings.TrimSpace(rel)
+		if rel == "" {
+			continue
+		}
+		specs = append(specs, ":(exclude,literal)"+rel)
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	return append([]string{"--", "."}, specs...)
 }
 
 // sanitizeRemote strips userinfo from URL-style remotes. CI checkouts often

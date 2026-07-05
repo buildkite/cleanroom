@@ -20,16 +20,7 @@ import (
 // The returned cleanup removes the staging directory.
 func StageWorkspace(dir string, excludeRel []string) (string, func(), error) {
 	args := []string{"ls-files", "-z", "--cached", "--others", "--exclude-standard"}
-	if len(excludeRel) > 0 {
-		args = append(args, "--", ".")
-		for _, rel := range excludeRel {
-			rel = strings.TrimSpace(rel)
-			if rel == "" {
-				continue
-			}
-			args = append(args, ":(exclude)"+rel, ":(exclude)"+rel+"/**")
-		}
-	}
+	args = append(args, exclusionPathspecs(excludeRel)...)
 	out, err := gitOutputRaw(dir, args...)
 	if err != nil {
 		return "", nil, fmt.Errorf("list workspace files: %w", err)

@@ -55,8 +55,10 @@ cleanroom verify repo.spore --dir .          # audit bake key against the repo
 spore --json inspect repo.spore | cleanroom verify   # from inspect output
 ```
 
-Verify fails closed: foreign or forged manifests are rejected. `--dir` also
-proves the artifact matches the repository's current policy and commit.
+Verify fails closed on missing or malformed provenance. The `--dir` audit is
+an integrity check, not proof of origin: the bake key is a public hash, so a
+match shows the artifact is consistent with the repository's current policy
+and commit — it cannot prove who baked it.
 
 ## Mediated Credentials
 
@@ -70,8 +72,11 @@ spore run --from repo.spore --bind-service cleanroom-gateway:8170=unix:gw.sock '
 ```
 
 `--dir` is the trust root: grants resolve from the repository's own policy
-and git facts, and `--for` audits the spore's bake key against it before
-serving. Operator grants live in `~/.config/cleanroom/gateway.yaml`.
+and git facts. `--for` audits the spore's bake key against the repository and
+refuses to serve on mismatch — but the key is public, so passing the audit is
+not proof the spore was baked by you. The authorization boundary is the bind:
+only bind the gateway socket into spores you baked yourself or otherwise
+trust. Operator grants live in `~/.config/cleanroom/gateway.yaml`.
 
 ## Composable Plumbing
 
