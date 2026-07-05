@@ -20,14 +20,6 @@ func (l *policyValidateLoader) LoadAndCompile(cwd string) (*policy.CompiledPolic
 	return l.compiled, l.source, nil
 }
 
-func (l *policyValidateLoader) LoadRepository(string) (policy.RepositoryConfig, string, error) {
-	return policy.RepositoryConfig{}, "", nil
-}
-
-func (l *policyValidateLoader) LoadExpose(string) (policy.ExposeConfig, string, error) {
-	return policy.ExposeConfig{}, "", nil
-}
-
 func TestPolicyValidateCommandRunJSON(t *testing.T) {
 	t.Parallel()
 

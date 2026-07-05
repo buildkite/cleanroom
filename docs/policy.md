@@ -105,7 +105,11 @@ These policy fields still parse (so `policy validate` accepts them) but fail
 `compile` until they map onto SporeVM:
 
 - `sandbox.resources.disk`
-- stage-scoped network policy (`repository.network`, per-stage allowlists)
+- stage-scoped network policy (per-stage allowlists)
 - `sandbox.docker`
 - `sandbox.dependencies` and `sandbox.services` blocks (use `warmup`)
 - `sandbox.run.before`
+## Removed Fields
+
+Top-level `repository:` and `expose:` blocks belonged to the old runtime and are no longer part of the policy schema. Strict parsing rejects policies that still declare them.
+

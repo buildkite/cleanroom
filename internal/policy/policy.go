@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
-	"github.com/buildkite/cleanroom/internal/exposure"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/guestenv"
 	"github.com/buildkite/cleanroom/internal/ociref"
@@ -25,9 +24,8 @@ import (
 )
 
 const (
-	PrimaryPolicyPath             = "cleanroom.yaml"
-	FallbackPolicyPath            = ".buildkite/cleanroom.yaml"
-	ExposeHTTPSPreflightSandboxID = "00000000000000000000000000"
+	PrimaryPolicyPath  = "cleanroom.yaml"
+	FallbackPolicyPath = ".buildkite/cleanroom.yaml"
 )
 
 var ErrPolicyNotFound = errors.New("policy not found")
@@ -35,10 +33,8 @@ var ErrPolicyNotFound = errors.New("policy not found")
 type Loader struct{}
 
 type rawPolicy struct {
-	Version    int            `yaml:"version"`
-	Repository *rawRepository `yaml:"repository"`
-	Expose     rawExpose      `yaml:"expose"`
-	Sandbox    struct {
+	Version int `yaml:"version"`
+	Sandbox struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
@@ -55,29 +51,6 @@ type rawPolicy struct {
 
 type rawMediation struct {
 	Services []string `yaml:"services"`
-}
-
-type rawRepository struct {
-	Enabled    *bool                  `yaml:"enabled"`
-	Mode       string                 `yaml:"mode"`
-	Remote     string                 `yaml:"remote"`
-	Path       string                 `yaml:"path"`
-	Submodules bool                   `yaml:"submodules"`
-	Network    *rawStageNetworkConfig `yaml:"network"`
-}
-
-type rawExpose struct {
-	HTTPS rawExposeHTTPS `yaml:"https"`
-}
-
-type rawExposeHTTPS struct {
-	Base   string                `yaml:"base"`
-	Routes []rawExposeHTTPSRoute `yaml:"routes"`
-}
-
-type rawExposeHTTPSRoute struct {
-	Port  int      `yaml:"port"`
-	Hosts []string `yaml:"hosts"`
 }
 
 type rawDependencyCommandSpec []string
@@ -157,36 +130,6 @@ type CompiledPolicy struct {
 	Warmup         []string              `json:"warmup,omitempty"`
 	Mediation      []string              `json:"mediation,omitempty"`
 	Hash           string                `json:"hash"`
-}
-
-type RepositoryConfig struct {
-	Implicit   bool   `json:"-"`
-	Mode       string `json:"mode"`
-	Remote     string `json:"remote"`
-	Path       string `json:"path"`
-	Submodules bool   `json:"submodules"`
-}
-
-type ExposeConfig struct {
-	HTTPS ExposeHTTPSConfig `json:"https,omitempty"`
-}
-
-func (c ExposeConfig) IsZero() bool {
-	return c.HTTPS.IsZero()
-}
-
-type ExposeHTTPSConfig struct {
-	Base   string             `json:"base,omitempty"`
-	Routes []ExposeHTTPSRoute `json:"routes,omitempty"`
-}
-
-func (c ExposeHTTPSConfig) IsZero() bool {
-	return strings.TrimSpace(c.Base) == "" && len(c.Routes) == 0
-}
-
-type ExposeHTTPSRoute struct {
-	Port  int      `json:"port"`
-	Hosts []string `json:"hosts"`
 }
 
 type Services struct {
@@ -336,12 +279,6 @@ func normalizeRawStageNetwork(raw *rawStageNetworkConfig) (*NetworkPolicy, error
 func normalizeRawNetworkStages(raw rawPolicy) (*NetworkStagePolicies, error) {
 	var out NetworkStagePolicies
 	var err error
-	if raw.Repository != nil {
-		out.Workspace, err = normalizeRawStageNetwork(raw.Repository.Network)
-		if err != nil {
-			return nil, err
-		}
-	}
 	out.Dependencies, err = normalizeRawStageNetwork(raw.Sandbox.Network.Dependencies)
 	if err != nil {
 		return nil, err
@@ -359,81 +296,6 @@ func normalizeRawNetworkStages(raw rawPolicy) (*NetworkStagePolicies, error) {
 	}
 	return &out, nil
 }
-
-func normalizeExposeConfig(raw rawExpose) (ExposeConfig, error) {
-	https, err := normalizeExposeHTTPSConfig(raw.HTTPS)
-	if err != nil {
-		return ExposeConfig{}, err
-	}
-	return ExposeConfig{HTTPS: https}, nil
-}
-
-func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
-	base := strings.TrimSpace(strings.ToLower(raw.Base))
-	if base == "" && len(raw.Routes) == 0 {
-		return ExposeHTTPSConfig{}, nil
-	}
-	if len(raw.Routes) == 0 {
-		return ExposeHTTPSConfig{}, errors.New("expose.https.routes must include at least one route")
-	}
-	expandedBase := base
-	if expandedBase != "" {
-		expandedBase = expandExposeHTTPSTemplate(expandedBase, ExposeHTTPSPreflightSandboxID, "")
-		expandedBase = strings.TrimSpace(strings.ToLower(expandedBase))
-	}
-	if strings.TrimSpace(raw.Base) != "" && expandedBase == "" {
-		return ExposeHTTPSConfig{}, errors.New("expose.https.base expanded to an empty host")
-	}
-	routes := make([]ExposeHTTPSRoute, 0, len(raw.Routes))
-	seenExpandedHosts := map[string]string{}
-	for i, route := range raw.Routes {
-		field := fmt.Sprintf("expose.https.routes[%d]", i)
-		if route.Port < 1 || route.Port > 65535 {
-			return ExposeHTTPSConfig{}, fmt.Errorf("%s.port must be in range 1-65535", field)
-		}
-		if len(route.Hosts) == 0 {
-			return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts must include at least one host", field)
-		}
-		hosts := make([]string, 0, len(route.Hosts))
-		seenInRoute := map[string]struct{}{}
-		for j, host := range route.Hosts {
-			host = strings.TrimSpace(strings.ToLower(host))
-			if host == "" {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] cannot be empty", field, j)
-			}
-			if strings.Contains(host, "{base}") && expandedBase == "" {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] uses {base} but expose.https.base is empty", field, j)
-			}
-			expandedHost := expandExposeHTTPSTemplate(host, ExposeHTTPSPreflightSandboxID, expandedBase)
-			expandedHost = strings.TrimSpace(strings.ToLower(expandedHost))
-			if expandedHost == "" {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] expanded to an empty host", field, j)
-			}
-			if err := exposure.ValidateHTTPSRouteName(expandedHost); err != nil {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] is invalid: %w", field, j, err)
-			}
-			if _, ok := seenInRoute[expandedHost]; ok {
-				continue
-			}
-			if previous, ok := seenExpandedHosts[expandedHost]; ok {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] duplicates configured host %q already declared at %s", field, j, expandedHost, previous)
-			}
-			seenInRoute[expandedHost] = struct{}{}
-			seenExpandedHosts[expandedHost] = fmt.Sprintf("%s.hosts[%d]", field, j)
-			hosts = append(hosts, host)
-		}
-		routes = append(routes, ExposeHTTPSRoute{Port: route.Port, Hosts: hosts})
-	}
-	return ExposeHTTPSConfig{Base: base, Routes: routes}, nil
-}
-
-func expandExposeHTTPSTemplate(value, sandboxID, base string) string {
-	value = strings.ReplaceAll(value, "{sandbox_id}", sandboxID)
-	value = strings.ReplaceAll(value, "{container_id}", sandboxID)
-	value = strings.ReplaceAll(value, "{base}", base)
-	return value
-}
-
 func (l Loader) LoadAndCompile(root string) (*CompiledPolicy, string, error) {
 	raw, source, err := l.Load(root)
 	if err != nil {
@@ -447,33 +309,6 @@ func (l Loader) LoadAndCompile(root string) (*CompiledPolicy, string, error) {
 
 	return compiled, source, nil
 }
-
-func (l Loader) LoadRepository(root string) (RepositoryConfig, string, error) {
-	raw, source, err := l.Load(root)
-	if err != nil {
-		return RepositoryConfig{}, "", err
-	}
-
-	cfg, err := normalizeRepositoryConfig(raw.Repository)
-	if err != nil {
-		return RepositoryConfig{}, source, err
-	}
-	return cfg, source, nil
-}
-
-func (l Loader) LoadExpose(root string) (ExposeConfig, string, error) {
-	raw, source, err := l.Load(root)
-	if err != nil {
-		return ExposeConfig{}, "", err
-	}
-
-	cfg, err := normalizeExposeConfig(raw.Expose)
-	if err != nil {
-		return ExposeConfig{}, source, err
-	}
-	return cfg, source, nil
-}
-
 func (l Loader) Load(root string) (rawPolicy, string, error) {
 	primary := filepath.Join(root, PrimaryPolicyPath)
 	fallback := filepath.Join(root, FallbackPolicyPath)
@@ -536,23 +371,12 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		return nil, errors.New("sandbox.network.allow cannot be combined with stage-local network blocks")
 	}
 
-	repository, err := normalizeRepositoryConfig(raw.Repository)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := normalizeExposeConfig(raw.Expose); err != nil {
-		return nil, err
-	}
-	if err := validateRepositoryScopedBlocks(raw, repository); err != nil {
-		return nil, err
-	}
-
 	docker := normalizeDocker(raw.Sandbox.Docker)
-	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies, repository.Path)
+	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies, defaultBlockWorkspace)
 	if err != nil {
 		return nil, err
 	}
-	services, err := normalizeServices(raw.Sandbox.Services, repository.Path)
+	services, err := normalizeServices(raw.Sandbox.Services, defaultBlockWorkspace)
 	if err != nil {
 		return nil, err
 	}
@@ -743,10 +567,6 @@ const (
 
 func (r Run) HasBefore() bool {
 	return len(r.Before) > 0
-}
-
-func (c RepositoryConfig) Enabled() bool {
-	return strings.TrimSpace(strings.ToLower(c.Mode)) != "" && strings.TrimSpace(strings.ToLower(c.Mode)) != "none"
 }
 
 func (c *rawShellCommandSpec) UnmarshalYAML(node *yaml.Node) error {
@@ -961,69 +781,6 @@ func dereferenceYAMLAlias(node *yaml.Node) *yaml.Node {
 	return node
 }
 
-func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
-	if raw == nil {
-		return RepositoryConfig{
-			Implicit: true,
-			Mode:     "current-repo",
-			Remote:   "origin",
-			Path:     "/workspace",
-		}, nil
-	}
-	if raw.Enabled != nil && !*raw.Enabled {
-		return RepositoryConfig{}, nil
-	}
-
-	mode := strings.TrimSpace(strings.ToLower(raw.Mode))
-	switch mode {
-	case "", "current-repo":
-		mode = "current-repo"
-	case "none":
-		return RepositoryConfig{}, nil
-	default:
-		return RepositoryConfig{}, fmt.Errorf("unsupported repository.mode %q", raw.Mode)
-	}
-
-	remote := strings.TrimSpace(raw.Remote)
-	if remote == "" {
-		remote = "origin"
-	}
-
-	repositoryPath := strings.TrimSpace(raw.Path)
-	if repositoryPath == "" {
-		repositoryPath = "/workspace"
-	}
-	if !strings.HasPrefix(repositoryPath, "/") {
-		return RepositoryConfig{}, fmt.Errorf("repository.path %q must be absolute", raw.Path)
-	}
-	repositoryPath = path.Clean(repositoryPath)
-
-	return RepositoryConfig{
-		Implicit:   false,
-		Mode:       mode,
-		Remote:     remote,
-		Path:       repositoryPath,
-		Submodules: raw.Submodules,
-	}, nil
-}
-
-func validateRepositoryScopedBlocks(raw rawPolicy, repository RepositoryConfig) error {
-	if repository.Enabled() {
-		return nil
-	}
-	if len(raw.Sandbox.Dependencies.Blocks) > 0 {
-		field := raw.Sandbox.Dependencies.blocksField
-		if field == "" {
-			field = "sandbox.dependencies"
-		}
-		return fmt.Errorf("%s cannot be declared when repository bootstrap is disabled", field)
-	}
-	if len(raw.Sandbox.Services) > 0 {
-		return errors.New("sandbox.services cannot be declared when repository bootstrap is disabled")
-	}
-	return nil
-}
-
 func readPolicy(path string) (rawPolicy, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1053,24 +810,6 @@ func CompileBytes(b []byte, source string) (*CompiledPolicy, error) {
 		return nil, err
 	}
 	return Compile(raw)
-}
-
-// CompileBytesWithRepositoryConfig parses policy YAML and returns both the
-// compiled policy and normalized repository configuration.
-func CompileBytesWithRepositoryConfig(b []byte, source string) (*CompiledPolicy, RepositoryConfig, error) {
-	raw, err := parsePolicyBytes(b, source)
-	if err != nil {
-		return nil, RepositoryConfig{}, err
-	}
-	compiled, err := Compile(raw)
-	if err != nil {
-		return nil, RepositoryConfig{}, err
-	}
-	repository, err := normalizeRepositoryConfig(raw.Repository)
-	if err != nil {
-		return nil, RepositoryConfig{}, err
-	}
-	return compiled, repository, nil
 }
 
 func exists(path string) (bool, error) {

@@ -39,6 +39,11 @@ func TestKeyIsDeterministicAndInputSensitive(t *testing.T) {
 	if Key(compiled, GitFacts{Commit: "abc", Dirty: true, HasGit: true}) == base {
 		t.Fatal("bake key ignores dirty state")
 	}
+	// Gateway grants match on the remote, so remote drift must invalidate
+	// the artifact rather than leave stale provenance grant-eligible.
+	if Key(compiled, GitFacts{Commit: "abc", Remote: "https://example.com/other/repo.git", HasGit: true}) == base {
+		t.Fatal("bake key ignores git remote")
+	}
 }
 
 type fakeRunner struct {
