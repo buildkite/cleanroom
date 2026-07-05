@@ -435,10 +435,27 @@ both verified; the pipeline step will exercise it on the mac queue.
 
 ### Slice 7: Delete Old Runtime Surface
 
-- Delete `internal/sporevm/` and the hidden daemon/control-plane commands and
-  their backend adapter paths.
+Status: deferred to its own PR. `internal/sporevm/` and the top-level
+lifecycle commands were already deleted in Slice 3, and the new surface
+(bake, verify, gateway, compile, stamp) is verified clean of
+`internal/controlservice` and `internal/backend`. What remains are the
+hidden daemon/control-plane/sandbox commands and the ~60k lines of
+control-plane and backend-adapter code behind them.
+
+This is not mechanical cleanup: the surviving `config` command still selects
+a cleanroom backend (`--default-backend firecracker|darwin-vz`) and detects
+host support through `internal/backend`, which is itself legacy — in the bake
+era spore owns backends, so removing the control plane forces a rethink of
+what `config` (and to a lesser extent `image`) mean. That is design work, and
+folding a 60k-line deletion plus a config redesign into this already-large
+branch would produce an unreviewable diff and real half-completion risk.
+
+The deletion is well-bounded for a focused follow-up: eight `internal/cli`
+files still import the legacy core, and nothing in the new surface does.
 
 Done when cleanroom has one user-facing model and no dormant second runtime.
+The user-facing half is already met (the second model is hidden); the
+code-deletion half is the follow-up PR.
 
 ## Verification
 
