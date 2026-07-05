@@ -1,8 +1,8 @@
 # Cleanroom Bakes Repeatable Warm Spores
 
 **Status:** Active
-**Last reviewed:** 2026-07-03
-**Related code:** `internal/cli/vm.go`, `internal/gateway/`, `internal/policy/`
+**Last reviewed:** 2026-07-05
+**Related code:** `internal/cli/`, `internal/bake/`, `internal/mediation/`, `internal/policy/`
 **Related upstream:** `~/Develop/sporevm` `origin/main` spore CLI, spore format, named lifecycle
 
 ## Summary
@@ -357,6 +357,45 @@ works end to end on a repo with dependencies, and rebaking without input
 changes is a no-op. Met in full on 2026-07-04, including the
 network-fetching warmup variant.
 
+### Slice 3A: BLOCKS→WARMUP Lowering
+
+Status: implemented as a policy-compiler follow-up to Slice 3, not as a
+change to SporeVM's runtime model.
+
+- `sandbox.dependencies` and `sandbox.services` blocks lower to effective
+  `sandbox.warmup` shell steps. The effective order is explicit
+  `sandbox.warmup` first, then dependency blocks in declaration order, then
+  service blocks in declaration order. Explicit warmup runs first so policies
+  can install toolchains before dependency commands; dependency blocks run
+  before service blocks because services may depend on installed dependencies.
+- Each block lowers to one warmup step. Bake still executes each step through
+  the existing `cd /workspace && <step>` prefix, so generated commands do not
+  `cd` themselves and are always workspace-relative unless the policy command
+  uses absolute paths. Block environment maps are sorted by key and emitted as
+  shell-quoted `KEY=value` assignments before the command line.
+- Under the checkpoint model, declared block outputs are honoured by the whole
+  spore captured at suspend time: everything present in the VM is captured, not
+  a per-output file set. Existing output path and overlap validation remains
+  important because it prevents ambiguous declarations. Inputs remain validated
+  and hash-covered declaration metadata; content freshness still comes from the
+  conservative commit/dirty bake key.
+- `sandbox.dependencies.reuse: exact` (and the default) are accepted because the
+  whole checkpoint captures outputs and the existing commit/dirty key is
+  conservative. `reuse: portable` remains fail-closed at bake compile because
+  input-only portable block-cache semantics are not implemented. `Reuse` is not
+  hash-covered today (`json:"-"`); this is safe only while portable bakes are
+  rejected. Implementing portable reuse later must add reuse semantics to the
+  policy hash and bake key, likely with a bake key-version bump.
+- The fail-closed set is unchanged for unsupported SporeVM semantics:
+  `sandbox.docker.required`, stage-scoped network, `resources.disk`, and
+  `run.before` still reject during `bake.Compile` rather than being ignored.
+
+Deferred follow-ups remain: signed provenance/origin attestation, Kubernetes
+admission and gateway wiring, docker-in-guest support, stage-scoped network,
+`resources.disk`, IPv6 host encoding for provenance and SporeVM arguments,
+hashing the staged file set for non-git workspace cache freshness, and submodule
+staging support.
+
 ### Slice 4: Verify
 
 Status: done, verified live on 2026-07-04.
@@ -509,9 +548,8 @@ cleanroom bake . --out cr-test.spore   # must no-op
 
 ## Open Questions
 
-- Warmup schema shape: a flat command list under `sandbox.warmup`, or named
-  steps with per-step network scope? Default: flat list first; per-step scope
-  only when a concrete policy needs it.
+- Richer block semantics: per-step network scope and portable block caches are
+  deferred until a concrete policy needs them and SporeVM can enforce them.
 - Should bake refuse a dirty worktree by default (record-and-warn vs fail)?
   Default: warn and record `workspace.git.dirty=true`; `--require-clean` for
   CI.

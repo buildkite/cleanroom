@@ -66,7 +66,7 @@ Sizes use decimal units (`1gb` = 10^9 bytes); compile rounds memory up to
 SporeVM's 16KiB page alignment. `resources.disk` is not yet translated and
 fails compile.
 
-## Warmup
+## Warmup And Blocks
 
 Warmup commands run once inside the builder VM during `cleanroom bake`, after
 the workspace is copied in. Use them to install dependencies and warm caches
@@ -79,8 +79,62 @@ sandbox:
     - go mod download
 ```
 
-Each entry is a shell command run in the workspace. A failing warmup step
-aborts the bake and destroys the builder.
+Each explicit `warmup` entry is a shell command run in the workspace. A failing
+warmup step aborts the bake and destroys the builder.
+
+`dependencies` and `services` blocks are lowered into effective warmup steps.
+The execution order is:
+
+1. explicit `sandbox.warmup` entries, in declaration order;
+2. `sandbox.dependencies` blocks, in declaration order;
+3. `sandbox.services` blocks, in declaration order.
+
+Explicit warmup runs first so policies can install toolchains before dependency
+commands. Dependency blocks run before service blocks because service setup may
+need those dependencies. Bake executes every effective step as
+`cd /workspace && <step>`, so generated block commands do not change directory
+themselves.
+
+```yaml
+sandbox:
+  warmup:
+    - apk add --no-progress go
+  dependencies:
+    reuse: exact # default; may also omit the object wrapper and declare a list
+    blocks:
+      - name: go-modules
+        command: go mod download          # strings run as: sh -lc <script>
+        inputs:
+          files: [go.mod, go.sum]
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        outputs:
+          dirs: ["${HOME}/go/pkg/mod"]
+  services:
+    - name: cache
+      command: [sh, -lc, bin/start-cache-service]
+      inputs:
+        files: [service-config.yml]
+      outputs:
+        dirs: [/var/lib/cleanroom/services/cache]
+```
+
+A block lowers to one shell step: sorted `env` assignments with shell-quoted
+values, followed by the command with argv shell-quoted. String commands are
+normalised to `sh -lc <script>`; sequence commands are treated as argv. Do not
+put credentials in block `env`: values are part of the baked policy, appear in
+warmup logs, and may be captured in the spore. Use mediation for credentials.
+
+Block `inputs.files` and `outputs` are declaration metadata. Inputs are
+validated and hash-covered as policy metadata; content freshness comes from the
+commit/dirty bake key. Outputs are honoured by the whole checkpoint: everything
+present in the VM when `spore suspend` runs is captured, while output
+path/overlap validation prevents ambiguous declarations.
+
+`dependencies.reuse: exact` and the default are accepted because the whole
+checkpoint captures block outputs and the commit/dirty bake key is conservative.
+`dependencies.reuse: portable` fails `compile`; input-only portable block-cache
+semantics are not implemented and would require a bake key/hash scheme change.
 
 ## Mediation
 
@@ -106,9 +160,10 @@ These policy fields still parse (so `policy validate` accepts them) but fail
 
 - `sandbox.resources.disk`
 - stage-scoped network policy (per-stage allowlists)
-- `sandbox.docker`
-- `sandbox.dependencies` and `sandbox.services` blocks (use `warmup`)
+- `sandbox.docker.required` (docker-in-guest is deferred)
+- `sandbox.dependencies.reuse: portable`
 - `sandbox.run.before`
+
 ## Removed Fields
 
 Top-level `repository:` and `expose:` blocks belonged to the old runtime and are no longer part of the policy schema. Strict parsing rejects policies that still declare them.

@@ -167,6 +167,29 @@ func TestRunBakesEndToEnd(t *testing.T) {
 	}
 }
 
+func TestRunExecutesEffectiveWarmupInWorkspace(t *testing.T) {
+	compiled := &policy.CompiledPolicy{
+		ImageRef: testImageRef,
+		Hash:     "policy-hash",
+		Warmup:   []string{"ALPHA='two words' 'go' 'mod' 'download'"},
+	}
+	runner := &fakeRunner{version: "0.3.1"}
+	options := testOptions(t, runner)
+	key := Key(compiled, CollectGitFacts(options.Dir))
+	runner.annotations = map[string]string{
+		AnnotationPrefix + "provenance.version": "1",
+		AnnotationPrefix + "bake.key":           key,
+	}
+
+	if _, err := Run(compiled, options); err != nil {
+		t.Fatalf("bake: %v", err)
+	}
+	want := "cd " + GuestWorkspaceDir + " && ALPHA='two words' 'go' 'mod' 'download'"
+	if len(runner.execs) != 1 || runner.execs[0] != want {
+		t.Fatalf("execs = %v, want [%q]", runner.execs, want)
+	}
+}
+
 func TestRunDestroysBuilderOnWarmupFailure(t *testing.T) {
 	compiled := testPolicy()
 	runner := &fakeRunner{version: "0.3.1", execErr: errors.New("guest command failed")}
