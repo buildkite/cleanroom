@@ -4,7 +4,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: shellcheck
-    command: shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-auth-oidc-smoke.sh scripts/ci-bake-smoke.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh
+    command: shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-auth-oidc-smoke.sh scripts/ci-bake-smoke.sh scripts/ci-buildkite-release.sh
     cache:
       paths:
         - "~/.local/share/mise"
@@ -109,20 +109,6 @@ steps:
       name: "mise-cache"
     agents:
       queue: cleanroom-mac
-
-  - label: ":package: macOS release pkg"
-    key: macos-release-pkg
-    if: build.tag != null || build.branch == "codex/macos-notarized-release-pkg"
-    plugins:
-      - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
-    command: scripts/ci-macos-release-pkg.sh
-    concurrency: 1
-    concurrency_group: cleanroom-macos-release-pkg
-    env:
-      CLEANROOM_SIGNING_JOB: "1"
-      CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER: com.buildkite.cleanroom.darwin-vz
-    agents:
-      queue: cleanroom-mac-signer
 
   - wait
 

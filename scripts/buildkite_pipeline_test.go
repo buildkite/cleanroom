@@ -200,7 +200,7 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 	for _, path := range []string{
 		"ci-go-test-engine.sh",
 		"ci-auth-oidc-smoke.sh",
-		"ci-macos-release-pkg.sh",
+		"ci-bake-smoke.sh",
 		"ci-buildkite-release.sh",
 	} {
 		path := path
@@ -254,9 +254,7 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 		`scripts/base-image-tag.sh`,
 		`scripts/ci-go-test-engine.sh`,
 		`scripts/ci-auth-oidc-smoke.sh`,
-		`scripts/build-macos-release-pkg.sh`,
-		`scripts/notarize-macos-package.sh`,
-		`scripts/ci-macos-release-pkg.sh`,
+		`scripts/ci-bake-smoke.sh`,
 		`scripts/ci-buildkite-release.sh`,
 	} {
 		if !strings.Contains(mise, needle) {

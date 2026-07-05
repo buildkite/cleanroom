@@ -16,7 +16,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-auth-oidc-smoke.sh scripts/ci-bake-smoke.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh"
+run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-auth-oidc-smoke.sh scripts/ci-bake-smoke.sh scripts/ci-buildkite-release.sh"
 
 [tasks.lint-proto]
 description = "Lint protobuf schemas"
@@ -29,10 +29,6 @@ run = "go test ./..."
 [tasks."build:go"]
 description = "Build Go binaries into dist/"
 run = "scripts/build-go.sh"
-
-[tasks."build:darwin"]
-description = "Build macOS darwin-vz helper into dist/"
-run = "{% if os() == \"macos\" %}scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app{% else %}true{% endif %}"
 
 [tasks."build:kernel:darwin-vz-minimal-initrd"]
 description = "Build minimal darwin-vz initrd-profile Linux kernel into dist/"
@@ -85,27 +81,17 @@ run = "true"
 
 [tasks.build]
 description = "Build binaries into dist/"
-depends = ["build:go", "build:darwin"]
+depends = ["build:go"]
 run = "true"
 
 [tasks."install:go"]
 description = "Install Go binaries into GOBIN (or GOPATH/bin)"
 run = "scripts/install-go.sh"
 
-[tasks."install:darwin"]
-description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
-depends = ["build:darwin"]
-run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; mkdir -p \"$BIN_DIR\" && scripts/build-darwin-vz-helper.sh \"$BIN_DIR/cleanroom-darwin-vz.app\"{% else %}true{% endif %}"
-
 [tasks.install]
-description = "Install all binaries into GOBIN (or GOPATH/bin)"
-depends = ["install:go", "install:darwin"]
+description = "Install the cleanroom CLI into GOBIN (or GOPATH/bin)"
+depends = ["install:go"]
 run = "true"
-
-[tasks."install:global"]
-description = "Install all runtime binaries into /usr/local/bin"
-depends = ["build"]
-run = "scripts/install-global.sh"
 
 [tasks.doctor]
 description = "Run cleanroom diagnostics"

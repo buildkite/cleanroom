@@ -22,33 +22,14 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - id: cleanroom-linux
-    ids: [cleanroom-linux]
+  - id: cleanroom
+    ids: [cleanroom-linux, cleanroom-darwin]
     formats: [tar.gz]
     name_template: >-
       {{ .Binary }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
-    files:
-      - src: release-extra/linux_{{ .Arch }}/cleanroom-guest-agent
-        strip_parent: true
-
-  - id: cleanroom-darwin
-    ids: [cleanroom-darwin]
-    formats: [tar.gz]
-    name_template: >-
-      {{ .Binary }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else }}{{ .Arch }}{{ end }}
-    files:
-      - src: release-extra/linux_{{ .Arch }}/cleanroom-guest-agent
-        strip_parent: true
-      - src: release-extra/darwin_{{ .Arch }}/cleanroom-darwin-vz.app
-        strip_parent: true
-      - src: release-extra/darwin_{{ .Arch }}/entitlements.plist
-        strip_parent: true
 
 checksum:
   name_template: "checksums.txt"

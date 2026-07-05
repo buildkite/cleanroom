@@ -435,27 +435,32 @@ both verified; the pipeline step will exercise it on the mac queue.
 
 ### Slice 7: Delete Old Runtime Surface
 
-Status: deferred to its own PR. `internal/sporevm/` and the top-level
-lifecycle commands were already deleted in Slice 3, and the new surface
-(bake, verify, gateway, compile, stamp) is verified clean of
-`internal/controlservice` and `internal/backend`. What remains are the
-hidden daemon/control-plane/sandbox commands and the ~60k lines of
-control-plane and backend-adapter code behind them.
+Status: done. The old runtime is gone.
 
-This is not mechanical cleanup: the surviving `config` command still selects
-a cleanroom backend (`--default-backend firecracker|darwin-vz`) and detects
-host support through `internal/backend`, which is itself legacy — in the bake
-era spore owns backends, so removing the control plane forces a rethink of
-what `config` (and to a lesser extent `image`) mean. That is design work, and
-folding a 60k-line deletion plus a config redesign into this already-large
-branch would produce an unreviewable diff and real half-completion risk.
+- Deleted every daemon/control-plane/sandbox command and the ~60k lines
+  behind them: `internal/controlservice`, `internal/backend` (and adapters),
+  `internal/controlclient`, `internal/controlserver`, `internal/endpoint`,
+  `internal/observability`, `internal/runtimeconfig`, `internal/gateway` (old
+  embedded gateway), and ~20 more control-plane/runtime packages — 33 in all.
+- Deleted the old runtime binaries: `cmd/cleanroom-guest-agent`,
+  `cmd/cleanroom-darwin-vz`, `cmd/cleanroom-vmnet-echo`, and the public
+  `client/` control-plane library.
+- The `config` and `image` commands (both backend/control-plane coupled) were
+  removed rather than redesigned; the gateway grants config is separate XDG
+  config owned by `internal/mediation`, and images are pulled by spore.
+- Stripped `internal/cli` to the bake surface: `cli.go` has no
+  runtimeconfig/backend/observability startup; `ui.go` trimmed to the
+  rendering helpers `policy validate` uses.
+- Rewired release/packaging to a single CGO-free binary: goreleaser ships one
+  archive per platform (no guest-agent/darwin-vz extras), `build-go.sh` and
+  `install.sh` build/install just `cleanroom`, and the macOS `.pkg` +
+  darwin-vz `.app` signing/notarization scripts and pipeline step are gone.
+- README rewritten for the bake model.
 
-The deletion is well-bounded for a focused follow-up: eight `internal/cli`
-files still import the legacy core, and nothing in the new surface does.
-
-Done when cleanroom has one user-facing model and no dormant second runtime.
-The user-facing half is already met (the second model is hidden); the
-code-deletion half is the follow-up PR.
+Done: cleanroom is one binary with one user-facing model
+(`policy`, `compile`, `stamp`, `bake`, `verify`, `gateway`, `version`) and no
+dormant runtime. `go.sum` shrank by ~1,300 lines; build and tests are green
+on both platforms and the live bake smoke passes end to end.
 
 ## Verification
 
