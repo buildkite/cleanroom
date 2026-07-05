@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NEXT=$(svu next)
 CURRENT=$(svu current)
+NEXT=$(svu next)
+
+# While Cleanroom is pre-1.0, breaking product redesigns are represented as
+# the next 0.x minor release rather than v1.0.0.
+if [[ "$CURRENT" == v0.* && "$NEXT" == v1.* ]]; then
+  NEXT=$(svu minor)
+fi
+
 if [ "$NEXT" = "$CURRENT" ]; then
   echo "No version bump detected (current: $CURRENT). Use conventional commits (feat:, fix:, etc.)."
   exit 1

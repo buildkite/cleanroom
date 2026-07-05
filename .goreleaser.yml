@@ -36,10 +36,10 @@ checksum:
 
 release:
   header: |
-    {{- if eq .Tag "v1.0.0" }}
+    {{- if eq .Tag "v0.12.0" }}
     ## Breaking SporeVM redesign
 
-    Cleanroom v1.0.0 replaces the old runtime/control-plane surface with a focused bake surface: `policy validate`, `compile`, `stamp`, `bake`, `verify`, `gateway serve`, and `version`.
+    Cleanroom v0.12.0 replaces the old runtime/control-plane surface with a focused bake surface: `policy validate`, `compile`, `stamp`, `bake`, `verify`, `gateway serve`, and `version`.
 
     - Old runtime/control-plane commands were removed.
     - Existing spores and artifacts must be rebaked because the bake key moved to keyVersion 2.
