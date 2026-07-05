@@ -53,6 +53,29 @@ func TestCompileTranslatesResourcesAndNetwork(t *testing.T) {
 	}
 }
 
+func TestCompileAllowsLoweredDependencyAndServiceBlocks(t *testing.T) {
+	_, err := Compile(&policy.CompiledPolicy{
+		ImageRef:       testImageRef,
+		NetworkDefault: "deny",
+		Warmup:         []string{"'go' 'mod' 'download'", "'sh' '-lc' 'docker compose up -d postgres'"},
+		Dependencies: policy.Dependencies{Blocks: []policy.StageBlock{{
+			Name:    "go-modules",
+			Command: []string{"go", "mod", "download"},
+			Inputs:  policy.StageBlockInputs{Files: []string{"go.mod"}},
+			Outputs: policy.StageBlockOutputs{Dirs: []string{"/workspace/.cache/go"}},
+		}}},
+		Services: policy.Services{Blocks: []policy.StageBlock{{
+			Name:    "postgres",
+			Command: []string{"sh", "-lc", "docker compose up -d postgres"},
+			Inputs:  policy.StageBlockInputs{Files: []string{"docker-compose.yml"}},
+			Outputs: policy.StageBlockOutputs{Dirs: []string{"/var/lib/cleanroom/services/postgres"}},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("compile with lowered blocks: %v", err)
+	}
+}
+
 func TestCompileRejectsUntranslatedFeatures(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -87,7 +110,15 @@ func TestCompileRejectsUntranslatedFeatures(t *testing.T) {
 				ImageRef: testImageRef,
 				Docker:   policy.DockerService{Required: true},
 			},
-			contains: "docker service",
+			contains: "sandbox.docker.required",
+		},
+		{
+			name: "portable dependency reuse",
+			policy: &policy.CompiledPolicy{
+				ImageRef:     testImageRef,
+				Dependencies: policy.Dependencies{Reuse: policy.DependencyReusePortable},
+			},
+			contains: "sandbox.dependencies.reuse=portable",
 		},
 		{
 			name: "stage scoped network",
@@ -98,6 +129,14 @@ func TestCompileRejectsUntranslatedFeatures(t *testing.T) {
 				},
 			},
 			contains: "stage-scoped network",
+		},
+		{
+			name: "run before",
+			policy: &policy.CompiledPolicy{
+				ImageRef: testImageRef,
+				Run:      policy.Run{Before: []string{"sh", "-lc", "true"}},
+			},
+			contains: "run.before",
 		},
 	}
 

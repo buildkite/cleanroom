@@ -70,13 +70,14 @@ func Compile(compiled *policy.CompiledPolicy) (CreateInputs, error) {
 	}
 	inputs.NetworkRules = rules
 	if compiled.RequiresDockerService() {
-		return CreateInputs{}, errors.New("cleanroom compile does not yet translate docker service policy to SporeVM")
+		return CreateInputs{}, errors.New("cleanroom compile does not yet translate sandbox.docker.required to SporeVM (docker-in-guest is deferred)")
 	}
-	if len(compiled.Services.Blocks) > 0 || len(compiled.Services.Command) > 0 {
-		return CreateInputs{}, errors.New("cleanroom compile does not yet translate service stages to SporeVM")
-	}
-	if len(compiled.Dependencies.Blocks) > 0 || len(compiled.Dependencies.Command) > 0 {
-		return CreateInputs{}, errors.New("cleanroom compile does not yet translate dependency stages to SporeVM")
+	if compiled.Dependencies.Reuse == policy.DependencyReusePortable {
+		// Dependencies.Reuse is currently json:"-" in policy.CompiledPolicy, so it
+		// is not covered by the policy hash or bake key. That is safe only because
+		// portable bakes fail closed here; implementing portable reuse must add the
+		// reuse mode and input-only block-cache semantics to the hash/key scheme.
+		return CreateInputs{}, errors.New("cleanroom compile does not yet support sandbox.dependencies.reuse=portable; portable block cache semantics are not implemented")
 	}
 	if len(compiled.Run.Before) > 0 {
 		return CreateInputs{}, errors.New("cleanroom compile does not yet translate run.before hooks to SporeVM")

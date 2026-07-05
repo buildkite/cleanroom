@@ -159,6 +159,120 @@ func TestCompileHashStable(t *testing.T) {
 	}
 }
 
+func TestCompileLowersBlocksIntoEffectiveWarmupOrder(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Warmup = []string{"apk add go ruby"}
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
+		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.mod"}, rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}}),
+		rawBlock("gems", []string{"bundle", "install"}, []string{"Gemfile.lock"}, rawPolicyBlockOutputs{Dirs: []string{"vendor/bundle"}}),
+	)
+	raw.Sandbox.Services = rawPolicyBlocks{
+		rawBlock("postgres", []string{"sh", "-lc", "docker compose up -d postgres"}, []string{"docker-compose.yml"}, rawPolicyBlockOutputs{Dirs: []string{"/var/lib/cleanroom/services/postgres"}}),
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	want := []string{
+		"apk add go ruby",
+		"'go' 'mod' 'download'",
+		"'bundle' 'install'",
+		"'sh' '-lc' 'docker compose up -d postgres'",
+	}
+	if got := compiled.Warmup; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("effective warmup = %v, want %v", got, want)
+	}
+}
+
+func TestCompileLowersBlockEnvDeterministicallyAndShellQuotes(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
+		rawPolicyBlock{
+			Name:    "deps",
+			Command: rawDependencyCommandSpec{"sh", "-lc", "echo \"$THING\""},
+			Inputs:  rawPolicyBlockInputs{Files: []string{"go.mod"}},
+			Env: map[string]string{
+				"ZED":   "has 'quote",
+				"ALPHA": "two words",
+			},
+			Outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}},
+		},
+	)
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	want := "ALPHA='two words' ZED='has '\"'\"'quote' 'sh' '-lc' 'echo \"$THING\"'"
+	if len(compiled.Warmup) != 1 || compiled.Warmup[0] != want {
+		t.Fatalf("effective warmup = %v, want [%q]", compiled.Warmup, want)
+	}
+}
+
+func TestCompileHashCoversLoweredBlockWarmup(t *testing.T) {
+	t.Parallel()
+
+	makePolicy := func(command []string, env map[string]string) rawPolicy {
+		raw := baseRawPolicy()
+		raw.Sandbox.Dependencies = rawDependencyBlocks(
+			rawPolicyBlock{
+				Name:    "deps",
+				Command: rawDependencyCommandSpec(command),
+				Inputs:  rawPolicyBlockInputs{Files: []string{"go.mod"}},
+				Env:     env,
+				Outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}},
+			},
+		)
+		return raw
+	}
+
+	base := makePolicy([]string{"go", "mod", "download"}, map[string]string{"GOPROXY": "https://proxy.golang.org,direct"})
+	compiledA, err := Compile(base)
+	if err != nil {
+		t.Fatalf("compile A: %v", err)
+	}
+	compiledB, err := Compile(base)
+	if err != nil {
+		t.Fatalf("compile B: %v", err)
+	}
+	if compiledA.Hash != compiledB.Hash {
+		t.Fatalf("hash mismatch: %s != %s", compiledA.Hash, compiledB.Hash)
+	}
+
+	clone := *compiledA
+	clone.Warmup = nil
+	hashWithoutWarmup, err := hashPolicy(&clone)
+	if err != nil {
+		t.Fatalf("hash without warmup: %v", err)
+	}
+	if hashWithoutWarmup == compiledA.Hash {
+		t.Fatal("expected removing effective warmup to change policy hash")
+	}
+
+	commandChanged, err := Compile(makePolicy([]string{"go", "mod", "download", "-x"}, map[string]string{"GOPROXY": "https://proxy.golang.org,direct"}))
+	if err != nil {
+		t.Fatalf("compile command changed: %v", err)
+	}
+	if commandChanged.Hash == compiledA.Hash {
+		t.Fatal("expected command change to change policy hash")
+	}
+
+	envChanged, err := Compile(makePolicy([]string{"go", "mod", "download"}, map[string]string{"GOPROXY": "direct"}))
+	if err != nil {
+		t.Fatalf("compile env changed: %v", err)
+	}
+	if envChanged.Hash == compiledA.Hash {
+		t.Fatal("expected env change to change policy hash")
+	}
+}
+
 func TestCompileNormalizesNetworkAllowShorthand(t *testing.T) {
 	t.Parallel()
 

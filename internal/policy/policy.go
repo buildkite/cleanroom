@@ -141,7 +141,10 @@ type Dependencies struct {
 	Blocks   []StageBlock `json:"blocks,omitempty"`
 	Command  []string     `json:"-"`
 	KeyFiles []string     `json:"-"`
-	Reuse    string       `json:"-"`
+	// Reuse is currently not hash-covered because it is omitted from JSON. This
+	// is safe only while bake rejects portable reuse; implementing portable
+	// block-cache semantics must add reuse to the policy hash and bake key scheme.
+	Reuse string `json:"-"`
 }
 
 type Run struct {
@@ -394,6 +397,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	effectiveWarmup := lowerEffectiveWarmup(warmup, dependencies.Blocks, services.Blocks)
 	mediation, err := normalizeMediation(raw.Sandbox.Mediation)
 	if err != nil {
 		return nil, err
@@ -411,7 +415,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		Dependencies:   dependencies,
 		Run:            run,
 		Resources:      resources,
-		Warmup:         warmup,
+		Warmup:         effectiveWarmup,
 		Mediation:      mediation,
 	}
 
@@ -1405,6 +1409,40 @@ func combinedStageBlockCommand(blocks []StageBlock) []string {
 		script.WriteString(")\n")
 	}
 	return []string{"sh", "-lc", script.String()}
+}
+
+func lowerEffectiveWarmup(explicit []string, dependencyBlocks, serviceBlocks []StageBlock) []string {
+	if len(explicit) == 0 && len(dependencyBlocks) == 0 && len(serviceBlocks) == 0 {
+		return nil
+	}
+	steps := make([]string, 0, len(explicit)+len(dependencyBlocks)+len(serviceBlocks))
+	steps = append(steps, explicit...)
+	steps = lowerStageBlocksIntoWarmup(steps, dependencyBlocks)
+	steps = lowerStageBlocksIntoWarmup(steps, serviceBlocks)
+	return steps
+}
+
+func lowerStageBlocksIntoWarmup(steps []string, blocks []StageBlock) []string {
+	for _, block := range blocks {
+		steps = append(steps, stageBlockWarmupStep(block))
+	}
+	return steps
+}
+
+func stageBlockWarmupStep(block StageBlock) string {
+	parts := make([]string, 0, len(block.Env)+1)
+	if len(block.Env) > 0 {
+		keys := make([]string, 0, len(block.Env))
+		for key := range block.Env {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			parts = append(parts, key+"="+shellQuote(block.Env[key]))
+		}
+	}
+	parts = append(parts, commandShellLine(block.Command))
+	return strings.Join(parts, " ")
 }
 
 func commandShellLine(command []string) string {
