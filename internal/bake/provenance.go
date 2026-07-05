@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/mediation"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
@@ -253,25 +254,16 @@ func parseGatewayServicesAnnotation(value string) ([]GatewayService, error) {
 	if err := json.Unmarshal([]byte(value), &services); err != nil {
 		return nil, fmt.Errorf("decode cleanroom gateway service provenance: %w", err)
 	}
-	if len(services) == 0 {
-		return nil, errors.New("cleanroom gateway service provenance is empty")
+	// Stamp only ever records the one fixed cleanroom binding, so anything
+	// else is forged or corrupt. This also keeps RunFromInvocation from
+	// rendering an attacker-chosen name or port into the suggested command.
+	stamped := GatewayService{
+		Name:      mediation.BoundServiceName,
+		GuestHost: mediation.GuestHostname,
+		GuestPort: mediation.GuestPort,
 	}
-	for i, service := range services {
-		if strings.TrimSpace(service.Name) == "" {
-			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d is missing name", i)
-		}
-		if !isServiceToken(service.Name) {
-			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d has invalid name %q", i, service.Name)
-		}
-		if strings.TrimSpace(service.GuestHost) == "" {
-			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d is missing guest host", i)
-		}
-		if !isServiceToken(service.GuestHost) {
-			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d has invalid guest host %q", i, service.GuestHost)
-		}
-		if service.GuestPort == 0 {
-			return nil, fmt.Errorf("cleanroom gateway service provenance entry %d contains invalid guest port 0", i)
-		}
+	if len(services) != 1 || services[0] != stamped {
+		return nil, fmt.Errorf("cleanroom gateway service provenance must be exactly %s at %s:%d", stamped.Name, stamped.GuestHost, stamped.GuestPort)
 	}
 	return services, nil
 }

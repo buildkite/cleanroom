@@ -89,13 +89,12 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 curl -fsSL -o "${tmp}/${asset}" "${base_url}/${asset}" || die "failed to download ${asset}"
-if curl -fsSL -o "${tmp}/checksums.txt" "${base_url}/checksums.txt"; then
-  expected="$(awk -v name="$asset" '$2 == name {print $1}' "${tmp}/checksums.txt")"
-  [ -n "$expected" ] || die "checksum for ${asset} not found"
-  actual="$(sha256_file "${tmp}/${asset}")"
-  [ "$expected" = "$actual" ] || die "checksum mismatch for ${asset}"
-  log "Verified checksum"
-fi
+curl -fsSL -o "${tmp}/checksums.txt" "${base_url}/checksums.txt" || die "failed to download checksums.txt; refusing to install unverified binaries"
+expected="$(awk -v name="$asset" '$2 == name {print $1}' "${tmp}/checksums.txt")"
+[ -n "$expected" ] || die "checksum for ${asset} not found"
+actual="$(sha256_file "${tmp}/${asset}")"
+[ "$expected" = "$actual" ] || die "checksum mismatch for ${asset}"
+log "Verified checksum"
 
 tar -xzf "${tmp}/${asset}" -C "$tmp"
 [ -f "${tmp}/cleanroom" ] || die "archive did not contain the cleanroom binary"

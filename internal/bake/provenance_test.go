@@ -218,9 +218,9 @@ func TestParseProvenanceFailsClosed(t *testing.T) {
 		{
 			name: "gateway service without name",
 			annotations: withAnnotations(map[string]string{
-				AnnotationPrefix + "gateway.services": `[{"guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
+				AnnotationPrefix + "gateway.services": `[{"guest_host":"cleanroom-gateway.spore.internal","guest_port":8170}]`,
 			}),
-			contains: "missing name",
+			contains: "must be exactly cleanroom-gateway",
 		},
 		{
 			name: "control characters in fact",
@@ -234,7 +234,15 @@ func TestParseProvenanceFailsClosed(t *testing.T) {
 			annotations: withAnnotations(map[string]string{
 				AnnotationPrefix + "gateway.services": `[{"name":"g=unix:x '; rm -rf ~","guest_host":"gateway.internal","guest_port":8170}]`,
 			}),
-			contains: "invalid name",
+			contains: "must be exactly cleanroom-gateway",
+		},
+		{
+			name: "gateway service with forged port",
+			annotations: withAnnotations(map[string]string{
+				AnnotationPrefix + "mediation.services": `["github-token"]`,
+				AnnotationPrefix + "gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"cleanroom-gateway.spore.internal","guest_port":80}]`,
+			}),
+			contains: "must be exactly cleanroom-gateway",
 		},
 		{
 			name: "network host with spaces",
@@ -267,12 +275,12 @@ func TestParseProvenanceFailsClosed(t *testing.T) {
 func TestParseProvenanceGatewayServices(t *testing.T) {
 	prov, err := ParseProvenance(withAnnotations(map[string]string{
 		AnnotationPrefix + "mediation.services": `["github-token"]`,
-		AnnotationPrefix + "gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"gateway.cleanroom.internal","guest_port":8170}]`,
+		AnnotationPrefix + "gateway.services":   `[{"name":"cleanroom-gateway","guest_host":"cleanroom-gateway.spore.internal","guest_port":8170}]`,
 	}))
 	if err != nil {
 		t.Fatalf("parse provenance: %v", err)
 	}
-	want := []GatewayService{{Name: "cleanroom-gateway", GuestHost: "gateway.cleanroom.internal", GuestPort: 8170}}
+	want := []GatewayService{{Name: "cleanroom-gateway", GuestHost: "cleanroom-gateway.spore.internal", GuestPort: 8170}}
 	if !reflect.DeepEqual(prov.GatewayServices, want) {
 		t.Fatalf("gateway services = %#v", prov.GatewayServices)
 	}
