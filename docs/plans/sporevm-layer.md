@@ -382,7 +382,7 @@ plus the drift case: a new commit in the source repository fails the
 
 ### Slice 5: Gateway Per Lineage
 
-Status: implemented in this branch; OCI-guest reachability blocked upstream.
+Status: done, verified end to end on 2026-07-05 after upstream #360.
 
 - `cleanroom gateway serve --for <spore>` (verifies provenance) or `--dir
   <repo>` (bake-time) resolves requested ∩ granted from the XDG grants config
@@ -399,23 +399,21 @@ Status: implemented in this branch; OCI-guest reachability blocked upstream.
   (authorization is by socket, never by that header).
 - `cleanroom bake --gateway-socket` binds the live gateway during warmup;
   mediation-without-socket and socket-without-mediation both fail closed.
-- Verified live on the minimal initrd: guest → bound socket → cleanroom
-  gateway → credential injection → canary-guarded upstream returns
-  `mediated-ok`; a guest-forged credential is ignored (gateway injects the
-  real one); host-side grant resolution and fail-closed paths are unit-tested.
-- Blocked: bound-service `NAME.spore.internal` DNS returns SERVFAIL for
-  OCI/musl guests (netd answers on `100.96.0.1`; works for the minimal
-  initrd), so bake-time and OCI-guest mediation cannot resolve the gateway
-  host yet. Same DNS-answer class as the egress bug. Filing upstream; the
-  gateway, policy, provenance, verify, and bake wiring are all complete and
-  will light up when that lands.
+- The OCI/musl guest bound-service DNS gap this slice first hit was fixed
+  upstream in sporevm #360 (AAAA queries for a v4-only bound service now
+  return NOERROR instead of SERVFAIL), so OCI-guest and bake-time mediation
+  resolve the gateway host.
 
-Done when a fan-out batch of forked children all reach one gateway through a
-shared bound socket, per-child attribution appears in gateway logs, and no
-credential material appears in the captured spore (checked by grepping guest
-disk and a memory-chunk scan for a known canary secret). The composition is
-proven on the minimal initrd; the OCI-guest and fork variants wait on the
-upstream bound-service DNS fix.
+Done, verified live end to end on an OCI (alpine/musl) guest: `cleanroom bake
+--gateway-socket` runs a warmup step that fetches through the bound gateway
+socket (`mediated-ok`); `spore fork --count 3` of the artifact then has all
+three children reach the one gateway through a single shared
+`--bind-service` socket, each logged under its own generation identity
+(`spore-<id>-000000/1/2`); a guest-forged credential is ignored (the gateway
+injects the real one); and the canary credential is absent from the captured
+spore while the mediated response is present — proving the secret stayed
+host-side. Host-side grant resolution, fail-closed paths, path-traversal
+rejection, and socket permissions are unit-tested.
 
 ### Slice 6: Release And CI
 
