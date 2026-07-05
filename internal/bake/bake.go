@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/mediation"
@@ -62,7 +63,7 @@ func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	facts := CollectGitFacts(options.Dir)
+	facts := CollectGitFactsExcluding(options.Dir, outExclusions(options.Dir, out))
 	key := Key(compiled, facts)
 	if facts.Dirty {
 		fmt.Fprintln(options.Log, "cleanroom bake: workspace has uncommitted changes; artifact records workspace.git.dirty=true and is never treated as cache-fresh")
@@ -204,6 +205,25 @@ func gatewayCreateArgs(compiled *policy.CompiledPolicy, socketPath string, netwo
 	}
 	declaration := fmt.Sprintf("%s:%d=unix:%s", mediation.BoundServiceName, mediation.GuestPort, socketPath)
 	return []string{"--bind-service", declaration}, nil
+}
+
+// outExclusions returns the output spore path relative to the repository dir
+// when the output lives inside it, so git dirty detection ignores the
+// artifact bake itself writes. An output outside the repo needs no exclusion.
+func outExclusions(dir, out string) []string {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil
+	}
+	absOut, err := filepath.Abs(out)
+	if err != nil {
+		return nil
+	}
+	rel, err := filepath.Rel(absDir, absOut)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return nil
+	}
+	return []string{rel}
 }
 
 func builderName(key string) string {

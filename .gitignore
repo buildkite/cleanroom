@@ -11,3 +11,5 @@
 
 # Stray root build output (use dist/ or go build -o)
 /cleanroom
+/cleanroom-guest-agent
+/cleanroom-vmnet-echo

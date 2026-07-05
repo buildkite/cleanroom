@@ -109,6 +109,14 @@ type GitFacts struct {
 // CollectGitFacts reads git facts for a workspace directory. Missing git or a
 // non-repository directory yields zero facts, not an error.
 func CollectGitFacts(cwd string) GitFacts {
+	return CollectGitFactsExcluding(cwd, nil)
+}
+
+// CollectGitFactsExcluding is CollectGitFacts but ignores the given paths
+// (relative to cwd) when deciding dirty state. Bake passes its output spore
+// path so a `--out` inside the repository is not mistaken for uncommitted
+// source, which would otherwise break the idempotent-rebake path.
+func CollectGitFactsExcluding(cwd string, excludeRel []string) GitFacts {
 	if strings.TrimSpace(cwd) == "" {
 		return GitFacts{}
 	}
@@ -120,7 +128,18 @@ func CollectGitFacts(cwd string) GitFacts {
 	if remote, err := gitOutput(cwd, "config", "--get", "remote.origin.url"); err == nil {
 		facts.Remote = remote
 	}
-	if status, err := gitOutput(cwd, "status", "--porcelain"); err == nil {
+	statusArgs := []string{"status", "--porcelain"}
+	if len(excludeRel) > 0 {
+		statusArgs = append(statusArgs, "--", ".")
+		for _, rel := range excludeRel {
+			rel = strings.TrimSpace(rel)
+			if rel == "" {
+				continue
+			}
+			statusArgs = append(statusArgs, ":(exclude)"+rel, ":(exclude)"+rel+"/**")
+		}
+	}
+	if status, err := gitOutput(cwd, statusArgs...); err == nil {
 		facts.Dirty = strings.TrimSpace(status) != ""
 		facts.HasGit = true
 	}

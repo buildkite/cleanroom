@@ -103,6 +103,38 @@ func TestStampRecordsGitFactsWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestCollectGitFactsExcludingIgnoresOutArtifact(t *testing.T) {
+	cwd := t.TempDir()
+	runGit(t, cwd, "init")
+	runGit(t, cwd, "config", "user.email", "cleanroom-test@example.com")
+	runGit(t, cwd, "config", "user.name", "Cleanroom Test")
+	if err := os.WriteFile(filepath.Join(cwd, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGit(t, cwd, "add", "README.md")
+	runGit(t, cwd, "-c", "commit.gpgsign=false", "commit", "-m", "initial")
+
+	// Simulate a prior `bake --out repo.spore` writing inside the repo.
+	if err := os.WriteFile(filepath.Join(cwd, "repo.spore"), []byte("artifact"), 0o644); err != nil {
+		t.Fatalf("write repo.spore: %v", err)
+	}
+
+	if facts := CollectGitFacts(cwd); !facts.Dirty {
+		t.Fatal("CollectGitFacts should report dirty when artifact is present")
+	}
+	if facts := CollectGitFactsExcluding(cwd, []string{"repo.spore"}); facts.Dirty {
+		t.Fatal("CollectGitFactsExcluding should not treat the bake artifact as uncommitted source")
+	}
+
+	// A genuinely dirty file still counts even with the exclusion.
+	if err := os.WriteFile(filepath.Join(cwd, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty.txt: %v", err)
+	}
+	if facts := CollectGitFactsExcluding(cwd, []string{"repo.spore"}); !facts.Dirty {
+		t.Fatal("CollectGitFactsExcluding should still report other uncommitted changes")
+	}
+}
+
 func TestAnnotationArgsAreSortedAndPaired(t *testing.T) {
 	got := AnnotationArgs(map[string]string{
 		"b.key": "2",

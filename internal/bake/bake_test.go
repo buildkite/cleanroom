@@ -218,6 +218,33 @@ func TestRunRequiresMinimumSporeVersion(t *testing.T) {
 	}
 }
 
+func TestOutExclusions(t *testing.T) {
+	dir := t.TempDir()
+	tests := []struct {
+		name string
+		out  string
+		want []string
+	}{
+		{"inside repo", filepath.Join(dir, "repo.spore"), []string{"repo.spore"}},
+		{"nested inside repo", filepath.Join(dir, "dist", "repo.spore"), []string{filepath.Join("dist", "repo.spore")}},
+		{"outside repo", filepath.Join(t.TempDir(), "repo.spore"), nil},
+		{"out equals dir", dir, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := outExclusions(dir, tc.out)
+			if len(got) != len(tc.want) {
+				t.Fatalf("outExclusions(%q, %q) = %v, want %v", dir, tc.out, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("outExclusions(%q, %q) = %v, want %v", dir, tc.out, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	tests := []struct {
 		a, b string
