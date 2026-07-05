@@ -32,11 +32,16 @@ Expected output:
 basic-example-ok
 ```
 
-Check the artifact's provenance:
+Check the artifact's provenance and audit it against the repo:
 
 ```bash
-spore --json inspect basic.spore | cleanroom verify --dir .
+cleanroom verify basic.spore --dir .
 ```
+
+(The positional spore path lets the audit exclude the in-repo artifact from
+git dirty detection; the stdin form `spore --json inspect ... | cleanroom
+verify` has no path to exclude, so pair it with an artifact stored outside
+the repository.)
 
 Rebaking without changing the policy or the repo is a no-op:
 

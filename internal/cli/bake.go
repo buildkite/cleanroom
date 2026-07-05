@@ -7,7 +7,7 @@ import (
 type BakeCommand struct {
 	Dir           string `arg:"" optional:"" default:"." help:"Repository directory containing cleanroom policy"`
 	Out           string `name:"out" required:"" help:"Output spore directory"`
-	GatewaySocket string `name:"gateway-socket" help:"Live gateway Unix socket to bind as gateway.cleanroom.internal:8170 (required when policy requests mediation services)"`
+	GatewaySocket string `name:"gateway-socket" help:"Live gateway Unix socket to bind as cleanroom-gateway.spore.internal:8170 (required when policy requests mediation services)"`
 	Spore         string `help:"spore executable" default:"spore"`
 }
 

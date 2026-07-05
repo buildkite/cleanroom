@@ -19,7 +19,7 @@ import (
 const AttributionHeader = "X-Cleanroom-Client"
 
 // servicePathPrefix is the guest-visible URL namespace:
-// http://gateway.cleanroom.internal:8170/services/<name>/<path...>
+// http://cleanroom-gateway.spore.internal:8170/services/<name>/<path...>
 const servicePathPrefix = "/services/"
 
 // Server serves a resolved mediation scope on a Unix socket.
