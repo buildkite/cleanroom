@@ -6,6 +6,8 @@ shellcheck = "0.11.0"
 hyperfine = "1.20.0"
 svu = "3.4.1"
 goreleaser = "2.16.0"
+# spore is the VM runtime cleanroom bakes for; pinned for the bake E2E smoke.
+"github:sporevm/sporevm" = "0.5.1"
 
 [env]
 GOTOOLCHAIN = "local"
@@ -16,7 +18,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-auth-oidc-smoke.sh scripts/ci-bake-smoke.sh scripts/ci-buildkite-release.sh"
+run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-bake-smoke.sh scripts/ci-buildkite-release.sh"
 
 [tasks.lint-proto]
 description = "Lint protobuf schemas"

@@ -8,3 +8,6 @@
 /infra/terraform/envs/*/*.tfstate
 /infra/terraform/envs/*/*.tfstate.*
 /infra/terraform/envs/*/tfplan*
+
+# Stray root build output (use dist/ or go build -o)
+/cleanroom
