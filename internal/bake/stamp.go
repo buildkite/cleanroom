@@ -3,6 +3,7 @@ package bake
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -128,7 +129,7 @@ func CollectGitFactsExcluding(cwd string, excludeRel []string) GitFacts {
 		facts.HasGit = true
 	}
 	if remote, err := gitOutput(cwd, "config", "--get", "remote.origin.url"); err == nil {
-		facts.Remote = remote
+		facts.Remote = sanitizeRemote(remote)
 	}
 	statusArgs := []string{"status", "--porcelain"}
 	if len(excludeRel) > 0 {
@@ -160,14 +161,40 @@ func addGitAnnotations(annotations map[string]string, facts GitFacts) {
 	}
 }
 
+// sanitizeRemote strips userinfo from URL-style remotes. CI checkouts often
+// embed short-lived credentials in remote.origin.url
+// (https://x-access-token:...@github.com/org/repo.git); the remote is stamped
+// into provenance and folded into the bake key, so the credential must never
+// survive into either. SCP-style remotes (git@github.com:org/repo.git) carry
+// a conventional user, not a secret, and pass through unchanged.
+func sanitizeRemote(remote string) string {
+	if !strings.Contains(remote, "://") {
+		return remote
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.User == nil {
+		return remote
+	}
+	parsed.User = nil
+	return parsed.String()
+}
+
 func gitOutput(dir string, args ...string) (string, error) {
+	out, err := gitOutputRaw(dir, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func gitOutputRaw(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return string(out), nil
 }
 
 func annotationPath(path string) string {

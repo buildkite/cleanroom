@@ -104,6 +104,17 @@ func TestStampRecordsGitFactsWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestCollectGitFactsSanitizesCredentialedRemote(t *testing.T) {
+	cwd := t.TempDir()
+	runGit(t, cwd, "init")
+	runGit(t, cwd, "remote", "add", "origin", "https://x-access-token:secret@example.com/acme/repo.git")
+
+	facts := CollectGitFacts(cwd)
+	if facts.Remote != "https://example.com/acme/repo.git" {
+		t.Fatalf("remote = %q; credential must not survive into facts", facts.Remote)
+	}
+}
+
 func TestCollectGitFactsExcludingIgnoresOutArtifact(t *testing.T) {
 	cwd := t.TempDir()
 	runGit(t, cwd, "init")

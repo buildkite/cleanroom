@@ -102,7 +102,21 @@ func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 	}()
 
 	fmt.Fprintf(options.Log, "cleanroom bake: copying workspace into %s\n", GuestWorkspaceDir)
-	if err := options.Runner.CopyIn(builder, options.Dir, GuestWorkspaceDir); err != nil {
+	// Copy the git-visible file set, not the raw checkout: ignored files
+	// (.env, node_modules) are invisible to the bake key's dirty decision and
+	// may hold secrets, and .git can carry credentialed remote URLs. Neither
+	// belongs in the captured artifact. Non-git workspaces have no ignore
+	// semantics and copy as-is.
+	copySrc := options.Dir
+	if facts.HasGit {
+		staged, cleanupStaged, err := StageWorkspace(options.Dir, ArtifactExclusions(options.Dir, out))
+		if err != nil {
+			return Result{}, err
+		}
+		defer cleanupStaged()
+		copySrc = staged
+	}
+	if err := options.Runner.CopyIn(builder, copySrc, GuestWorkspaceDir); err != nil {
 		return Result{}, fmt.Errorf("copy workspace into builder: %w", err)
 	}
 

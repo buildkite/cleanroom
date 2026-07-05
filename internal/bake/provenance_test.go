@@ -227,7 +227,7 @@ func TestParseProvenanceGatewayServices(t *testing.T) {
 		t.Fatalf("gateway services = %#v", prov.GatewayServices)
 	}
 	invocation := prov.RunFromInvocation("./captured.spore")
-	wantInvocation := "spore run --from ./captured.spore --bind-service cleanroom-gateway=unix:/path/to/cleanroom-gateway.sock 'COMMAND'"
+	wantInvocation := "spore run --from ./captured.spore --bind-service cleanroom-gateway:8170=unix:/path/to/cleanroom-gateway.sock 'COMMAND'"
 	if invocation != wantInvocation {
 		t.Fatalf("invocation = %q, want %q", invocation, wantInvocation)
 	}

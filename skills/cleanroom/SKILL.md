@@ -66,7 +66,7 @@ or its captured artifact:
 
 ```bash
 cleanroom gateway serve --dir . --for repo.spore --socket gw.sock &
-spore run --from repo.spore --bind-service cleanroom-gateway=unix:gw.sock 'COMMAND'
+spore run --from repo.spore --bind-service cleanroom-gateway:8170=unix:gw.sock 'COMMAND'
 ```
 
 `--dir` is the trust root: grants resolve from the repository's own policy

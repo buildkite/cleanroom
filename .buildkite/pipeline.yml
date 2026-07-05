@@ -43,22 +43,6 @@ steps:
     agents:
       queue: hosted
 
-  - label: ":protobuf: Schema"
-    plugins:
-      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
-          version: "2026.5.12"
-          install_args: buf
-    command: buf lint
-    cache:
-      paths:
-        - "~/.local/share/mise"
-        - "~/.cache/mise"
-        - "~/.local/state/mise"
-      size: "20g"
-      name: "mise-cache"
-    agents:
-      queue: hosted
-
   - label: ":test_tube: Test (macOS)"
     plugins:
       - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
@@ -104,28 +88,7 @@ steps:
 
   - wait
 
-  - label: ":protobuf: Publish schema"
-    key: publish-schema
-    if: build.branch == "main" || build.tag != null
-    plugins:
-      - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
-          version: "2026.5.12"
-          install_args: buf
-    command: mise run proto:push
-    secrets:
-      - BUF_TOKEN
-    cache:
-      paths:
-        - "~/.local/share/mise"
-        - "~/.cache/mise"
-        - "~/.local/state/mise"
-      size: "20g"
-      name: "mise-cache"
-    agents:
-      queue: hosted
-
   - label: ":rocket: Publish release"
-    depends_on: publish-schema
     if: build.tag != null
     plugins:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:

@@ -46,34 +46,6 @@ func TestBuildkitePreCommandHookMintsTestEngineOIDCToken(t *testing.T) {
 	}
 }
 
-func TestBuildkitePublishSchemaUsesMiseTask(t *testing.T) {
-	t.Parallel()
-
-	content, err := os.ReadFile("../.buildkite/pipeline.yml")
-	if err != nil {
-		t.Fatalf("read .buildkite/pipeline.yml: %v", err)
-	}
-
-	pipeline := string(content)
-	if !strings.Contains(pipeline, `secrets:
-      - BUF_TOKEN`) {
-		t.Fatalf("expected publish schema step to request BUF_TOKEN as a secret")
-	}
-	if !strings.Contains(pipeline, `command: mise run proto:push`) {
-		t.Fatalf("expected publish schema step to use the proto:push mise task")
-	}
-	for _, needle := range []string{
-		`${BUF_TOKEN`,
-		`$${BUF_TOKEN`,
-		`buf push --git-metadata`,
-	} {
-		if strings.Contains(pipeline, needle) {
-			t.Fatalf("expected publish schema step not to inline %q in the pipeline command", needle)
-		}
-	}
-}
-
-
 func TestBuildkiteGoTestEngineScriptBootstrapsBktecAndRequiresGotestsum(t *testing.T) {
 	t.Parallel()
 

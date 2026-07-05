@@ -12,9 +12,9 @@ type GatewayCommand struct {
 }
 
 type GatewayServeCommand struct {
-	For    string `help:"Baked spore directory to serve; its bake key is audited against --dir before any grant resolves"`
+	For    string `help:"Baked spore directory to sanity-check: its bake key must match --dir or nothing is served (integrity check, not proof of origin)"`
 	Dir    string `required:"" help:"Repository whose policy and git facts define the lineage scope; the trust root for grants"`
-	Socket string `required:"" help:"Unix socket path to serve on; bind into VMs with spore --bind-service cleanroom-gateway=unix:PATH"`
+	Socket string `required:"" help:"Unix socket path to serve on; bind into VMs with spore --bind-service cleanroom-gateway:8170=unix:PATH"`
 	Grants string `help:"Gateway grants config (default: ~/.config/cleanroom/gateway.yaml)"`
 	Spore  string `help:"spore executable" default:"spore"`
 }
@@ -34,6 +34,12 @@ func (c *GatewayServeCommand) Run(ctx *runtimeContext) error {
 	// could otherwise forge the remote, policy hash, and mediation requests
 	// of a granted lineage. With --for, the spore's bake key must match the
 	// repository's current policy and commit before anything is served.
+	//
+	// The audit is an integrity check, not proof of origin: the bake key is
+	// a public hash, so anyone who can read the repository can mint a spore
+	// that passes it. It can only refuse service, never widen it — the
+	// authorization boundary remains the operator's choice of which VM the
+	// served socket is bound into.
 	cwd, err := resolveCWD(ctx.CWD, c.Dir)
 	if err != nil {
 		return err

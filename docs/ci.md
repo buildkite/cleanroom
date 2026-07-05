@@ -14,12 +14,6 @@ release (see `mise.toml`): it compiles a policy, bakes a spore for a scratch
 repository, restores it with `spore run --from`, rebakes to confirm the
 idempotent no-op path, forks the artifact, and verifies provenance.
 
-The protobuf schema is linted with Buf on every build and published to
-[buf.build/buildkite/cleanroom](https://buf.build/buildkite/cleanroom) after
-tests pass on `main` and tag builds. The publish step uses
-`buf push --git-metadata`, so Buildkite must expose a BSR token as `BUF_TOKEN`
-on those builds.
-
 Cleanroom does not build kernels or VM images during its release pipeline; the
 VM runtime is [spore](https://github.com/sporevm/sporevm), and the release
 ships the single `cleanroom` binary.

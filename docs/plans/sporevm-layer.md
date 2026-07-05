@@ -227,7 +227,9 @@ single party can be trusted to decide alone:
    trust root — and serves exactly that on its socket. Adding
    `--for <spore>` audits the spore's bake key against the repository first,
    so a foreign spore that forges a granted lineage's annotations is refused
-   before anything is served. The operator's act of passing the socket to
+   before anything is served. The audit is integrity, not origin
+   authentication — the bake key is a public hash — and it can only refuse
+   service, never widen it. The operator's act of passing the socket to
    `spore run --from`/`fork` connects the lineage to the grant — the same
    trust move as mounting a secret into a container, protected host-side by
    socket file permissions. The model makes grants explicit and auditable;
@@ -245,7 +247,7 @@ not the socket.
 ```console
 cleanroom gateway serve --dir . --for repo.spore --socket gw.sock &
 spore fork repo.spore --count 100 --out agents/ \
-  --bind-service cleanroom-gateway=unix:gw.sock
+  --bind-service cleanroom-gateway:8170=unix:gw.sock
 ```
 
 The gateway knows nothing about VM lifecycle. Whoever runs VMs (a developer's

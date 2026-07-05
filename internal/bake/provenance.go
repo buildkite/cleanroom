@@ -241,7 +241,9 @@ func parseGatewayServicesAnnotation(value string) ([]GatewayService, error) {
 func (p Provenance) RunFromInvocation(sporeDir string) string {
 	parts := []string{"spore", "run", "--from", QuoteArgs([]string{sporeDir})}
 	for _, service := range p.GatewayServices {
-		binding := fmt.Sprintf("%s=unix:/path/to/%s.sock", service.Name, service.Name)
+		// NAME:PORT=unix:PATH matches the create-time binding: the name-only
+		// form would bind spore's default port, not the recorded guest port.
+		binding := fmt.Sprintf("%s:%d=unix:/path/to/%s.sock", service.Name, service.GuestPort, service.Name)
 		parts = append(parts, "--bind-service", QuoteArgs([]string{binding}))
 	}
 	parts = append(parts, "'COMMAND'")

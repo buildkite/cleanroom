@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
-	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/guestenv"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"gopkg.in/yaml.v3"
@@ -823,266 +822,9 @@ func exists(path string) (bool, error) {
 	return false, err
 }
 
-// ToProto converts a CompiledPolicy to the proto Policy message.
-func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
-	if p == nil {
-		return nil
-	}
-	var resources *cleanroomv1.PolicyResources
-	if p.Resources != nil && !p.Resources.IsZero() {
-		resources = &cleanroomv1.PolicyResources{
-			Vcpus:       p.Resources.VCPUs,
-			MemoryBytes: p.Resources.MemoryBytes,
-			DiskBytes:   p.Resources.DiskBytes,
-		}
-	}
-	return &cleanroomv1.Policy{
-		Version:     int32(p.Version),
-		ImageRef:    p.ImageRef,
-		ImageDigest: p.ImageDigest,
-		Docker: &cleanroomv1.PolicyDocker{
-			Required: p.Docker.Required,
-		},
-		Services:       &cleanroomv1.PolicyServices{Blocks: stageBlocksToProto(p.Services.Blocks)},
-		NetworkDefault: p.NetworkDefault,
-		Allow:          allowRulesToProto(p.Allow),
-		NetworkStages:  networkStagesToProto(p.NetworkStages),
-		Dependencies: &cleanroomv1.PolicyDependencies{
-			Reuse:  p.Dependencies.Reuse,
-			Blocks: stageBlocksToProto(p.Dependencies.Blocks),
-		},
-		Run: &cleanroomv1.PolicyRun{
-			Before: append([]string(nil), p.Run.Before...),
-		},
-		Resources: resources,
-		Hash:      p.Hash,
-	}
-}
-
-func allowRulesToProto(rules []AllowRule) []*cleanroomv1.PolicyAllowRule {
-	allow := make([]*cleanroomv1.PolicyAllowRule, 0, len(rules))
-	for _, rule := range rules {
-		ports := make([]int32, 0, len(rule.Ports))
-		for _, port := range rule.Ports {
-			ports = append(ports, int32(port))
-		}
-		allow = append(allow, &cleanroomv1.PolicyAllowRule{
-			Host:  rule.Host,
-			Ports: ports,
-		})
-	}
-	return allow
-}
-
-func networkPolicyToProto(p *NetworkPolicy) *cleanroomv1.PolicyNetwork {
-	if p == nil {
-		return nil
-	}
-	return &cleanroomv1.PolicyNetwork{
-		Allow: allowRulesToProto(p.Allow),
-	}
-}
-
-func networkStagesToProto(stages *NetworkStagePolicies) *cleanroomv1.PolicyNetworkStages {
-	if stages == nil || !stages.HasAny() {
-		return nil
-	}
-	return &cleanroomv1.PolicyNetworkStages{
-		Workspace:    networkPolicyToProto(stages.Workspace),
-		Dependencies: networkPolicyToProto(stages.Dependencies),
-		Services:     networkPolicyToProto(stages.Services),
-		Execution:    networkPolicyToProto(stages.Execution),
-	}
-}
-
-func normalizeProtoAllowRules(rules []*cleanroomv1.PolicyAllowRule) ([]AllowRule, error) {
-	allow := make([]AllowRule, 0, len(rules))
-	for _, rule := range rules {
-		host, err := normalizeAllowRuleHost(rule.GetHost())
-		if err != nil {
-			return nil, err
-		}
-		ports := make([]int, 0, len(rule.GetPorts()))
-		seen := map[int]struct{}{}
-		for _, port := range rule.GetPorts() {
-			if port < 1 || port > 65535 {
-				return nil, fmt.Errorf("allow rule for host %q contains invalid port %d", host, port)
-			}
-			candidate := int(port)
-			if _, ok := seen[candidate]; ok {
-				continue
-			}
-			seen[candidate] = struct{}{}
-			ports = append(ports, candidate)
-		}
-		if len(ports) == 0 {
-			return nil, fmt.Errorf("allow rule for host %q must include at least one port", host)
-		}
-		sort.Ints(ports)
-		allow = append(allow, AllowRule{Host: host, Ports: ports})
-	}
-
-	sort.Slice(allow, func(i, j int) bool {
-		return allow[i].Host < allow[j].Host
-	})
-	return allow, nil
-}
-
-func networkPolicyFromProto(pb *cleanroomv1.PolicyNetwork) (*NetworkPolicy, error) {
-	if pb == nil {
-		return nil, nil
-	}
-	allow, err := normalizeProtoAllowRules(pb.GetAllow())
-	if err != nil {
-		return nil, err
-	}
-	return &NetworkPolicy{Allow: allow}, nil
-}
-
-func networkStagesFromProto(pb *cleanroomv1.PolicyNetworkStages) (*NetworkStagePolicies, error) {
-	if pb == nil {
-		return nil, nil
-	}
-	workspace, err := networkPolicyFromProto(pb.GetWorkspace())
-	if err != nil {
-		return nil, err
-	}
-	dependencies, err := networkPolicyFromProto(pb.GetDependencies())
-	if err != nil {
-		return nil, err
-	}
-	services, err := networkPolicyFromProto(pb.GetServices())
-	if err != nil {
-		return nil, err
-	}
-	execution, err := networkPolicyFromProto(pb.GetExecution())
-	if err != nil {
-		return nil, err
-	}
-	out := &NetworkStagePolicies{
-		Workspace:    workspace,
-		Dependencies: dependencies,
-		Services:     services,
-		Execution:    execution,
-	}
-	if !out.HasAny() {
-		return nil, nil
-	}
-	return out, nil
-}
-
-// FromProto converts a proto Policy message to a CompiledPolicy, validating required fields.
-func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
-	if pb == nil {
-		return nil, errors.New("missing policy")
-	}
-	if pb.GetVersion() == 0 {
-		return nil, errors.New("policy missing required field: version")
-	}
-	if pb.GetVersion() != 1 {
-		return nil, fmt.Errorf("unsupported policy version %d: only version 1 is supported", pb.GetVersion())
-	}
-	imageRef := strings.TrimSpace(pb.GetImageRef())
-	if imageRef == "" {
-		return nil, errors.New("policy missing required field: image_ref")
-	}
-	parsedRef, err := ociref.ParseDigestReference(imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("invalid policy image_ref: %w", err)
-	}
-	if providedDigest := strings.TrimSpace(pb.GetImageDigest()); providedDigest != "" && providedDigest != parsedRef.Digest() {
-		return nil, fmt.Errorf("policy image_digest %q does not match image_ref digest %q", providedDigest, parsedRef.Digest())
-	}
-	networkDefault := strings.TrimSpace(strings.ToLower(pb.GetNetworkDefault()))
-	if networkDefault == "" {
-		networkDefault = "deny"
-	}
-	switch networkDefault {
-	case "deny", "allow":
-	default:
-		return nil, fmt.Errorf("unsupported policy network_default %q: expected deny or allow", networkDefault)
-	}
-
-	allow, err := normalizeProtoAllowRules(pb.GetAllow())
-	if err != nil {
-		return nil, err
-	}
-	networkStages, err := networkStagesFromProto(pb.GetNetworkStages())
-	if err != nil {
-		return nil, err
-	}
-	if networkStages != nil && len(allow) > 0 {
-		return nil, errors.New("policy allow cannot be combined with stage-local network blocks")
-	}
-	if networkStages != nil && networkDefault != "deny" {
-		return nil, errors.New("policy network_default must be deny when stage-local network blocks are configured")
-	}
-
-	docker := DockerService{Required: pb.GetDocker().GetRequired()}
-	dependencies, err := dependenciesFromProto(pb.GetDependencies())
-	if err != nil {
-		return nil, err
-	}
-	services, err := servicesFromProto(pb.GetServices())
-	if err != nil {
-		return nil, err
-	}
-	if err := validatePolicyOutputRelationships(dependencies.Blocks, services.Blocks); err != nil {
-		return nil, err
-	}
-	run, err := runFromProto(pb.GetRun())
-	if err != nil {
-		return nil, err
-	}
-	resources, err := resourcesFromProto(pb.GetResources())
-	if err != nil {
-		return nil, err
-	}
-
-	compiled := &CompiledPolicy{
-		Version:        int(pb.GetVersion()),
-		ImageRef:       parsedRef.Original,
-		ImageDigest:    parsedRef.Digest(),
-		Docker:         docker,
-		Services:       services,
-		NetworkDefault: networkDefault,
-		Allow:          allow,
-		NetworkStages:  networkStages,
-		Dependencies:   dependencies,
-		Run:            run,
-		Resources:      resources,
-	}
-
-	hash, err := hashPolicy(compiled)
-	if err != nil {
-		return nil, err
-	}
-
-	if pb.GetHash() != "" && pb.GetHash() != hash {
-		return nil, fmt.Errorf("policy hash mismatch: expected %q, got %q", hash, pb.GetHash())
-	}
-	compiled.Hash = hash
-	return compiled, nil
-}
-
-// FromCreateRequestProto converts a client-supplied policy request into a
-// CompiledPolicy. Create requests must use SandboxOptions for allow-all egress
-// so the dangerous mode is explicit at the API boundary instead of hidden in
-// the policy payload.
-func FromCreateRequestProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
-	networkDefault := strings.TrimSpace(strings.ToLower(pb.GetNetworkDefault()))
-	if networkDefault == "" {
-		networkDefault = "deny"
-	}
-	if networkDefault == "allow" {
-		return nil, errors.New("policy network_default=allow is not accepted in create requests; use sandbox options for dangerously allow-all egress")
-	}
-	return FromProto(pb)
-}
-
 // DangerouslyAllowAllEgress returns a copy of compiled with outbound network
-// filtering disabled. This is intentionally separate from FromProto so callers
-// cannot smuggle allow-all egress through the policy payload.
+// filtering disabled. This is intentionally separate so callers cannot smuggle allow-all egress
+// through the policy payload.
 func DangerouslyAllowAllEgress(compiled *CompiledPolicy) (*CompiledPolicy, error) {
 	if compiled == nil {
 		return nil, errors.New("missing policy")
@@ -1126,27 +868,6 @@ func normalizeDependencies(raw rawDependencyStage, workspaceRoot string) (Depend
 	}, nil
 }
 
-func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, error) {
-	if pb == nil {
-		return Dependencies{}, nil
-	}
-	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy dependencies")
-	if err != nil {
-		return Dependencies{}, err
-	}
-	keyFiles := combinedStageBlockInputFiles(blocks)
-	reuse, err := normalizeDependencyReuse(pb.GetReuse(), keyFiles, "policy dependencies.reuse")
-	if err != nil {
-		return Dependencies{}, err
-	}
-	return Dependencies{
-		Blocks:   blocks,
-		Command:  combinedStageBlockCommand(blocks),
-		KeyFiles: keyFiles,
-		Reuse:    reuse,
-	}, nil
-}
-
 func normalizeDependencyReuse(raw string, keyFiles []string, field string) (string, error) {
 	reuse := strings.TrimSpace(strings.ToLower(raw))
 	switch reuse {
@@ -1174,34 +895,8 @@ func normalizeServices(raw rawPolicyBlocks, workspaceRoot string) (Services, err
 	}, nil
 }
 
-func servicesFromProto(pb *cleanroomv1.PolicyServices) (Services, error) {
-	if pb == nil {
-		return Services{}, nil
-	}
-	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy services")
-	if err != nil {
-		return Services{}, err
-	}
-	return Services{
-		Blocks:   blocks,
-		Command:  combinedStageBlockCommand(blocks),
-		KeyFiles: combinedStageBlockInputFiles(blocks),
-	}, nil
-}
-
 func normalizeRun(raw rawRunConfig) (Run, error) {
 	before, err := normalizeShellCommand(raw.Before, "sandbox.run.before")
-	if err != nil {
-		return Run{}, err
-	}
-	return Run{Before: before}, nil
-}
-
-func runFromProto(pb *cleanroomv1.PolicyRun) (Run, error) {
-	if pb == nil {
-		return Run{}, nil
-	}
-	before, err := normalizeShellCommand(pb.GetBefore(), "policy run.before")
 	if err != nil {
 		return Run{}, err
 	}
@@ -1227,30 +922,6 @@ func normalizeResources(raw rawResources, field string) (*Resources, error) {
 			return nil, fmt.Errorf("%s.disk must be positive", field)
 		}
 		resources.DiskBytes = int64(*raw.Disk)
-	}
-	if resources.IsZero() {
-		return nil, nil
-	}
-	return &resources, nil
-}
-
-func resourcesFromProto(pb *cleanroomv1.PolicyResources) (*Resources, error) {
-	if pb == nil {
-		return nil, nil
-	}
-	resources := Resources{
-		VCPUs:       pb.GetVcpus(),
-		MemoryBytes: pb.GetMemoryBytes(),
-		DiskBytes:   pb.GetDiskBytes(),
-	}
-	if resources.VCPUs < 0 {
-		return nil, errors.New("policy resources.vcpus must be non-negative")
-	}
-	if resources.MemoryBytes < 0 {
-		return nil, errors.New("policy resources.memory_bytes must be non-negative")
-	}
-	if resources.DiskBytes < 0 {
-		return nil, errors.New("policy resources.disk_bytes must be non-negative")
 	}
 	if resources.IsZero() {
 		return nil, nil
@@ -1678,48 +1349,6 @@ func pathWithinOrEqual(parent, child string) bool {
 	parent = path.Clean(parent)
 	child = path.Clean(child)
 	return child == parent || pathContains(parent, child)
-}
-
-func stageBlocksToProto(blocks []StageBlock) []*cleanroomv1.PolicyBlock {
-	out := make([]*cleanroomv1.PolicyBlock, 0, len(blocks))
-	for _, block := range blocks {
-		out = append(out, &cleanroomv1.PolicyBlock{
-			Name:    block.Name,
-			Command: append([]string(nil), block.Command...),
-			Inputs: &cleanroomv1.PolicyBlockInputs{
-				Files: append([]string(nil), block.Inputs.Files...),
-			},
-			Env: cloneStringMap(block.Env),
-			Outputs: &cleanroomv1.PolicyBlockOutputs{
-				Dirs:  append([]string(nil), block.Outputs.Dirs...),
-				Files: append([]string(nil), block.Outputs.Files...),
-			},
-		})
-	}
-	return out
-}
-
-func stageBlocksFromProto(blocks []*cleanroomv1.PolicyBlock, field string) ([]StageBlock, error) {
-	raw := make([]rawPolicyBlock, 0, len(blocks))
-	for _, block := range blocks {
-		if block == nil {
-			raw = append(raw, rawPolicyBlock{})
-			continue
-		}
-		raw = append(raw, rawPolicyBlock{
-			Name:    block.GetName(),
-			Command: rawDependencyCommandSpec(append([]string(nil), block.GetCommand()...)),
-			Inputs: rawPolicyBlockInputs{
-				Files: append([]string(nil), block.GetInputs().GetFiles()...),
-			},
-			Env: cloneStringMap(block.GetEnv()),
-			Outputs: rawPolicyBlockOutputs{
-				Dirs:  append([]string(nil), block.GetOutputs().GetDirs()...),
-				Files: append([]string(nil), block.GetOutputs().GetFiles()...),
-			},
-		})
-	}
-	return normalizeStageBlocks(raw, field+".blocks", defaultBlockWorkspace)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
