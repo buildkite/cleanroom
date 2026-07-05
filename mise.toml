@@ -1,11 +1,12 @@
 [tools]
 go = "1.26.4"
-buf = "1.71.0"
 gotestsum = "1.13.0"
 shellcheck = "0.11.0"
 hyperfine = "1.20.0"
 svu = "3.4.1"
 goreleaser = "2.16.0"
+# spore is the VM runtime cleanroom bakes for; pinned for the bake E2E smoke.
+"github:sporevm/sporevm" = "0.5.1"
 
 [env]
 GOTOOLCHAIN = "local"
@@ -16,11 +17,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-with-host-lock.sh scripts/ci-go-test-engine.sh scripts/ci-auth-oidc-smoke.sh scripts/ci-example-smoke.sh scripts/ci-examples-firecracker.sh scripts/ci-examples-darwin-vz.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh"
-
-[tasks.lint-proto]
-description = "Lint protobuf schemas"
-run = "buf lint"
+run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-bake-smoke.sh scripts/ci-buildkite-release.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
@@ -29,18 +26,6 @@ run = "go test ./..."
 [tasks."build:go"]
 description = "Build Go binaries into dist/"
 run = "scripts/build-go.sh"
-
-[tasks."build:darwin"]
-description = "Build macOS darwin-vz helper into dist/"
-run = "{% if os() == \"macos\" %}scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app{% else %}true{% endif %}"
-
-[tasks."build:kernel:darwin-vz-minimal-initrd"]
-description = "Build minimal darwin-vz initrd-profile Linux kernel into dist/"
-run = "CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_PROFILE=initrd benchmarks/darwin-vz/minimal/build-kernel.sh"
-
-[tasks."build:kernel:darwin-vz-minimal-rootfs"]
-description = "Build minimal darwin-vz rootfs-profile Linux kernel into dist/"
-run = "CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_PROFILE=rootfs benchmarks/darwin-vz/minimal/build-kernel.sh"
 
 [tasks."build:image:alpine"]
 description = "Build local alpine base image"
@@ -85,52 +70,22 @@ run = "true"
 
 [tasks.build]
 description = "Build binaries into dist/"
-depends = ["build:go", "build:darwin"]
+depends = ["build:go"]
 run = "true"
 
 [tasks."install:go"]
 description = "Install Go binaries into GOBIN (or GOPATH/bin)"
 run = "scripts/install-go.sh"
 
-[tasks."install:darwin"]
-description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
-depends = ["build:darwin"]
-run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; mkdir -p \"$BIN_DIR\" && scripts/build-darwin-vz-helper.sh \"$BIN_DIR/cleanroom-darwin-vz.app\"{% else %}true{% endif %}"
-
 [tasks.install]
-description = "Install all binaries into GOBIN (or GOPATH/bin)"
-depends = ["install:go", "install:darwin"]
+description = "Install the cleanroom CLI into GOBIN (or GOPATH/bin)"
+depends = ["install:go"]
 run = "true"
-
-[tasks."install:global"]
-description = "Install all runtime binaries into /usr/local/bin"
-depends = ["build"]
-run = "scripts/install-global.sh"
-
-[tasks.doctor]
-description = "Run cleanroom diagnostics"
-run = "go run ./cmd/cleanroom doctor"
-
-[tasks.doctor-json]
-description = "Run cleanroom diagnostics as JSON"
-run = "go run ./cmd/cleanroom doctor --json"
-
-[tasks."observability:up"]
-description = "Start the local observability stack"
-run = "docker compose -f examples/observability/docker-compose.yaml up -d"
-
-[tasks."observability:down"]
-description = "Stop the local observability stack"
-run = "docker compose -f examples/observability/docker-compose.yaml down -v"
 
 [tasks.check]
 description = "Run build, test, and lint"
-depends = ["build", "test", "lint-shell", "lint-proto"]
+depends = ["build", "test", "lint-shell"]
 run = "true"
-
-[tasks."proto:push"]
-description = "Publish protobuf schemas to the Buf Schema Registry"
-run = "buf push --git-metadata"
 
 [tasks.release]
 description = "Tag the next version and push to trigger a release"

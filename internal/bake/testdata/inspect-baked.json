@@ -1,0 +1,58 @@
+{
+  "version": 0,
+  "vcpu_count": 1,
+  "platform": {
+    "arch": "aarch64",
+    "cpu_profile": "sporevm-aarch64-v0",
+    "device_model_version": 4,
+    "ram_base": 2147483648,
+    "ram_size": 1000013824,
+    "gic_dist_base": 134217728,
+    "gic_redist_base": 134283264,
+    "counter_frequency_hz": 24000000
+  },
+  "device_count": 5,
+  "memory_chunk_count": 477,
+  "present_memory_chunk_count": 21,
+  "memory_backing_kind": "map-private-file-v0",
+  "memory_backing_size": 1000013824,
+  "gic_kind": "backend_private",
+  "sessions": [],
+  "network": {
+    "kind": "spore-net-v0",
+    "requirements": {
+      "tcp_ipv4": true,
+      "exact_host_port": true,
+      "bound_services": false
+    },
+    "bound_services": []
+  },
+  "annotations": {
+    "dev.buildkite.cleanroom.bake.key": "7b6ae7a76fae48d7593859212e9fcf554584206b26ade9de15358e1b861fdf82",
+    "dev.buildkite.cleanroom.image.digest": "sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9",
+    "dev.buildkite.cleanroom.image.ref": "ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9",
+    "dev.buildkite.cleanroom.network.rules": "[{\"host\":\"dl-cdn.alpinelinux.org\",\"ports\":[443]}]",
+    "dev.buildkite.cleanroom.policy.hash": "b6211b0418cf14ac0f49924dcd2ed9e2d4103954a46ae3743e8c896623698cf9",
+    "dev.buildkite.cleanroom.policy.source": "/tmp/fix-repo/cleanroom.yaml",
+    "dev.buildkite.cleanroom.provenance.version": "1",
+    "dev.buildkite.cleanroom.version": "dev",
+    "dev.buildkite.cleanroom.workspace.dir": "/tmp/fix-repo",
+    "dev.buildkite.cleanroom.workspace.git.commit": "940b0e056f712b3c7faa1c8f405db2304f8ced5e",
+    "dev.buildkite.cleanroom.workspace.git.dirty": "false",
+    "dev.buildkite.cleanroom.workspace.git.remote": "https://example.com/acme/fixture.git"
+  },
+  "annotation_keys": [
+    "dev.buildkite.cleanroom.bake.key",
+    "dev.buildkite.cleanroom.image.digest",
+    "dev.buildkite.cleanroom.image.ref",
+    "dev.buildkite.cleanroom.network.rules",
+    "dev.buildkite.cleanroom.policy.hash",
+    "dev.buildkite.cleanroom.policy.source",
+    "dev.buildkite.cleanroom.provenance.version",
+    "dev.buildkite.cleanroom.version",
+    "dev.buildkite.cleanroom.workspace.dir",
+    "dev.buildkite.cleanroom.workspace.git.commit",
+    "dev.buildkite.cleanroom.workspace.git.dirty",
+    "dev.buildkite.cleanroom.workspace.git.remote"
+  ]
+}

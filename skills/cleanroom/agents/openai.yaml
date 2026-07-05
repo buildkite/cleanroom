@@ -1,4 +1,4 @@
 interface:
   display_name: "Cleanroom"
-  short_description: "Run work in Cleanroom sandboxes"
-  default_prompt: "Use $cleanroom to run this task inside a Cleanroom sandbox."
+  short_description: "Bake repositories into warm SporeVM snapshots"
+  default_prompt: "Use $cleanroom to bake this repository into a warm spore and run the task with spore run --from."

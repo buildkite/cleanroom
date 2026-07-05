@@ -17,17 +17,14 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
-	"github.com/buildkite/cleanroom/internal/exposure"
-	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/guestenv"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	PrimaryPolicyPath             = "cleanroom.yaml"
-	FallbackPolicyPath            = ".buildkite/cleanroom.yaml"
-	ExposeHTTPSPreflightSandboxID = "00000000000000000000000000"
+	PrimaryPolicyPath  = "cleanroom.yaml"
+	FallbackPolicyPath = ".buildkite/cleanroom.yaml"
 )
 
 var ErrPolicyNotFound = errors.New("policy not found")
@@ -35,10 +32,8 @@ var ErrPolicyNotFound = errors.New("policy not found")
 type Loader struct{}
 
 type rawPolicy struct {
-	Version    int            `yaml:"version"`
-	Repository *rawRepository `yaml:"repository"`
-	Expose     rawExpose      `yaml:"expose"`
-	Sandbox    struct {
+	Version int `yaml:"version"`
+	Sandbox struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
@@ -48,30 +43,13 @@ type rawPolicy struct {
 		Services     rawPolicyBlocks    `yaml:"services"`
 		Resources    rawResources       `yaml:"resources"`
 		Network      rawSandboxNetwork  `yaml:"network"`
+		Warmup       []string           `yaml:"warmup"`
+		Mediation    rawMediation       `yaml:"mediation"`
 	} `yaml:"sandbox"`
 }
 
-type rawRepository struct {
-	Enabled    *bool                  `yaml:"enabled"`
-	Mode       string                 `yaml:"mode"`
-	Remote     string                 `yaml:"remote"`
-	Path       string                 `yaml:"path"`
-	Submodules bool                   `yaml:"submodules"`
-	Network    *rawStageNetworkConfig `yaml:"network"`
-}
-
-type rawExpose struct {
-	HTTPS rawExposeHTTPS `yaml:"https"`
-}
-
-type rawExposeHTTPS struct {
-	Base   string                `yaml:"base"`
-	Routes []rawExposeHTTPSRoute `yaml:"routes"`
-}
-
-type rawExposeHTTPSRoute struct {
-	Port  int      `yaml:"port"`
-	Hosts []string `yaml:"hosts"`
+type rawMediation struct {
+	Services []string `yaml:"services"`
 }
 
 type rawDependencyCommandSpec []string
@@ -148,37 +126,9 @@ type CompiledPolicy struct {
 	Dependencies   Dependencies          `json:"dependencies"`
 	Run            Run                   `json:"run"`
 	Resources      *Resources            `json:"resources,omitempty"`
+	Warmup         []string              `json:"warmup,omitempty"`
+	Mediation      []string              `json:"mediation,omitempty"`
 	Hash           string                `json:"hash"`
-}
-
-type RepositoryConfig struct {
-	Implicit   bool   `json:"-"`
-	Mode       string `json:"mode"`
-	Remote     string `json:"remote"`
-	Path       string `json:"path"`
-	Submodules bool   `json:"submodules"`
-}
-
-type ExposeConfig struct {
-	HTTPS ExposeHTTPSConfig `json:"https,omitempty"`
-}
-
-func (c ExposeConfig) IsZero() bool {
-	return c.HTTPS.IsZero()
-}
-
-type ExposeHTTPSConfig struct {
-	Base   string             `json:"base,omitempty"`
-	Routes []ExposeHTTPSRoute `json:"routes,omitempty"`
-}
-
-func (c ExposeHTTPSConfig) IsZero() bool {
-	return strings.TrimSpace(c.Base) == "" && len(c.Routes) == 0
-}
-
-type ExposeHTTPSRoute struct {
-	Port  int      `json:"port"`
-	Hosts []string `json:"hosts"`
 }
 
 type Services struct {
@@ -328,12 +278,6 @@ func normalizeRawStageNetwork(raw *rawStageNetworkConfig) (*NetworkPolicy, error
 func normalizeRawNetworkStages(raw rawPolicy) (*NetworkStagePolicies, error) {
 	var out NetworkStagePolicies
 	var err error
-	if raw.Repository != nil {
-		out.Workspace, err = normalizeRawStageNetwork(raw.Repository.Network)
-		if err != nil {
-			return nil, err
-		}
-	}
 	out.Dependencies, err = normalizeRawStageNetwork(raw.Sandbox.Network.Dependencies)
 	if err != nil {
 		return nil, err
@@ -351,81 +295,6 @@ func normalizeRawNetworkStages(raw rawPolicy) (*NetworkStagePolicies, error) {
 	}
 	return &out, nil
 }
-
-func normalizeExposeConfig(raw rawExpose) (ExposeConfig, error) {
-	https, err := normalizeExposeHTTPSConfig(raw.HTTPS)
-	if err != nil {
-		return ExposeConfig{}, err
-	}
-	return ExposeConfig{HTTPS: https}, nil
-}
-
-func normalizeExposeHTTPSConfig(raw rawExposeHTTPS) (ExposeHTTPSConfig, error) {
-	base := strings.TrimSpace(strings.ToLower(raw.Base))
-	if base == "" && len(raw.Routes) == 0 {
-		return ExposeHTTPSConfig{}, nil
-	}
-	if len(raw.Routes) == 0 {
-		return ExposeHTTPSConfig{}, errors.New("expose.https.routes must include at least one route")
-	}
-	expandedBase := base
-	if expandedBase != "" {
-		expandedBase = expandExposeHTTPSTemplate(expandedBase, ExposeHTTPSPreflightSandboxID, "")
-		expandedBase = strings.TrimSpace(strings.ToLower(expandedBase))
-	}
-	if strings.TrimSpace(raw.Base) != "" && expandedBase == "" {
-		return ExposeHTTPSConfig{}, errors.New("expose.https.base expanded to an empty host")
-	}
-	routes := make([]ExposeHTTPSRoute, 0, len(raw.Routes))
-	seenExpandedHosts := map[string]string{}
-	for i, route := range raw.Routes {
-		field := fmt.Sprintf("expose.https.routes[%d]", i)
-		if route.Port < 1 || route.Port > 65535 {
-			return ExposeHTTPSConfig{}, fmt.Errorf("%s.port must be in range 1-65535", field)
-		}
-		if len(route.Hosts) == 0 {
-			return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts must include at least one host", field)
-		}
-		hosts := make([]string, 0, len(route.Hosts))
-		seenInRoute := map[string]struct{}{}
-		for j, host := range route.Hosts {
-			host = strings.TrimSpace(strings.ToLower(host))
-			if host == "" {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] cannot be empty", field, j)
-			}
-			if strings.Contains(host, "{base}") && expandedBase == "" {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] uses {base} but expose.https.base is empty", field, j)
-			}
-			expandedHost := expandExposeHTTPSTemplate(host, ExposeHTTPSPreflightSandboxID, expandedBase)
-			expandedHost = strings.TrimSpace(strings.ToLower(expandedHost))
-			if expandedHost == "" {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] expanded to an empty host", field, j)
-			}
-			if err := exposure.ValidateHTTPSRouteName(expandedHost); err != nil {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] is invalid: %w", field, j, err)
-			}
-			if _, ok := seenInRoute[expandedHost]; ok {
-				continue
-			}
-			if previous, ok := seenExpandedHosts[expandedHost]; ok {
-				return ExposeHTTPSConfig{}, fmt.Errorf("%s.hosts[%d] duplicates configured host %q already declared at %s", field, j, expandedHost, previous)
-			}
-			seenInRoute[expandedHost] = struct{}{}
-			seenExpandedHosts[expandedHost] = fmt.Sprintf("%s.hosts[%d]", field, j)
-			hosts = append(hosts, host)
-		}
-		routes = append(routes, ExposeHTTPSRoute{Port: route.Port, Hosts: hosts})
-	}
-	return ExposeHTTPSConfig{Base: base, Routes: routes}, nil
-}
-
-func expandExposeHTTPSTemplate(value, sandboxID, base string) string {
-	value = strings.ReplaceAll(value, "{sandbox_id}", sandboxID)
-	value = strings.ReplaceAll(value, "{container_id}", sandboxID)
-	value = strings.ReplaceAll(value, "{base}", base)
-	return value
-}
-
 func (l Loader) LoadAndCompile(root string) (*CompiledPolicy, string, error) {
 	raw, source, err := l.Load(root)
 	if err != nil {
@@ -439,33 +308,6 @@ func (l Loader) LoadAndCompile(root string) (*CompiledPolicy, string, error) {
 
 	return compiled, source, nil
 }
-
-func (l Loader) LoadRepository(root string) (RepositoryConfig, string, error) {
-	raw, source, err := l.Load(root)
-	if err != nil {
-		return RepositoryConfig{}, "", err
-	}
-
-	cfg, err := normalizeRepositoryConfig(raw.Repository)
-	if err != nil {
-		return RepositoryConfig{}, source, err
-	}
-	return cfg, source, nil
-}
-
-func (l Loader) LoadExpose(root string) (ExposeConfig, string, error) {
-	raw, source, err := l.Load(root)
-	if err != nil {
-		return ExposeConfig{}, "", err
-	}
-
-	cfg, err := normalizeExposeConfig(raw.Expose)
-	if err != nil {
-		return ExposeConfig{}, source, err
-	}
-	return cfg, source, nil
-}
-
 func (l Loader) Load(root string) (rawPolicy, string, error) {
 	primary := filepath.Join(root, PrimaryPolicyPath)
 	fallback := filepath.Join(root, FallbackPolicyPath)
@@ -528,23 +370,12 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		return nil, errors.New("sandbox.network.allow cannot be combined with stage-local network blocks")
 	}
 
-	repository, err := normalizeRepositoryConfig(raw.Repository)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := normalizeExposeConfig(raw.Expose); err != nil {
-		return nil, err
-	}
-	if err := validateRepositoryScopedBlocks(raw, repository); err != nil {
-		return nil, err
-	}
-
 	docker := normalizeDocker(raw.Sandbox.Docker)
-	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies, repository.Path)
+	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies, defaultBlockWorkspace)
 	if err != nil {
 		return nil, err
 	}
-	services, err := normalizeServices(raw.Sandbox.Services, repository.Path)
+	services, err := normalizeServices(raw.Sandbox.Services, defaultBlockWorkspace)
 	if err != nil {
 		return nil, err
 	}
@@ -556,6 +387,14 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		return nil, err
 	}
 	resources, err := normalizeResources(raw.Sandbox.Resources, "sandbox.resources")
+	if err != nil {
+		return nil, err
+	}
+	warmup, err := normalizeWarmup(raw.Sandbox.Warmup)
+	if err != nil {
+		return nil, err
+	}
+	mediation, err := normalizeMediation(raw.Sandbox.Mediation)
 	if err != nil {
 		return nil, err
 	}
@@ -572,6 +411,8 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		Dependencies:   dependencies,
 		Run:            run,
 		Resources:      resources,
+		Warmup:         warmup,
+		Mediation:      mediation,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -725,10 +566,6 @@ const (
 
 func (r Run) HasBefore() bool {
 	return len(r.Before) > 0
-}
-
-func (c RepositoryConfig) Enabled() bool {
-	return strings.TrimSpace(strings.ToLower(c.Mode)) != "" && strings.TrimSpace(strings.ToLower(c.Mode)) != "none"
 }
 
 func (c *rawShellCommandSpec) UnmarshalYAML(node *yaml.Node) error {
@@ -943,69 +780,6 @@ func dereferenceYAMLAlias(node *yaml.Node) *yaml.Node {
 	return node
 }
 
-func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
-	if raw == nil {
-		return RepositoryConfig{
-			Implicit: true,
-			Mode:     "current-repo",
-			Remote:   "origin",
-			Path:     "/workspace",
-		}, nil
-	}
-	if raw.Enabled != nil && !*raw.Enabled {
-		return RepositoryConfig{}, nil
-	}
-
-	mode := strings.TrimSpace(strings.ToLower(raw.Mode))
-	switch mode {
-	case "", "current-repo":
-		mode = "current-repo"
-	case "none":
-		return RepositoryConfig{}, nil
-	default:
-		return RepositoryConfig{}, fmt.Errorf("unsupported repository.mode %q", raw.Mode)
-	}
-
-	remote := strings.TrimSpace(raw.Remote)
-	if remote == "" {
-		remote = "origin"
-	}
-
-	repositoryPath := strings.TrimSpace(raw.Path)
-	if repositoryPath == "" {
-		repositoryPath = "/workspace"
-	}
-	if !strings.HasPrefix(repositoryPath, "/") {
-		return RepositoryConfig{}, fmt.Errorf("repository.path %q must be absolute", raw.Path)
-	}
-	repositoryPath = path.Clean(repositoryPath)
-
-	return RepositoryConfig{
-		Implicit:   false,
-		Mode:       mode,
-		Remote:     remote,
-		Path:       repositoryPath,
-		Submodules: raw.Submodules,
-	}, nil
-}
-
-func validateRepositoryScopedBlocks(raw rawPolicy, repository RepositoryConfig) error {
-	if repository.Enabled() {
-		return nil
-	}
-	if len(raw.Sandbox.Dependencies.Blocks) > 0 {
-		field := raw.Sandbox.Dependencies.blocksField
-		if field == "" {
-			field = "sandbox.dependencies"
-		}
-		return fmt.Errorf("%s cannot be declared when repository bootstrap is disabled", field)
-	}
-	if len(raw.Sandbox.Services) > 0 {
-		return errors.New("sandbox.services cannot be declared when repository bootstrap is disabled")
-	}
-	return nil
-}
-
 func readPolicy(path string) (rawPolicy, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1037,24 +811,6 @@ func CompileBytes(b []byte, source string) (*CompiledPolicy, error) {
 	return Compile(raw)
 }
 
-// CompileBytesWithRepositoryConfig parses policy YAML and returns both the
-// compiled policy and normalized repository configuration.
-func CompileBytesWithRepositoryConfig(b []byte, source string) (*CompiledPolicy, RepositoryConfig, error) {
-	raw, err := parsePolicyBytes(b, source)
-	if err != nil {
-		return nil, RepositoryConfig{}, err
-	}
-	compiled, err := Compile(raw)
-	if err != nil {
-		return nil, RepositoryConfig{}, err
-	}
-	repository, err := normalizeRepositoryConfig(raw.Repository)
-	if err != nil {
-		return nil, RepositoryConfig{}, err
-	}
-	return compiled, repository, nil
-}
-
 func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -1066,266 +822,9 @@ func exists(path string) (bool, error) {
 	return false, err
 }
 
-// ToProto converts a CompiledPolicy to the proto Policy message.
-func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
-	if p == nil {
-		return nil
-	}
-	var resources *cleanroomv1.PolicyResources
-	if p.Resources != nil && !p.Resources.IsZero() {
-		resources = &cleanroomv1.PolicyResources{
-			Vcpus:       p.Resources.VCPUs,
-			MemoryBytes: p.Resources.MemoryBytes,
-			DiskBytes:   p.Resources.DiskBytes,
-		}
-	}
-	return &cleanroomv1.Policy{
-		Version:     int32(p.Version),
-		ImageRef:    p.ImageRef,
-		ImageDigest: p.ImageDigest,
-		Docker: &cleanroomv1.PolicyDocker{
-			Required: p.Docker.Required,
-		},
-		Services:       &cleanroomv1.PolicyServices{Blocks: stageBlocksToProto(p.Services.Blocks)},
-		NetworkDefault: p.NetworkDefault,
-		Allow:          allowRulesToProto(p.Allow),
-		NetworkStages:  networkStagesToProto(p.NetworkStages),
-		Dependencies: &cleanroomv1.PolicyDependencies{
-			Reuse:  p.Dependencies.Reuse,
-			Blocks: stageBlocksToProto(p.Dependencies.Blocks),
-		},
-		Run: &cleanroomv1.PolicyRun{
-			Before: append([]string(nil), p.Run.Before...),
-		},
-		Resources: resources,
-		Hash:      p.Hash,
-	}
-}
-
-func allowRulesToProto(rules []AllowRule) []*cleanroomv1.PolicyAllowRule {
-	allow := make([]*cleanroomv1.PolicyAllowRule, 0, len(rules))
-	for _, rule := range rules {
-		ports := make([]int32, 0, len(rule.Ports))
-		for _, port := range rule.Ports {
-			ports = append(ports, int32(port))
-		}
-		allow = append(allow, &cleanroomv1.PolicyAllowRule{
-			Host:  rule.Host,
-			Ports: ports,
-		})
-	}
-	return allow
-}
-
-func networkPolicyToProto(p *NetworkPolicy) *cleanroomv1.PolicyNetwork {
-	if p == nil {
-		return nil
-	}
-	return &cleanroomv1.PolicyNetwork{
-		Allow: allowRulesToProto(p.Allow),
-	}
-}
-
-func networkStagesToProto(stages *NetworkStagePolicies) *cleanroomv1.PolicyNetworkStages {
-	if stages == nil || !stages.HasAny() {
-		return nil
-	}
-	return &cleanroomv1.PolicyNetworkStages{
-		Workspace:    networkPolicyToProto(stages.Workspace),
-		Dependencies: networkPolicyToProto(stages.Dependencies),
-		Services:     networkPolicyToProto(stages.Services),
-		Execution:    networkPolicyToProto(stages.Execution),
-	}
-}
-
-func normalizeProtoAllowRules(rules []*cleanroomv1.PolicyAllowRule) ([]AllowRule, error) {
-	allow := make([]AllowRule, 0, len(rules))
-	for _, rule := range rules {
-		host, err := normalizeAllowRuleHost(rule.GetHost())
-		if err != nil {
-			return nil, err
-		}
-		ports := make([]int, 0, len(rule.GetPorts()))
-		seen := map[int]struct{}{}
-		for _, port := range rule.GetPorts() {
-			if port < 1 || port > 65535 {
-				return nil, fmt.Errorf("allow rule for host %q contains invalid port %d", host, port)
-			}
-			candidate := int(port)
-			if _, ok := seen[candidate]; ok {
-				continue
-			}
-			seen[candidate] = struct{}{}
-			ports = append(ports, candidate)
-		}
-		if len(ports) == 0 {
-			return nil, fmt.Errorf("allow rule for host %q must include at least one port", host)
-		}
-		sort.Ints(ports)
-		allow = append(allow, AllowRule{Host: host, Ports: ports})
-	}
-
-	sort.Slice(allow, func(i, j int) bool {
-		return allow[i].Host < allow[j].Host
-	})
-	return allow, nil
-}
-
-func networkPolicyFromProto(pb *cleanroomv1.PolicyNetwork) (*NetworkPolicy, error) {
-	if pb == nil {
-		return nil, nil
-	}
-	allow, err := normalizeProtoAllowRules(pb.GetAllow())
-	if err != nil {
-		return nil, err
-	}
-	return &NetworkPolicy{Allow: allow}, nil
-}
-
-func networkStagesFromProto(pb *cleanroomv1.PolicyNetworkStages) (*NetworkStagePolicies, error) {
-	if pb == nil {
-		return nil, nil
-	}
-	workspace, err := networkPolicyFromProto(pb.GetWorkspace())
-	if err != nil {
-		return nil, err
-	}
-	dependencies, err := networkPolicyFromProto(pb.GetDependencies())
-	if err != nil {
-		return nil, err
-	}
-	services, err := networkPolicyFromProto(pb.GetServices())
-	if err != nil {
-		return nil, err
-	}
-	execution, err := networkPolicyFromProto(pb.GetExecution())
-	if err != nil {
-		return nil, err
-	}
-	out := &NetworkStagePolicies{
-		Workspace:    workspace,
-		Dependencies: dependencies,
-		Services:     services,
-		Execution:    execution,
-	}
-	if !out.HasAny() {
-		return nil, nil
-	}
-	return out, nil
-}
-
-// FromProto converts a proto Policy message to a CompiledPolicy, validating required fields.
-func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
-	if pb == nil {
-		return nil, errors.New("missing policy")
-	}
-	if pb.GetVersion() == 0 {
-		return nil, errors.New("policy missing required field: version")
-	}
-	if pb.GetVersion() != 1 {
-		return nil, fmt.Errorf("unsupported policy version %d: only version 1 is supported", pb.GetVersion())
-	}
-	imageRef := strings.TrimSpace(pb.GetImageRef())
-	if imageRef == "" {
-		return nil, errors.New("policy missing required field: image_ref")
-	}
-	parsedRef, err := ociref.ParseDigestReference(imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("invalid policy image_ref: %w", err)
-	}
-	if providedDigest := strings.TrimSpace(pb.GetImageDigest()); providedDigest != "" && providedDigest != parsedRef.Digest() {
-		return nil, fmt.Errorf("policy image_digest %q does not match image_ref digest %q", providedDigest, parsedRef.Digest())
-	}
-	networkDefault := strings.TrimSpace(strings.ToLower(pb.GetNetworkDefault()))
-	if networkDefault == "" {
-		networkDefault = "deny"
-	}
-	switch networkDefault {
-	case "deny", "allow":
-	default:
-		return nil, fmt.Errorf("unsupported policy network_default %q: expected deny or allow", networkDefault)
-	}
-
-	allow, err := normalizeProtoAllowRules(pb.GetAllow())
-	if err != nil {
-		return nil, err
-	}
-	networkStages, err := networkStagesFromProto(pb.GetNetworkStages())
-	if err != nil {
-		return nil, err
-	}
-	if networkStages != nil && len(allow) > 0 {
-		return nil, errors.New("policy allow cannot be combined with stage-local network blocks")
-	}
-	if networkStages != nil && networkDefault != "deny" {
-		return nil, errors.New("policy network_default must be deny when stage-local network blocks are configured")
-	}
-
-	docker := DockerService{Required: pb.GetDocker().GetRequired()}
-	dependencies, err := dependenciesFromProto(pb.GetDependencies())
-	if err != nil {
-		return nil, err
-	}
-	services, err := servicesFromProto(pb.GetServices())
-	if err != nil {
-		return nil, err
-	}
-	if err := validatePolicyOutputRelationships(dependencies.Blocks, services.Blocks); err != nil {
-		return nil, err
-	}
-	run, err := runFromProto(pb.GetRun())
-	if err != nil {
-		return nil, err
-	}
-	resources, err := resourcesFromProto(pb.GetResources())
-	if err != nil {
-		return nil, err
-	}
-
-	compiled := &CompiledPolicy{
-		Version:        int(pb.GetVersion()),
-		ImageRef:       parsedRef.Original,
-		ImageDigest:    parsedRef.Digest(),
-		Docker:         docker,
-		Services:       services,
-		NetworkDefault: networkDefault,
-		Allow:          allow,
-		NetworkStages:  networkStages,
-		Dependencies:   dependencies,
-		Run:            run,
-		Resources:      resources,
-	}
-
-	hash, err := hashPolicy(compiled)
-	if err != nil {
-		return nil, err
-	}
-
-	if pb.GetHash() != "" && pb.GetHash() != hash {
-		return nil, fmt.Errorf("policy hash mismatch: expected %q, got %q", hash, pb.GetHash())
-	}
-	compiled.Hash = hash
-	return compiled, nil
-}
-
-// FromCreateRequestProto converts a client-supplied policy request into a
-// CompiledPolicy. Create requests must use SandboxOptions for allow-all egress
-// so the dangerous mode is explicit at the API boundary instead of hidden in
-// the policy payload.
-func FromCreateRequestProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
-	networkDefault := strings.TrimSpace(strings.ToLower(pb.GetNetworkDefault()))
-	if networkDefault == "" {
-		networkDefault = "deny"
-	}
-	if networkDefault == "allow" {
-		return nil, errors.New("policy network_default=allow is not accepted in create requests; use sandbox options for dangerously allow-all egress")
-	}
-	return FromProto(pb)
-}
-
 // DangerouslyAllowAllEgress returns a copy of compiled with outbound network
-// filtering disabled. This is intentionally separate from FromProto so callers
-// cannot smuggle allow-all egress through the policy payload.
+// filtering disabled. This is intentionally separate so callers cannot smuggle allow-all egress
+// through the policy payload.
 func DangerouslyAllowAllEgress(compiled *CompiledPolicy) (*CompiledPolicy, error) {
 	if compiled == nil {
 		return nil, errors.New("missing policy")
@@ -1369,27 +868,6 @@ func normalizeDependencies(raw rawDependencyStage, workspaceRoot string) (Depend
 	}, nil
 }
 
-func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, error) {
-	if pb == nil {
-		return Dependencies{}, nil
-	}
-	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy dependencies")
-	if err != nil {
-		return Dependencies{}, err
-	}
-	keyFiles := combinedStageBlockInputFiles(blocks)
-	reuse, err := normalizeDependencyReuse(pb.GetReuse(), keyFiles, "policy dependencies.reuse")
-	if err != nil {
-		return Dependencies{}, err
-	}
-	return Dependencies{
-		Blocks:   blocks,
-		Command:  combinedStageBlockCommand(blocks),
-		KeyFiles: keyFiles,
-		Reuse:    reuse,
-	}, nil
-}
-
 func normalizeDependencyReuse(raw string, keyFiles []string, field string) (string, error) {
 	reuse := strings.TrimSpace(strings.ToLower(raw))
 	switch reuse {
@@ -1417,34 +895,8 @@ func normalizeServices(raw rawPolicyBlocks, workspaceRoot string) (Services, err
 	}, nil
 }
 
-func servicesFromProto(pb *cleanroomv1.PolicyServices) (Services, error) {
-	if pb == nil {
-		return Services{}, nil
-	}
-	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy services")
-	if err != nil {
-		return Services{}, err
-	}
-	return Services{
-		Blocks:   blocks,
-		Command:  combinedStageBlockCommand(blocks),
-		KeyFiles: combinedStageBlockInputFiles(blocks),
-	}, nil
-}
-
 func normalizeRun(raw rawRunConfig) (Run, error) {
 	before, err := normalizeShellCommand(raw.Before, "sandbox.run.before")
-	if err != nil {
-		return Run{}, err
-	}
-	return Run{Before: before}, nil
-}
-
-func runFromProto(pb *cleanroomv1.PolicyRun) (Run, error) {
-	if pb == nil {
-		return Run{}, nil
-	}
-	before, err := normalizeShellCommand(pb.GetBefore(), "policy run.before")
 	if err != nil {
 		return Run{}, err
 	}
@@ -1470,30 +922,6 @@ func normalizeResources(raw rawResources, field string) (*Resources, error) {
 			return nil, fmt.Errorf("%s.disk must be positive", field)
 		}
 		resources.DiskBytes = int64(*raw.Disk)
-	}
-	if resources.IsZero() {
-		return nil, nil
-	}
-	return &resources, nil
-}
-
-func resourcesFromProto(pb *cleanroomv1.PolicyResources) (*Resources, error) {
-	if pb == nil {
-		return nil, nil
-	}
-	resources := Resources{
-		VCPUs:       pb.GetVcpus(),
-		MemoryBytes: pb.GetMemoryBytes(),
-		DiskBytes:   pb.GetDiskBytes(),
-	}
-	if resources.VCPUs < 0 {
-		return nil, errors.New("policy resources.vcpus must be non-negative")
-	}
-	if resources.MemoryBytes < 0 {
-		return nil, errors.New("policy resources.memory_bytes must be non-negative")
-	}
-	if resources.DiskBytes < 0 {
-		return nil, errors.New("policy resources.disk_bytes must be non-negative")
 	}
 	if resources.IsZero() {
 		return nil, nil
@@ -1923,48 +1351,6 @@ func pathWithinOrEqual(parent, child string) bool {
 	return child == parent || pathContains(parent, child)
 }
 
-func stageBlocksToProto(blocks []StageBlock) []*cleanroomv1.PolicyBlock {
-	out := make([]*cleanroomv1.PolicyBlock, 0, len(blocks))
-	for _, block := range blocks {
-		out = append(out, &cleanroomv1.PolicyBlock{
-			Name:    block.Name,
-			Command: append([]string(nil), block.Command...),
-			Inputs: &cleanroomv1.PolicyBlockInputs{
-				Files: append([]string(nil), block.Inputs.Files...),
-			},
-			Env: cloneStringMap(block.Env),
-			Outputs: &cleanroomv1.PolicyBlockOutputs{
-				Dirs:  append([]string(nil), block.Outputs.Dirs...),
-				Files: append([]string(nil), block.Outputs.Files...),
-			},
-		})
-	}
-	return out
-}
-
-func stageBlocksFromProto(blocks []*cleanroomv1.PolicyBlock, field string) ([]StageBlock, error) {
-	raw := make([]rawPolicyBlock, 0, len(blocks))
-	for _, block := range blocks {
-		if block == nil {
-			raw = append(raw, rawPolicyBlock{})
-			continue
-		}
-		raw = append(raw, rawPolicyBlock{
-			Name:    block.GetName(),
-			Command: rawDependencyCommandSpec(append([]string(nil), block.GetCommand()...)),
-			Inputs: rawPolicyBlockInputs{
-				Files: append([]string(nil), block.GetInputs().GetFiles()...),
-			},
-			Env: cloneStringMap(block.GetEnv()),
-			Outputs: rawPolicyBlockOutputs{
-				Dirs:  append([]string(nil), block.GetOutputs().GetDirs()...),
-				Files: append([]string(nil), block.GetOutputs().GetFiles()...),
-			},
-		})
-	}
-	return normalizeStageBlocks(raw, field+".blocks", defaultBlockWorkspace)
-}
-
 func cloneStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -2031,6 +1417,56 @@ func commandShellLine(command []string) string {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func normalizeWarmup(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	steps := make([]string, 0, len(raw))
+	for i, step := range raw {
+		trimmed := strings.TrimSpace(step)
+		if trimmed == "" {
+			return nil, fmt.Errorf("sandbox.warmup entry %d is empty", i)
+		}
+		steps = append(steps, trimmed)
+	}
+	return steps, nil
+}
+
+func normalizeMediation(raw rawMediation) ([]string, error) {
+	if len(raw.Services) == 0 {
+		return nil, nil
+	}
+	services := make([]string, 0, len(raw.Services))
+	seen := map[string]bool{}
+	for i, service := range raw.Services {
+		name := strings.TrimSpace(service)
+		if name == "" {
+			return nil, fmt.Errorf("sandbox.mediation.services entry %d is empty", i)
+		}
+		if !isMediationServiceName(name) {
+			return nil, fmt.Errorf("sandbox.mediation.services entry %d has invalid name %q: use letters, digits, '.', '_', '-'", i, name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("sandbox.mediation.services entry %d duplicates %q", i, name)
+		}
+		seen[name] = true
+		services = append(services, name)
+	}
+	return services, nil
+}
+
+func isMediationServiceName(name string) bool {
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return name != ""
 }
 
 func hashPolicy(p *CompiledPolicy) (string, error) {

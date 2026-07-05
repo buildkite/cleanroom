@@ -3,9 +3,11 @@
 Cleanroom reads repository policy from `cleanroom.yaml`, then
 `.buildkite/cleanroom.yaml`.
 
-Policy is repo intent. It should describe the image, resources, network access,
-Docker need, repository checkout, and create-time setup that CI expects. Host
-runtime details belong in `~/.config/cleanroom/config.yaml`.
+Policy is repo intent: the image, resources, network access, warmup, and
+mediated credentials a baked spore needs. `cleanroom compile` translates the
+enforceable subset into `spore create` arguments and **fails closed** on
+anything SporeVM cannot enforce — a policy that validates but cannot be
+enforced never bakes.
 
 ## Minimal Policy
 
@@ -28,41 +30,8 @@ cleanroom policy validate
 cleanroom policy validate --json
 ```
 
-Use a digest-pinned image in committed policy:
-
-```bash
-cleanroom image resolve ghcr.io/buildkite/cleanroom-base/alpine:latest
-cleanroom image bump-ref ghcr.io/buildkite/cleanroom-base/alpine:latest
-```
-
-## Repository Checkout
-
-Top-level `cleanroom create`, `cleanroom exec`, and `cleanroom console` commands
-are repo-aware when run inside a Git checkout. By default they resolve the
-current `origin` remote, exact `HEAD`, and checkout path `/workspace`.
-
-You usually do not need a `repository` block. Add one only to override defaults
-or disable repo bootstrap:
-
-```yaml
-repository:
-  remote: origin
-  path: /workspace
-  submodules: false
-```
-
-```yaml
-repository:
-  enabled: false
-```
-
-Use `--repo-url` for examples or CI-style runs outside the target checkout:
-
-```bash
-cleanroom exec --repo-url https://github.com/buildkite/agent.git -- go test ./...
-```
-
-See [Workspaces](workspaces.md) for local edits, copy-in, copy-out, and sync.
+Use a digest-pinned image ref in committed policy. The digest is recorded in
+the baked spore's provenance and checked by `cleanroom verify`.
 
 ## Network
 
@@ -78,94 +47,69 @@ sandbox:
         ports: [443]
 ```
 
-Rules are host and port rules, not URLs. DNS resolution is part of enforcement:
-hostname rules are learned from DNS answers and enforced as destination
-IP:port pairs.
+Rules are host and port rules, not URLs, and every rule must name a host and
+at least one port. Compile renders each rule as a `spore create
+--allow-host-port` argument; SporeVM learns destination IPs from DNS answers
+and enforces them as IP:port pairs on every resume and fork of the baked
+spore.
 
-Stage-scoped networking lets repository checkout, dependency setup, service
-setup, and execution have different allowlists:
-
-```yaml
-repository:
-  network:
-    allow:
-      - github.com:443
-
-sandbox:
-  network:
-    default: deny
-    dependencies:
-      allow:
-        - proxy.golang.org:443
-        - sum.golang.org:443
-    services:
-      allow:
-        - registry-1.docker.io:443
-    execution: {}
-```
-
-Do not combine `sandbox.network.allow` with stage-local network blocks.
-Stage-scoped egress is supported by `darwin-vz`; `firecracker` currently fails
-closed for stage-scoped policies until that backend has active per-command
-egress updates.
-
-## Resources And Docker
+## Resources
 
 ```yaml
 sandbox:
   resources:
     vcpus: 4
-    memory: 8GiB
-    disk: 16GiB
-  docker:
-    required: true
+    memory: 8gb
 ```
 
-`docker.required: true` starts Docker inside the microVM for dependency,
-service, and execution commands that need it.
+Sizes use decimal units (`1gb` = 10^9 bytes); compile rounds memory up to
+SporeVM's 16KiB page alignment. `resources.disk` is not yet translated and
+fails compile.
 
-## Dependency And Service Blocks
+## Warmup
 
-Dependency blocks run during sandbox creation and publish reusable setup outputs.
-They are best for deterministic repo setup such as `npm ci`, `go mod download`,
-`bundle install`, and toolchain installs.
+Warmup commands run once inside the builder VM during `cleanroom bake`, after
+the workspace is copied in. Use them to install dependencies and warm caches
+so the captured spore restores ready to work:
 
 ```yaml
 sandbox:
-  dependencies:
-    - name: node
-      command: npm ci
-      inputs:
-        files: [package.json, package-lock.json]
-      outputs:
-        dirs: [node_modules]
+  warmup:
+    - apk add --no-progress build-base git
+    - go mod download
 ```
 
-Service blocks also run during sandbox creation. They are best for on-disk
-service state that can be prepared once and reused, while live services start in
-`sandbox.run.before` before each execution.
+Each entry is a shell command run in the workspace. A failing warmup step
+aborts the bake and destroys the builder.
+
+## Mediation
+
+Mediation declares the named credential services a baked spore may reach
+through the lineage gateway. Secrets stay host-side; the guest sees a local
+endpoint, never the credential:
 
 ```yaml
 sandbox:
-  docker:
-    required: true
-  services:
-    - name: database
-      command: |
-        docker compose up -d postgres valkey
-        bin/rails db:prepare
-        docker compose stop postgres valkey
-      inputs:
-        files: [docker-compose.yml, db/schema.rb]
-      outputs:
-        dirs: [/var/lib/docker]
-  run:
-    before: docker compose up -d postgres valkey
+  mediation:
+    services: [github-token]
 ```
 
-Block commands run in the repository workdir. `inputs.files` are
-repository-relative files or globs. Output dirs and files can use relative
-workspace paths, `${WORKSPACE}`, `${HOME}`, or absolute guest paths. Outputs
-cannot be `/`, the repository root, overlapping, or glob patterns.
+The gateway operator grants services per lineage in the gateway's own config;
+a spore gets the intersection of what its policy requests and what the
+operator granted. See the [SporeVM layer plan](plans/sporevm-layer.md) for the
+gateway design.
 
-Use [Caching](caching.md) for the runtime behavior behind these blocks.
+## Not Yet Translated
+
+These policy fields still parse (so `policy validate` accepts them) but fail
+`compile` until they map onto SporeVM:
+
+- `sandbox.resources.disk`
+- stage-scoped network policy (per-stage allowlists)
+- `sandbox.docker`
+- `sandbox.dependencies` and `sandbox.services` blocks (use `warmup`)
+- `sandbox.run.before`
+## Removed Fields
+
+Top-level `repository:` and `expose:` blocks belonged to the old runtime and are no longer part of the policy schema. Strict parsing rejects policies that still declare them.
+

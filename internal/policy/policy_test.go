@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/buildkite/cleanroom/internal/bytesize"
-	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/guestenv"
 	"gopkg.in/yaml.v3"
 )
@@ -35,15 +33,6 @@ func rawDependencyBlocks(blocks ...rawPolicyBlock) rawDependencyStage {
 	return rawDependencyStage{
 		Blocks:      rawPolicyBlocks(blocks),
 		blocksField: "sandbox.dependencies",
-	}
-}
-
-func protoBlock(name string, command []string, inputs []string, outputs *cleanroomv1.PolicyBlockOutputs) *cleanroomv1.PolicyBlock {
-	return &cleanroomv1.PolicyBlock{
-		Name:    name,
-		Command: command,
-		Inputs:  &cleanroomv1.PolicyBlockInputs{Files: inputs},
-		Outputs: outputs,
 	}
 }
 
@@ -320,9 +309,6 @@ func TestCompileNormalizesStageScopedNetwork(t *testing.T) {
 	var raw rawPolicy
 	if err := yaml.Unmarshal([]byte(`
 version: 1
-repository:
-  network:
-    allow: github.com:443
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -350,12 +336,6 @@ sandbox:
 	if len(compiled.Allow) != 0 {
 		t.Fatalf("expected global allowlist to be empty, got %v", compiled.Allow)
 	}
-	if !compiled.AllowsForStage(NetworkStageWorkspace, "github.com", 443) {
-		t.Fatal("expected workspace stage to allow github.com:443")
-	}
-	if compiled.AllowsForStage(NetworkStageExecution, "github.com", 443) {
-		t.Fatal("did not expect execution stage to inherit workspace allowlist")
-	}
 	if !compiled.AllowsForStage(NetworkStageDependencies, "proxy.golang.org", 443) {
 		t.Fatal("expected dependencies stage to allow proxy.golang.org:443")
 	}
@@ -377,11 +357,6 @@ func TestNetworkPolicyForStageRehashesStageScopedPolicies(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Repository = &rawRepository{
-		Network: &rawStageNetworkConfig{
-			Allow: rawAllowRules{{Host: "github.com", Ports: []int{443}}},
-		},
-	}
 	raw.Sandbox.Network.Dependencies = &rawStageNetworkConfig{
 		Allow: rawAllowRules{{Host: "proxy.golang.org", Ports: []int{443}}},
 	}
@@ -391,12 +366,10 @@ func TestNetworkPolicyForStageRehashesStageScopedPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	workspace := compiled.NetworkPolicyForStage(NetworkStageWorkspace)
 	dependencies := compiled.NetworkPolicyForStage(NetworkStageDependencies)
 	execution := compiled.NetworkPolicyForStage(NetworkStageExecution)
 
 	for stage, effective := range map[NetworkStage]*CompiledPolicy{
-		NetworkStageWorkspace:    workspace,
 		NetworkStageDependencies: dependencies,
 		NetworkStageExecution:    execution,
 	} {
@@ -409,9 +382,6 @@ func TestNetworkPolicyForStageRehashesStageScopedPolicies(t *testing.T) {
 		if effective.NetworkStages != nil {
 			t.Fatalf("expected %s effective policy to drop stage table", stage)
 		}
-	}
-	if workspace.Hash == dependencies.Hash {
-		t.Fatal("expected workspace and dependencies effective policies to have distinct hashes")
 	}
 	if dependencies.Hash == execution.Hash {
 		t.Fatal("expected dependencies and execution effective policies to have distinct hashes")
@@ -443,15 +413,14 @@ func TestCompileRejectsMixedGlobalAndStageNetwork(t *testing.T) {
 	var raw rawPolicy
 	if err := yaml.Unmarshal([]byte(`
 version: 1
-repository:
-  network:
-    allow: github.com:443
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   network:
     default: deny
     allow: proxy.golang.org:443
+    dependencies:
+      allow: github.com:443
 `), &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -639,42 +608,6 @@ func TestCompileDefaultsDependenciesDisabled(t *testing.T) {
 	}
 }
 
-func TestCompileRejectsRepositoryDisabledWithDependencyBlocks(t *testing.T) {
-	t.Parallel()
-
-	var raw rawPolicy
-	if err := yaml.Unmarshal([]byte(`
-version: 1
-repository:
-  enabled: false
-sandbox:
-  image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  dependencies:
-    - name: go-modules
-      command: go mod download
-      inputs:
-        files:
-          - go.mod
-          - go.sum
-      outputs:
-        dirs:
-          - ${HOME}/go/pkg/mod
-  network:
-    default: deny
-`), &raw); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	_, err := Compile(raw)
-	if err == nil {
-		t.Fatal("expected compile to reject dependency blocks without repository bootstrap")
-	}
-	if !strings.Contains(err.Error(), "sandbox.dependencies") || !strings.Contains(err.Error(), "repository bootstrap is disabled") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	t.Parallel()
 
@@ -743,52 +676,6 @@ func TestCompileNormalizesWorkspaceRelativeOutputPaths(t *testing.T) {
 	}
 	if got, want := block.Env["WORKCACHE"], "/workspace/.cache"; got != want {
 		t.Fatalf("unexpected WORKCACHE: got %q want %q", got, want)
-	}
-}
-
-func TestCompileNormalizesBlockWorkspaceAgainstRepositoryPath(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Repository = &rawRepository{Path: "/src/"}
-	raw.Sandbox.Dependencies = rawDependencyBlocks(
-		rawPolicyBlock{
-			Name:    "node",
-			Command: rawDependencyCommandSpec{"npm", "ci"},
-			Inputs:  rawPolicyBlockInputs{Files: []string{"package-lock.json"}},
-			Env: map[string]string{
-				"WORKDIR":   "${WORKSPACE}",
-				"WORKCACHE": "$WORKSPACE/.cache",
-			},
-			Outputs: rawPolicyBlockOutputs{
-				Dirs: []string{"node_modules", "${WORKSPACE}/vendor/bundle"},
-			},
-		},
-	)
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	block := compiled.Dependencies.Blocks[0]
-	if got, want := block.Outputs.Dirs, []string{"/src/node_modules", "/src/vendor/bundle"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("unexpected output dirs: got %v want %v", got, want)
-	}
-	if got, want := block.Env["WORKDIR"], "/src"; got != want {
-		t.Fatalf("unexpected WORKDIR: got %q want %q", got, want)
-	}
-	if got, want := block.Env["WORKCACHE"], "/src/.cache"; got != want {
-		t.Fatalf("unexpected WORKCACHE: got %q want %q", got, want)
-	}
-
-	defaultPathRaw := raw
-	defaultPathRaw.Repository = nil
-	defaultPathCompiled, err := Compile(defaultPathRaw)
-	if err != nil {
-		t.Fatalf("compile default repository path: %v", err)
-	}
-	if defaultPathCompiled.Hash == compiled.Hash {
-		t.Fatalf("expected repository.path to affect normalized block policy hash, got %q", compiled.Hash)
 	}
 }
 
@@ -878,41 +765,6 @@ func TestCompileNormalizesServicesBootstrapConfig(t *testing.T) {
 	}
 	if got, want := compiled.Services.KeyFiles, []string{"docker-compose.yml"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected services key files: got %v want %v", got, want)
-	}
-}
-
-func TestCompileRejectsRepositoryDisabledWithServiceBlocks(t *testing.T) {
-	t.Parallel()
-
-	var raw rawPolicy
-	if err := yaml.Unmarshal([]byte(`
-version: 1
-repository:
-  enabled: false
-sandbox:
-  image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  services:
-    - name: postgres
-      command: docker compose up -d postgres
-      inputs:
-        files:
-          - docker-compose.yml
-      outputs:
-        dirs:
-          - /var/lib/cleanroom/services/postgres
-  network:
-    default: deny
-`), &raw); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	_, err := Compile(raw)
-	if err == nil {
-		t.Fatal("expected compile to reject service blocks without repository bootstrap")
-	}
-	if !strings.Contains(err.Error(), "sandbox.services") || !strings.Contains(err.Error(), "repository bootstrap is disabled") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1394,82 +1246,10 @@ sandbox:
 	}
 }
 
-func TestLoadRepositoryDefaultsCurrentRepoSettings(t *testing.T) {
+func TestCompileBytesRejectsTopLevelRepository(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
-version: 1
-repository:
-  mode: current-repo
-sandbox:
-  image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  network:
-    default: deny
-`), 0o644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-
-	cfg, source, err := Loader{}.LoadRepository(dir)
-	if err != nil {
-		t.Fatalf("LoadRepository returned error: %v", err)
-	}
-	if got, want := source, filepath.Join(dir, PrimaryPolicyPath); got != want {
-		t.Fatalf("unexpected source: got %q want %q", got, want)
-	}
-	if got, want := cfg.Mode, "current-repo"; got != want {
-		t.Fatalf("unexpected mode: got %q want %q", got, want)
-	}
-	if got, want := cfg.Remote, "origin"; got != want {
-		t.Fatalf("unexpected remote default: got %q want %q", got, want)
-	}
-	if got, want := cfg.Path, "/workspace"; got != want {
-		t.Fatalf("unexpected path default: got %q want %q", got, want)
-	}
-}
-
-func TestLoadRepositoryDefaultsImplicitCurrentRepoWhenOmitted(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
-version: 1
-sandbox:
-  image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  network:
-    default: deny
-`), 0o644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-
-	cfg, _, err := Loader{}.LoadRepository(dir)
-	if err != nil {
-		t.Fatalf("LoadRepository returned error: %v", err)
-	}
-	if !cfg.Enabled() {
-		t.Fatal("expected omitted repository block to default to enabled")
-	}
-	if got, want := cfg.Mode, "current-repo"; got != want {
-		t.Fatalf("unexpected mode: got %q want %q", got, want)
-	}
-	if got, want := cfg.Remote, "origin"; got != want {
-		t.Fatalf("unexpected remote default: got %q want %q", got, want)
-	}
-	if got, want := cfg.Path, "/workspace"; got != want {
-		t.Fatalf("unexpected path default: got %q want %q", got, want)
-	}
-	if !cfg.Implicit {
-		t.Fatal("expected omitted repository block to be marked implicit")
-	}
-}
-
-func TestLoadRepositoryAllowsDisablingImplicitCurrentRepo(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
+	_, err := CompileBytes([]byte(`
 version: 1
 repository:
   enabled: false
@@ -1478,366 +1258,47 @@ sandbox:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   network:
     default: deny
-`), 0o644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-
-	cfg, _, err := Loader{}.LoadRepository(dir)
-	if err != nil {
-		t.Fatalf("LoadRepository returned error: %v", err)
-	}
-	if cfg.Enabled() {
-		t.Fatal("expected repository.enabled=false to disable repository bootstrap")
-	}
-}
-
-func TestLoadRepositoryRejectsRelativePath(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
-version: 1
-repository:
-  mode: current-repo
-  path: workspace
-sandbox:
-  image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  network:
-    default: deny
-`), 0o644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-
-	_, _, err := Loader{}.LoadRepository(dir)
+`), "cleanroom.yaml")
 	if err == nil {
-		t.Fatal("expected LoadRepository to reject relative repository.path")
+		t.Fatal("expected top-level repository block to fail parsing")
 	}
-	if !strings.Contains(err.Error(), "repository.path") {
-		t.Fatalf("unexpected error: %v", err)
+	if !strings.Contains(err.Error(), "repository") {
+		t.Fatalf("expected error to mention repository, got %v", err)
 	}
 }
 
-func TestLoadExposeNormalizesConfiguredHTTPS(t *testing.T) {
+func TestCompileBytesRejectsTopLevelExpose(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
+	_, err := CompileBytes([]byte(`
 version: 1
 expose:
   https:
-    base: "{sandbox_id}.LOCALHOST"
     routes:
       - port: 3000
-        hosts:
-          - "{base}"
-          - "{container_id}.localhost"
-          - "*.{base}"
-          - "*.{base}"
+        hosts: [localhost]
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   network:
     default: deny
-`), 0o644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
-
-	cfg, source, err := Loader{}.LoadExpose(dir)
-	if err != nil {
-		t.Fatalf("LoadExpose returned error: %v", err)
-	}
-	if got, want := source, filepath.Join(dir, PrimaryPolicyPath); got != want {
-		t.Fatalf("unexpected source: got %q want %q", got, want)
-	}
-	if got, want := cfg.HTTPS.Base, "{sandbox_id}.localhost"; got != want {
-		t.Fatalf("unexpected https base: got %q want %q", got, want)
-	}
-	if got, want := len(cfg.HTTPS.Routes), 1; got != want {
-		t.Fatalf("unexpected route count: got %d want %d", got, want)
-	}
-	if got, want := cfg.HTTPS.Routes[0].Port, 3000; got != want {
-		t.Fatalf("unexpected route port: got %d want %d", got, want)
-	}
-	if got, want := cfg.HTTPS.Routes[0].Hosts, []string{"{base}", "*.{base}"}; strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("unexpected route hosts: got %v want %v", got, want)
-	}
-}
-
-func TestCompileValidatesExposeWithoutChangingHash(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	baseline, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("Compile baseline returned error: %v", err)
-	}
-
-	raw.Expose.HTTPS = rawExposeHTTPS{
-		Base: "{sandbox_id}.localhost",
-		Routes: []rawExposeHTTPSRoute{{
-			Port:  3000,
-			Hosts: []string{"{base}", "*.{base}", "*.*.{base}"},
-		}},
-	}
-	withExpose, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("Compile with expose returned error: %v", err)
-	}
-	if got, want := withExpose.Hash, baseline.Hash; got != want {
-		t.Fatalf("expected expose config to stay out of policy hash: got %q want %q", got, want)
-	}
-
-	raw.Expose.HTTPS.Routes[0].Port = 0
-	if _, err := Compile(raw); err == nil {
-		t.Fatal("expected Compile to validate expose config")
-	}
-}
-
-func TestCompileValidatesConfiguredHTTPSHosts(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		host string
-		want string
-	}{
-		{name: "external host", host: "google.com", want: "localhost"},
-		{name: "unscoped wildcard", host: "*.*.localhost", want: "concrete localhost subdomain"},
-		{
-			name: "expanded sandbox id exceeds label limit",
-			host: strings.Repeat("a", 40) + "-{sandbox_id}.localhost",
-			want: "longer than 63 characters",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			raw := baseRawPolicy()
-			raw.Expose.HTTPS = rawExposeHTTPS{
-				Base: "{sandbox_id}.localhost",
-				Routes: []rawExposeHTTPSRoute{{
-					Port:  3000,
-					Hosts: []string{tt.host},
-				}},
-			}
-
-			_, err := Compile(raw)
-			if err == nil {
-				t.Fatal("expected Compile to reject invalid expose host")
-			}
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestCompileRejectsDuplicateExpandedConfiguredHTTPSHostsAcrossRoutes(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Expose.HTTPS = rawExposeHTTPS{
-		Base: "{sandbox_id}.localhost",
-		Routes: []rawExposeHTTPSRoute{
-			{Port: 3000, Hosts: []string{"{base}"}},
-			{Port: 4000, Hosts: []string{"{container_id}.localhost"}},
-		},
-	}
-
-	_, err := Compile(raw)
+`), "cleanroom.yaml")
 	if err == nil {
-		t.Fatal("expected Compile to reject duplicate expanded expose host")
+		t.Fatal("expected top-level expose block to fail parsing")
 	}
-	if !strings.Contains(err.Error(), "duplicates configured host") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestFromProtoRejectsMismatchedImageDigest(t *testing.T) {
-	t.Parallel()
-
-	_, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		ImageDigest:    "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-		NetworkDefault: "deny",
-	})
-	if err == nil {
-		t.Fatal("expected FromProto to reject mismatched image_digest")
-	}
-	if !strings.Contains(err.Error(), "image_digest") {
-		t.Fatalf("expected image_digest error, got %v", err)
-	}
-}
-
-func TestFromProtoCanonicalisesAllowRules(t *testing.T) {
-	t.Parallel()
-
-	compiled, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		Allow: []*cleanroomv1.PolicyAllowRule{
-			{Host: "registry.npmjs.org", Ports: []int32{443}},
-			{Host: "api.github.com", Ports: []int32{443, 80, 443}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-
-	if len(compiled.Allow) != 2 {
-		t.Fatalf("unexpected allow rule count: got %d want 2", len(compiled.Allow))
-	}
-	if got, want := compiled.Allow[0].Host, "api.github.com"; got != want {
-		t.Fatalf("expected allow rules to be sorted by host: got %q want %q", got, want)
-	}
-	if got, want := compiled.Allow[1].Host, "registry.npmjs.org"; got != want {
-		t.Fatalf("expected second host %q, got %q", want, got)
-	}
-	if got, want := compiled.Allow[0].Ports, []int{80, 443}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("expected deduplicated/sorted ports %v, got %v", want, got)
-	}
-}
-
-func TestFromProtoRejectsNetworkAllowHostAuthoritySyntax(t *testing.T) {
-	t.Parallel()
-
-	_, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		Allow: []*cleanroomv1.PolicyAllowRule{
-			{Host: "internal.example:8443", Ports: []int32{443}},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected FromProto to reject allow host authority syntax")
-	}
-	if !strings.Contains(err.Error(), "must be a bare hostname") {
-		t.Fatalf("unexpected error: got %v want bare hostname error", err)
-	}
-}
-
-func TestFromProtoPreservesNetworkAllowIPv6LiteralHost(t *testing.T) {
-	t.Parallel()
-
-	compiled, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		Allow: []*cleanroomv1.PolicyAllowRule{
-			{Host: "2606:4700:4700::1111", Ports: []int32{443}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-	if !compiled.Allows("2606:4700:4700::1111", 443) {
-		t.Fatal("expected IPv6 literal allow rule to compile")
-	}
-}
-
-func TestFromProtoPropagatesDockerServiceRequirement(t *testing.T) {
-	t.Parallel()
-
-	compiled, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		Docker: &cleanroomv1.PolicyDocker{
-			Required: true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-	if !compiled.Docker.Required {
-		t.Fatal("expected docker service requirement from proto policy")
-	}
-}
-
-func TestFromProtoRejectsOverlappingDependencyAndServiceOutputs(t *testing.T) {
-	t.Parallel()
-
-	_, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		Dependencies: &cleanroomv1.PolicyDependencies{
-			Blocks: []*cleanroomv1.PolicyBlock{protoBlock(
-				"go",
-				[]string{"true"},
-				[]string{"go.mod"},
-				&cleanroomv1.PolicyBlockOutputs{Dirs: []string{guestenv.DefaultHome + "/go"}},
-			)},
-		},
-		Services: &cleanroomv1.PolicyServices{
-			Blocks: []*cleanroomv1.PolicyBlock{protoBlock(
-				"postgres",
-				[]string{"true"},
-				[]string{"docker-compose.yml"},
-				&cleanroomv1.PolicyBlockOutputs{Files: []string{guestenv.DefaultHome + "/go/service.state"}},
-			)},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected FromProto to reject overlapping dependency and service outputs")
-	}
-	if !strings.Contains(err.Error(), "overlaps") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestFromProtoAcceptsStoredAllowDefault(t *testing.T) {
-	t.Parallel()
-
-	compiled, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "allow",
-	})
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-	if got, want := compiled.NetworkDefault, "allow"; got != want {
-		t.Fatalf("unexpected network default: got %q want %q", got, want)
-	}
-	if !compiled.Allows("example.com", 443) {
-		t.Fatal("expected stored allow-default policy to allow arbitrary host:port")
-	}
-}
-
-func TestFromCreateRequestProtoRejectsAllowDefault(t *testing.T) {
-	t.Parallel()
-
-	_, err := FromCreateRequestProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "allow",
-	})
-	if err == nil {
-		t.Fatal("expected FromCreateRequestProto to reject allow-default policy protobuf")
-	}
-	if !strings.Contains(err.Error(), "network_default=allow") {
-		t.Fatalf("unexpected error: %v", err)
+	if !strings.Contains(err.Error(), "expose") {
+		t.Fatalf("expected error to mention expose, got %v", err)
 	}
 }
 
 func TestDangerouslyAllowAllEgressReturnsAllowDefaultCopy(t *testing.T) {
 	t.Parallel()
 
-	compiled, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		NetworkStages: &cleanroomv1.PolicyNetworkStages{
-			Execution: &cleanroomv1.PolicyNetwork{},
-		},
-	})
+	raw := baseRawPolicy()
+	raw.Sandbox.Network.Execution = &rawStageNetworkConfig{}
+	compiled, err := Compile(raw)
 	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
+		t.Fatalf("compile: %v", err)
 	}
 	compiled.Allow = []AllowRule{{Host: "api.github.com", Ports: []int{443}}}
 	allowAll, err := DangerouslyAllowAllEgress(compiled)
@@ -1858,169 +1319,5 @@ func TestDangerouslyAllowAllEgressReturnsAllowDefaultCopy(t *testing.T) {
 	}
 	if compiled.NetworkDefault != "deny" || compiled.NetworkStages == nil {
 		t.Fatalf("expected original policy to stay deny with stage network, got %#v", compiled)
-	}
-}
-
-func TestFromProtoRejectsMixedAllowAndStageNetwork(t *testing.T) {
-	t.Parallel()
-
-	_, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		Allow: []*cleanroomv1.PolicyAllowRule{
-			{Host: "proxy.golang.org", Ports: []int32{443}},
-		},
-		NetworkStages: &cleanroomv1.PolicyNetworkStages{
-			Workspace: &cleanroomv1.PolicyNetwork{
-				Allow: []*cleanroomv1.PolicyAllowRule{
-					{Host: "github.com", Ports: []int32{443}},
-				},
-			},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected FromProto to reject mixed global and stage-local allowlists")
-	}
-	if !strings.Contains(err.Error(), "policy allow") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestFromProtoRejectsAllowDefaultWithStageNetwork(t *testing.T) {
-	t.Parallel()
-
-	_, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "allow",
-		NetworkStages: &cleanroomv1.PolicyNetworkStages{
-			Execution: &cleanroomv1.PolicyNetwork{},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected FromProto to reject allow default with stage-local network blocks")
-	}
-	if !strings.Contains(err.Error(), "network_default") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestCompiledPolicyProtoRoundTripPreservesStageScopedNetwork(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Repository = &rawRepository{
-		Network: &rawStageNetworkConfig{
-			Allow: rawAllowRules{{Host: "github.com", Ports: []int{443}}},
-		},
-	}
-	raw.Sandbox.Network.Dependencies = &rawStageNetworkConfig{
-		Allow: rawAllowRules{{Host: "proxy.golang.org", Ports: []int{443}}},
-	}
-	raw.Sandbox.Network.Execution = &rawStageNetworkConfig{}
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-
-	roundTripped, err := FromProto(compiled.ToProto())
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-	if !roundTripped.HasStageScopedNetwork() {
-		t.Fatal("expected stage-scoped network after round trip")
-	}
-	if !roundTripped.AllowsForStage(NetworkStageWorkspace, "github.com", 443) {
-		t.Fatal("expected workspace allowlist after round trip")
-	}
-	if !roundTripped.AllowsForStage(NetworkStageDependencies, "proxy.golang.org", 443) {
-		t.Fatal("expected dependencies allowlist after round trip")
-	}
-	if roundTripped.NetworkStages.Execution == nil {
-		t.Fatal("expected explicit empty execution stage after round trip")
-	}
-	if roundTripped.AllowsForStage(NetworkStageExecution, "github.com", 443) {
-		t.Fatal("did not expect execution stage to inherit workspace allowlist after round trip")
-	}
-}
-
-func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Docker.Required = true
-	raw.Sandbox.Dependencies = rawDependencyBlocks(
-		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.mod", "go.sum"}, rawPolicyBlockOutputs{
-			Dirs: []string{"${HOME}/go/pkg/mod"},
-		}),
-	)
-	raw.Sandbox.Services = rawPolicyBlocks{
-		rawBlock("postgres", []string{"docker", "compose", "up", "-d", "postgres"}, []string{"docker-compose.yml"}, rawPolicyBlockOutputs{
-			Dirs: []string{"/var/lib/cleanroom/services/postgres"},
-		}),
-	}
-	raw.Sandbox.Run.Before = rawShellCommandSpec{"sh", "-lc", "bin/rails db:prepare"}
-	vcpus := int64(6)
-	memory := bytesize.Size(12 << 30)
-	disk := bytesize.Size(18 << 30)
-	raw.Sandbox.Resources.VCPUs = &vcpus
-	raw.Sandbox.Resources.Memory = &memory
-	raw.Sandbox.Resources.Disk = &disk
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-
-	roundTripped, err := FromProto(compiled.ToProto())
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-	if got, want := strings.Join(roundTripped.Dependencies.Command, "\x00"), strings.Join(compiled.Dependencies.Command, "\x00"); got != want {
-		t.Fatalf("unexpected dependency command after round trip: got %q want %q", got, want)
-	}
-	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
-		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
-	}
-	if got, want := len(roundTripped.Dependencies.Blocks), len(compiled.Dependencies.Blocks); got != want {
-		t.Fatalf("unexpected dependency block count after round trip: got %d want %d", got, want)
-	}
-	if got, want := roundTripped.Docker.Required, compiled.Docker.Required; got != want {
-		t.Fatalf("unexpected docker requirement after round trip: got %t want %t", got, want)
-	}
-	if got, want := strings.Join(roundTripped.Services.Command, "\x00"), strings.Join(compiled.Services.Command, "\x00"); got != want {
-		t.Fatalf("unexpected services command after round trip: got %q want %q", got, want)
-	}
-	if got, want := strings.Join(roundTripped.Services.KeyFiles, "\x00"), strings.Join(compiled.Services.KeyFiles, "\x00"); got != want {
-		t.Fatalf("unexpected services key files after round trip: got %q want %q", got, want)
-	}
-	if got, want := strings.Join(roundTripped.Run.Before, "\x00"), strings.Join(compiled.Run.Before, "\x00"); got != want {
-		t.Fatalf("unexpected run.before after round trip: got %q want %q", got, want)
-	}
-	if roundTripped.Resources == nil {
-		t.Fatal("expected resources after round trip")
-	}
-	if got, want := *roundTripped.Resources, *compiled.Resources; got != want {
-		t.Fatalf("unexpected resources after round trip: got %#v want %#v", got, want)
-	}
-}
-
-func TestFromProtoRejectsNegativeResourceRequirements(t *testing.T) {
-	t.Parallel()
-
-	_, err := FromProto(&cleanroomv1.Policy{
-		Version:        1,
-		ImageRef:       validImageRef,
-		NetworkDefault: "deny",
-		Resources: &cleanroomv1.PolicyResources{
-			MemoryBytes: -1,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected FromProto to reject negative resource requirement")
-	}
-	if !strings.Contains(err.Error(), "resources.memory_bytes") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }

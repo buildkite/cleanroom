@@ -1,38 +1,29 @@
 # Basic Cleanroom Example
 
-This example is a minimal policy + command flow you can use to verify launched execution against the current client/server architecture.
+A minimal policy you can bake into a warm spore and run.
 
 ## Prerequisites
 
-From repository root:
+From the repository root:
 
 ```bash
-mise run install
+mise run install          # installs the cleanroom binary
+mise use -g github:sporevm/sporevm@latest   # installs spore
 ```
 
 ## Files
 
-- `cleanroom.yaml`: digest-pinned sandbox image ref plus a deny-by-default network policy with one allowed host.
-- `marker.sh` / `cleanup.sh`: optional host-side helpers from earlier workflows.
+- `cleanroom.yaml`: digest-pinned image ref plus a deny-by-default network
+  policy with one allowed host.
 
-## Quick test flow
+## Flow
 
 Run from this directory (`examples/basic`):
 
 ```bash
-mise exec -- cleanroom policy validate
-```
-
-Start a local control-plane server:
-
-```bash
-mise exec -- cleanroom serve &
-```
-
-Run a command in a darwin-vz sandbox:
-
-```bash
-mise exec -- cleanroom exec --backend darwin-vz -- sh -lc 'echo basic-example-ok'
+cleanroom policy validate
+cleanroom bake . --out basic.spore
+spore run --from basic.spore 'echo basic-example-ok'
 ```
 
 Expected output:
@@ -41,14 +32,19 @@ Expected output:
 basic-example-ok
 ```
 
-Optional second check:
+Check the artifact's provenance and audit it against the repo:
 
 ```bash
-mise exec -- cleanroom exec --backend darwin-vz -- sh -lc 'cat /etc/os-release'
+cleanroom verify basic.spore --dir .
 ```
 
-When finished:
+(The positional spore path lets the audit exclude the in-repo artifact from
+git dirty detection; the stdin form `spore --json inspect ... | cleanroom
+verify` has no path to exclude, so pair it with an artifact stored outside
+the repository.)
+
+Rebaking without changing the policy or the repo is a no-op:
 
 ```bash
-pkill -f "cleanroom serve"
+cleanroom bake . --out basic.spore
 ```
