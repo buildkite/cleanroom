@@ -115,11 +115,19 @@ func TestVerifyCommandParses(t *testing.T) {
 func TestGatewayServeParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
-	if _, err := parser.Parse([]string{"gateway", "serve", "--for", "./repo.spore", "--socket", "/tmp/gw.sock", "--grants", "./gw.yaml"}); err != nil {
+	if _, err := parser.Parse([]string{"gateway", "serve", "--for", "./repo.spore", "--dir", ".", "--socket", "/tmp/gw.sock", "--grants", "./gw.yaml"}); err != nil {
 		t.Fatalf("parse gateway serve returned error: %v", err)
 	}
 	if got, want := c.Gateway.Serve.For, "./repo.spore"; got != want {
 		t.Fatalf("unexpected gateway for: got %q want %q", got, want)
+	}
+	if got, want := c.Gateway.Serve.Dir, "."; got != want {
+		t.Fatalf("unexpected gateway dir: got %q want %q", got, want)
+	}
+	// --dir is the trust root for grants; serving a spore without it must
+	// fail at parse time.
+	if _, err := newParserForTest(t, &CLI{}).Parse([]string{"gateway", "serve", "--for", "./repo.spore", "--socket", "/tmp/gw.sock"}); err == nil {
+		t.Fatal("expected parse error when --dir is missing")
 	}
 	if got, want := c.Gateway.Serve.Socket, "/tmp/gw.sock"; got != want {
 		t.Fatalf("unexpected gateway socket: got %q want %q", got, want)

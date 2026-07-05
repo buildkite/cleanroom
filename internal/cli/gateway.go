@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/buildkite/cleanroom/internal/bake"
@@ -13,17 +12,14 @@ type GatewayCommand struct {
 }
 
 type GatewayServeCommand struct {
-	For    string `help:"Serve the scope of a baked spore directory (verifies provenance)"`
-	Dir    string `help:"Serve the scope of a repository's policy (bake-time)"`
+	For    string `help:"Baked spore directory to serve; its bake key is audited against --dir before any grant resolves"`
+	Dir    string `required:"" help:"Repository whose policy and git facts define the lineage scope; the trust root for grants"`
 	Socket string `required:"" help:"Unix socket path to serve on; bind into VMs with spore --bind-service cleanroom-gateway=unix:PATH"`
 	Grants string `help:"Gateway grants config (default: ~/.config/cleanroom/gateway.yaml)"`
 	Spore  string `help:"spore executable" default:"spore"`
 }
 
 func (c *GatewayServeCommand) Run(ctx *runtimeContext) error {
-	if (c.For == "") == (c.Dir == "") {
-		return errors.New("cleanroom gateway serve requires exactly one of --for <spore-dir> or --dir <repo>")
-	}
 	grantsPath := c.Grants
 	if grantsPath == "" {
 		grantsPath = mediation.DefaultConfigPath()
@@ -33,8 +29,28 @@ func (c *GatewayServeCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	var requested []string
-	var facts mediation.LineageFacts
+	// Grants always resolve from the local repository, never from spore
+	// annotations: annotations are attacker-influenced, so a foreign spore
+	// could otherwise forge the remote, policy hash, and mediation requests
+	// of a granted lineage. With --for, the spore's bake key must match the
+	// repository's current policy and commit before anything is served.
+	cwd, err := resolveCWD(ctx.CWD, c.Dir)
+	if err != nil {
+		return err
+	}
+	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		return err
+	}
+	var exclusions []string
+	if c.For != "" {
+		sporeDir, err := resolveCWD(ctx.CWD, c.For)
+		if err != nil {
+			return err
+		}
+		exclusions = bake.ArtifactExclusions(cwd, sporeDir)
+	}
+	git := bake.CollectGitFactsExcluding(cwd, exclusions)
 	if c.For != "" {
 		runner := &bake.CLIRunner{Spore: c.Spore, Stdout: ctx.stderr(), Stderr: ctx.stderr()}
 		annotations, err := runner.InspectAnnotations(c.For)
@@ -45,21 +61,12 @@ func (c *GatewayServeCommand) Run(ctx *runtimeContext) error {
 		if err != nil {
 			return err
 		}
-		requested = prov.MediationServices
-		facts = mediation.LineageFacts{Remote: prov.GitRemote, PolicyHash: prov.PolicyHash, Dirty: prov.GitDirty}
-	} else {
-		cwd, err := resolveCWD(ctx.CWD, c.Dir)
-		if err != nil {
-			return err
+		if err := bake.AuditKey(prov, compiled, git); err != nil {
+			return fmt.Errorf("refusing to serve %s: %w", c.For, err)
 		}
-		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-		if err != nil {
-			return err
-		}
-		git := bake.CollectGitFacts(cwd)
-		requested = compiled.Mediation
-		facts = mediation.LineageFacts{Remote: git.Remote, PolicyHash: compiled.Hash, Dirty: git.Dirty}
 	}
+	requested := compiled.Mediation
+	facts := mediation.LineageFacts{Remote: git.Remote, PolicyHash: compiled.Hash, Dirty: git.Dirty}
 
 	scope, err := mediation.ResolveScope(config, requested, facts)
 	if err != nil {

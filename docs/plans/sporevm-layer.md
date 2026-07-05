@@ -222,9 +222,12 @@ single party can be trusted to decide alone:
        services: [anthropic-inference, github-token-readonly]
    ```
 
-3. **The binding is the capability.** `gateway serve --for <spore>` verifies
-   the spore's provenance, resolves requested ∩ granted, and serves exactly
-   that on its socket. The operator's act of passing the socket to
+3. **The binding is the capability.** `gateway serve --dir <repo>` resolves
+   requested ∩ granted from the repository's own policy and git facts — the
+   trust root — and serves exactly that on its socket. Adding
+   `--for <spore>` audits the spore's bake key against the repository first,
+   so a foreign spore that forges a granted lineage's annotations is refused
+   before anything is served. The operator's act of passing the socket to
    `spore run --from`/`fork` connects the lineage to the grant — the same
    trust move as mounting a secret into a container, protected host-side by
    socket file permissions. The model makes grants explicit and auditable;
@@ -240,7 +243,7 @@ topology — per-pod sockets are fine because the scope derives from identity,
 not the socket.
 
 ```console
-cleanroom gateway serve --socket gw.sock &
+cleanroom gateway serve --dir . --for repo.spore --socket gw.sock &
 spore fork repo.spore --count 100 --out agents/ \
   --bind-service cleanroom-gateway=unix:gw.sock
 ```
@@ -384,8 +387,9 @@ plus the drift case: a new commit in the source repository fails the
 
 Status: done, verified end to end on 2026-07-05 after upstream #360.
 
-- `cleanroom gateway serve --for <spore>` (verifies provenance) or `--dir
-  <repo>` (bake-time) resolves requested ∩ granted from the XDG grants config
+- `cleanroom gateway serve --dir <repo>` (optionally `--for <spore>`, which
+  audits the spore's bake key against the repo before serving) resolves
+  requested ∩ granted from the XDG grants config
   (`internal/mediation/config.go`) and serves that scope on a Unix socket
   (`internal/mediation/server.go`). Requested-but-ungranted or undefined
   services fail closed; dirty lineages receive no grants.
