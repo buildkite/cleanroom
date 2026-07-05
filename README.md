@@ -108,5 +108,7 @@ cleanroom bake ─▶ spore create ─▶ copy-in ─▶ warmup ─▶ spore sus
 
 ## Documentation
 
+- [Policy reference](docs/policy.md)
 - [SporeVM layer plan](docs/plans/sporevm-layer.md) — the design and its slices
 - [CI setup](docs/ci.md)
+- [Basic example](examples/basic/README.md)

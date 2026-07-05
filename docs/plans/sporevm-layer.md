@@ -237,7 +237,7 @@ to admission (signed spore artifacts paired with ServiceAccounts under
 admission policy). The gateway binary is identical; only the trust wiring
 around it changes. Lineage scoping is an authorization semantic, not a process
 topology — per-pod sockets are fine because the scope derives from identity,
-not the socket. See `docs/plans/native-kubernetes-cleanroom.md`.
+not the socket.
 
 ```console
 cleanroom gateway serve --socket gw.sock &

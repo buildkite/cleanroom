@@ -18,7 +18,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-bake-smoke.sh scripts/ci-buildkite-release.sh"
+run = "shellcheck -x .buildkite/hooks/pre-command scripts/base-image-tag.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-go-test-engine.sh scripts/ci-bake-smoke.sh scripts/ci-buildkite-release.sh"
 
 [tasks.lint-proto]
 description = "Lint protobuf schemas"
@@ -31,14 +31,6 @@ run = "go test ./..."
 [tasks."build:go"]
 description = "Build Go binaries into dist/"
 run = "scripts/build-go.sh"
-
-[tasks."build:kernel:darwin-vz-minimal-initrd"]
-description = "Build minimal darwin-vz initrd-profile Linux kernel into dist/"
-run = "CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_PROFILE=initrd benchmarks/darwin-vz/minimal/build-kernel.sh"
-
-[tasks."build:kernel:darwin-vz-minimal-rootfs"]
-description = "Build minimal darwin-vz rootfs-profile Linux kernel into dist/"
-run = "CLEANROOM_DARWIN_VZ_MINIMAL_KERNEL_PROFILE=rootfs benchmarks/darwin-vz/minimal/build-kernel.sh"
 
 [tasks."build:image:alpine"]
 description = "Build local alpine base image"
@@ -94,22 +86,6 @@ run = "scripts/install-go.sh"
 description = "Install the cleanroom CLI into GOBIN (or GOPATH/bin)"
 depends = ["install:go"]
 run = "true"
-
-[tasks.doctor]
-description = "Run cleanroom diagnostics"
-run = "go run ./cmd/cleanroom doctor"
-
-[tasks.doctor-json]
-description = "Run cleanroom diagnostics as JSON"
-run = "go run ./cmd/cleanroom doctor --json"
-
-[tasks."observability:up"]
-description = "Start the local observability stack"
-run = "docker compose -f examples/observability/docker-compose.yaml up -d"
-
-[tasks."observability:down"]
-description = "Stop the local observability stack"
-run = "docker compose -f examples/observability/docker-compose.yaml down -v"
 
 [tasks.check]
 description = "Run build, test, and lint"
