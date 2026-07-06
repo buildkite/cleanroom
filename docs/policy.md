@@ -128,7 +128,7 @@ warmup logs, and may be captured in the spore. Use mediation for credentials.
 Block `inputs.files` and `outputs` are declaration metadata. Inputs are
 validated and hash-covered as policy metadata; content freshness comes from the
 commit/dirty bake key. Outputs are honoured by the whole checkpoint: everything
-present in the VM when `spore suspend` runs is captured, while output
+present in the VM when `spore save --stop` runs is captured, while output
 path/overlap validation prevents ambiguous declarations.
 
 `dependencies.reuse: exact` and the default are accepted because the whole
@@ -167,4 +167,3 @@ These policy fields still parse (so `policy validate` accepts them) but fail
 ## Removed Fields
 
 Top-level `repository:` and `expose:` blocks belonged to the old runtime and are no longer part of the policy schema. Strict parsing rejects policies that still declare them.
-

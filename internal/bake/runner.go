@@ -8,13 +8,13 @@ import (
 	"strings"
 )
 
-// minSporeVersion is the first spore release carrying create-time
-// annotations, exact host-plus-port rules, and suspend annotations.
-const minSporeVersion = "0.3.1"
+// minSporeVersion is the first spore release with the save/restore CLI
+// vocabulary Cleanroom's bake runner uses.
+const minSporeVersion = "0.6.0"
 
 // Runner runs spore lifecycle commands for the bake pipeline.
 type Runner interface {
-	// Version returns the spore CLI version string, e.g. "0.3.1".
+	// Version returns the spore CLI version string, e.g. "0.6.0".
 	Version() (string, error)
 	// Create starts a named builder VM with raw spore create arguments.
 	Create(name string, args []string) error
@@ -63,7 +63,7 @@ func (r *CLIRunner) ExecShell(name, command string) error {
 }
 
 func (r *CLIRunner) Suspend(name, outDir string) error {
-	return r.run([]string{"suspend", name, "--out", outDir})
+	return r.run([]string{"save", name, "--out", outDir, "--stop"})
 }
 
 func (r *CLIRunner) Remove(name string) error {

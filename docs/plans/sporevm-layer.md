@@ -99,7 +99,7 @@ provenance facts and verification, and the gateway service.
 │  compile policy (fail closed)│
 │  spore create + copy-in      │──▶ repo.spore ──▶ spore run --from
 │  warmup via gateway          │    (provenance    spore fork --count N
-│  spore suspend --out         │     annotations)  spore fanout
+│  spore save --stop --out     │     annotations)  spore fanout
 ╰──────────────┬───────────────╯
                │ binds during warmup          one socket per lineage
                ▼                                       ▼
@@ -125,7 +125,7 @@ provenance facts and verification, and the gateway service.
    that need credentials reach them through the bake-time gateway binding;
    bake fails closed if warmup is configured with raw secret environment
    variables.
-5. **Capture.** `spore suspend --out <spore>`, then destroy the builder VM.
+5. **Capture.** `spore save --out <spore> --stop`, then destroy the builder VM.
    Create-time annotations merge into the snapshot manifest (SporeVM
    annotation semantics), so the artifact carries its provenance.
 6. **Verify.** Run the verify checks against the produced spore before
@@ -267,7 +267,7 @@ item; the `spore` CLI does not yet expose them.
    named `spore resume`, `spore fork`, and `spore fanout` to bind an existing
    Unix socket for a service the manifest requires.
 3. **Annotations on capture:** expose snapshot-time annotations on
-   `spore suspend` (library `SnapshotNamedOptions.Annotations`) so bake can
+   `spore save` (library `SnapshotNamedOptions.Annotations`) so bake can
    record capture-time facts.
 4. **Resume readiness fail-closed:** resume currently reports success even
    when the restored monitor never becomes ready; it must wait or fail, as
@@ -318,7 +318,7 @@ Status: implemented in this branch.
   options, plus the resume readiness fix).
 
 Done when annotations, exact host-port rules, and socket bindings flow through
-`spore create`, `spore suspend`, `spore run --from`, `spore fork`.
+`spore create`, `spore save`, `spore run --from`, `spore fork`.
 
 ### Slice 3: Bake
 
@@ -343,7 +343,7 @@ may set `resources.vcpus` freely.
   compile → create builder → copy-in → warmup → suspend → verify, with the
   bake key (`internal/bake/key.go`), idempotent no-op for clean workspaces,
   dirty-workspace fail-closed rebake, ephemeral builder cleanup on failure,
-  and a spore >= 0.3.1 version gate. `sandbox.warmup` (flat shell-command
+  and a spore >= 0.6.0 version gate. `sandbox.warmup` (flat shell-command
   list) added to the policy schema and covered by the policy hash.
 - Removed the libspore adapter (`internal/sporevm/`), the top-level
   lifecycle commands, the libspore build tag, and the Go bindings dependency.
