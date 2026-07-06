@@ -119,7 +119,7 @@ func initGitWorkspace(t *testing.T, dir string) {
 
 func TestRunBakesEndToEnd(t *testing.T) {
 	compiled := testPolicy()
-	runner := &fakeRunner{version: "0.3.1"}
+	runner := &fakeRunner{version: "0.6.0"}
 	options := testOptions(t, runner)
 	key := Key(compiled, CollectGitFacts(options.Dir))
 	runner.annotations = map[string]string{
@@ -173,7 +173,7 @@ func TestRunExecutesEffectiveWarmupInWorkspace(t *testing.T) {
 		Hash:     "policy-hash",
 		Warmup:   []string{"ALPHA='two words' 'go' 'mod' 'download'"},
 	}
-	runner := &fakeRunner{version: "0.3.1"}
+	runner := &fakeRunner{version: "0.6.0"}
 	options := testOptions(t, runner)
 	key := Key(compiled, CollectGitFacts(options.Dir))
 	runner.annotations = map[string]string{
@@ -192,7 +192,7 @@ func TestRunExecutesEffectiveWarmupInWorkspace(t *testing.T) {
 
 func TestRunDestroysBuilderOnWarmupFailure(t *testing.T) {
 	compiled := testPolicy()
-	runner := &fakeRunner{version: "0.3.1", execErr: errors.New("guest command failed")}
+	runner := &fakeRunner{version: "0.6.0", execErr: errors.New("guest command failed")}
 	options := testOptions(t, runner)
 
 	_, err := Run(compiled, options)
@@ -207,7 +207,7 @@ func TestRunDestroysBuilderOnWarmupFailure(t *testing.T) {
 
 func TestRunNoOpsWhenArtifactMatches(t *testing.T) {
 	compiled := testPolicy()
-	runner := &fakeRunner{version: "0.3.1"}
+	runner := &fakeRunner{version: "0.6.0"}
 	options := testOptions(t, runner)
 	initGitWorkspace(t, options.Dir)
 	key := Key(compiled, CollectGitFactsExcluding(options.Dir, ArtifactExclusions(options.Dir, options.Out)))
@@ -235,7 +235,7 @@ func TestRunNoOpsWhenArtifactMatches(t *testing.T) {
 
 func TestRunRefusesStaleArtifact(t *testing.T) {
 	compiled := testPolicy()
-	runner := &fakeRunner{version: "0.3.1"}
+	runner := &fakeRunner{version: "0.6.0"}
 	options := testOptions(t, runner)
 	initGitWorkspace(t, options.Dir)
 	runner.annotations = map[string]string{
@@ -257,7 +257,7 @@ func TestRunRefusesStaleArtifact(t *testing.T) {
 // date — changed files would otherwise silently serve a stale spore.
 func TestRunNonGitWorkspaceNeverCacheFresh(t *testing.T) {
 	compiled := testPolicy()
-	runner := &fakeRunner{version: "0.3.1"}
+	runner := &fakeRunner{version: "0.6.0"}
 	options := testOptions(t, runner)
 	key := Key(compiled, CollectGitFacts(options.Dir))
 	runner.annotations = map[string]string{
@@ -276,10 +276,10 @@ func TestRunNonGitWorkspaceNeverCacheFresh(t *testing.T) {
 
 func TestRunRequiresMinimumSporeVersion(t *testing.T) {
 	compiled := testPolicy()
-	runner := &fakeRunner{version: "0.3.0"}
+	runner := &fakeRunner{version: "0.5.2"}
 
 	_, err := Run(compiled, testOptions(t, runner))
-	if err == nil || !strings.Contains(err.Error(), "requires spore >= 0.3.1") {
+	if err == nil || !strings.Contains(err.Error(), "requires spore >= 0.6.0") {
 		t.Fatalf("expected version gate error, got %v", err)
 	}
 }
@@ -316,10 +316,10 @@ func TestCompareVersions(t *testing.T) {
 		a, b string
 		want int
 	}{
-		{"0.3.1", "0.3.1", 0},
-		{"0.3.0", "0.3.1", -1},
+		{"0.6.0", "0.6.0", 0},
+		{"0.5.2", "0.6.0", -1},
 		{"0.10.0", "0.9.9", 1},
-		{"1.0.0", "0.3.1", 1},
+		{"1.0.0", "0.6.0", 1},
 	}
 	for _, tc := range tests {
 		if got := compareVersions(tc.a, tc.b); got != tc.want {

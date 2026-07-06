@@ -91,7 +91,7 @@ drive `spore` directly or in CI policy checks.
 ## How it fits together
 
 ```
-cleanroom bake ─▶ spore create ─▶ copy-in ─▶ warmup ─▶ spore suspend ─▶ repo.spore
+cleanroom bake ─▶ spore create ─▶ copy-in ─▶ warmup ─▶ spore save --stop ─▶ repo.spore
                                                 │                         │
                         credentials via gateway ┘        provenance annotations
 ```
