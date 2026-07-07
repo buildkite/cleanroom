@@ -15,34 +15,25 @@ import (
 
 func TestSporeRunArgs(t *testing.T) {
 	argv := []string{"make", "test"}
-	plain := bake.Provenance{}
-	if got, want := sporeRunArgs("repo.spore", plain, "", argv), []string{"run", "--from", "repo.spore", "--", "make", "test"}; !reflect.DeepEqual(got, want) {
+	if got, want := sporeRunArgs("repo.spore", false, "", argv), []string{"run", "--from", "repo.spore", "--", "make", "test"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("plain args = %#v, want %#v", got, want)
 	}
 
-	mediated := bake.Provenance{GatewayServices: []bake.GatewayService{{
-		Name:      "cleanroom-gateway",
-		GuestHost: "cleanroom-gateway.spore.internal",
-		GuestPort: 8170,
-	}}}
 	want := []string{"run", "--from", "repo.spore", "--bind-service", "cleanroom-gateway=unix:/tmp/gw.sock", "--", "make", "test"}
-	if got := sporeRunArgs("repo.spore", mediated, "/tmp/gw.sock", argv); !reflect.DeepEqual(got, want) {
+	if got := sporeRunArgs("repo.spore", true, "/tmp/gw.sock", argv); !reflect.DeepEqual(got, want) {
 		t.Fatalf("mediated args = %#v, want %#v", got, want)
 	}
 }
 
 func TestContentCacheEnvSynthesizesGitAndGoRouting(t *testing.T) {
-	prov := bake.Provenance{
-		MediationServices: []string{"content-cache"},
-		NetworkRules: []bake.NetworkRule{
-			{Host: "github.com", Ports: []uint16{443}},
-			{Host: "proxy.golang.org", Ports: []uint16{443}},
-			{Host: "dl.google.com", Ports: []uint16{443}},
-			{Host: "example.com", Ports: []uint16{80}},
-		},
-	}
+	hosts := allowedHTTPSHosts([]bake.NetworkRule{
+		{Host: "github.com", Ports: []uint16{443}},
+		{Host: "proxy.golang.org", Ports: []uint16{443}},
+		{Host: "dl.google.com", Ports: []uint16{443}},
+		{Host: "example.com", Ports: []uint16{80}},
+	})
 	lookup := func(string) (string, bool) { return "", false }
-	got := contentCacheEnv(prov, []string{"go", "test"}, lookup)
+	got := contentCacheEnv([]string{"content-cache"}, hosts, []string{"go", "test"}, lookup)
 	base := "http://cleanroom-gateway.spore.internal:8170/services/content-cache"
 	want := []string{
 		"GIT_CONFIG_COUNT=3",
@@ -61,22 +52,34 @@ func TestContentCacheEnvSynthesizesGitAndGoRouting(t *testing.T) {
 }
 
 func TestContentCacheEnvRequiresServiceAndRespectsExplicitGoEnv(t *testing.T) {
-	prov := bake.Provenance{
-		NetworkRules: []bake.NetworkRule{{Host: "proxy.golang.org", Ports: []uint16{443}}},
-	}
+	hosts := allowedHTTPSHosts([]bake.NetworkRule{{Host: "proxy.golang.org", Ports: []uint16{443}}})
 	lookup := func(string) (string, bool) { return "", false }
-	if got := contentCacheEnv(prov, []string{"go", "test"}, lookup); len(got) != 0 {
+	if got := contentCacheEnv(nil, hosts, []string{"go", "test"}, lookup); len(got) != 0 {
 		t.Fatalf("content cache env without service = %#v, want none", got)
 	}
 
-	prov.MediationServices = []string{"content-cache"}
 	argv := []string{"/usr/bin/env", "GOPROXY=https://proxy.example,direct", "go", "test"}
-	got := strings.Join(contentCacheEnv(prov, argv, lookup), "\n")
+	got := strings.Join(contentCacheEnv([]string{"content-cache"}, hosts, argv, lookup), "\n")
 	if strings.Contains(got, "GOPROXY=") {
 		t.Fatalf("content cache env overrode explicit GOPROXY: %q", got)
 	}
 	if !strings.Contains(got, "GIT_CONFIG_COUNT=1") {
 		t.Fatalf("content cache env did not keep git routing: %q", got)
+	}
+}
+
+func TestContentCacheServeArgsScopeChildCacheHosts(t *testing.T) {
+	hosts := []string{"dl.google.com", "github.com", "gitlab.com"}
+	got := contentCacheServeArgs(hosts)
+	want := []string{
+		"content-cache", "serve",
+		"--listen", defaultContentCacheListen,
+		"--no-default-hosts",
+		"--git-allowed-hosts", "dl.google.com,github.com,gitlab.com",
+		"--fetch-allowed-hosts", "dl.google.com",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("content cache serve args = %#v, want %#v", got, want)
 	}
 }
 
@@ -144,6 +147,9 @@ func TestRunCommandAuditsAndRunsPlainSpore(t *testing.T) {
 		bake.AnnotationPrefix + "workspace.dir":        repo,
 		bake.AnnotationPrefix + "workspace.git.commit": facts.Commit,
 		bake.AnnotationPrefix + "workspace.git.dirty":  "false",
+		bake.AnnotationPrefix + "network.rules":        `[{"host":"evil.example","ports":[443]}]`,
+		bake.AnnotationPrefix + "mediation.services":   `["content-cache"]`,
+		bake.AnnotationPrefix + "gateway.services":     `[{"name":"cleanroom-gateway","guest_host":"cleanroom-gateway.spore.internal","guest_port":8170}]`,
 	}
 	inspectJSON, err := json.Marshal(map[string]any{"annotations": annotations})
 	if err != nil {

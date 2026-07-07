@@ -46,10 +46,15 @@ func (c *RunCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	argv = wrapArgvWithEnv(argv, contentCacheEnv(prov, argv, os.LookupEnv))
+	inputs, err := bake.Compile(compiled)
+	if err != nil {
+		return fmt.Errorf("compile audited policy for run: %w", err)
+	}
+	cacheHosts := allowedHTTPSHosts(inputs.NetworkRules)
+	argv = wrapArgvWithEnv(argv, contentCacheEnv(compiled.Mediation, cacheHosts, argv, os.LookupEnv))
 
-	if len(prov.GatewayServices) == 0 {
-		return c.runSpore(ctx, sporeRunArgs(c.SporeDir, prov, "", argv))
+	if len(compiled.Mediation) == 0 {
+		return c.runSpore(ctx, sporeRunArgs(c.SporeDir, false, "", argv))
 	}
 
 	tempDir, err := os.MkdirTemp("", "cleanroom-run-*")
@@ -60,13 +65,13 @@ func (c *RunCommand) Run(ctx *runtimeContext) error {
 	socketPath := filepath.Join(tempDir, "gateway.sock")
 	grantsPath := c.Grants
 
-	cache, cacheDone, err := c.startContentCache(ctx, prov)
+	cache, cacheDone, err := c.startContentCache(ctx, compiled.Mediation, cacheHosts)
 	if err != nil {
 		return err
 	}
 	defer stopGateway(cache, cacheDone)
 
-	if grantsPath == "" && onlyMediationService(prov, contentCacheServiceName) {
+	if grantsPath == "" && onlyMediationService(compiled.Mediation, contentCacheServiceName) {
 		grantsPath, err = writeContentCacheGatewayConfig(tempDir, compiled.Hash)
 		if err != nil {
 			return err
@@ -85,7 +90,7 @@ func (c *RunCommand) Run(ctx *runtimeContext) error {
 	}
 	defer stopGateway(gateway, done)
 
-	return c.runSpore(ctx, sporeRunArgs(c.SporeDir, prov, socketPath, argv))
+	return c.runSpore(ctx, sporeRunArgs(c.SporeDir, true, socketPath, argv))
 }
 
 func (c *RunCommand) audit(ctx *runtimeContext, prov bake.Provenance) (*policy.CompiledPolicy, bake.GitFacts, error) {
@@ -132,15 +137,15 @@ func (c *RunCommand) startGateway(ctx *runtimeContext, socketPath, grantsPath st
 	return cmd, done, nil
 }
 
-func (c *RunCommand) startContentCache(ctx *runtimeContext, prov bake.Provenance) (*exec.Cmd, <-chan error, error) {
-	if c.Grants != "" || !onlyMediationService(prov, contentCacheServiceName) || contentCacheHealthy() {
+func (c *RunCommand) startContentCache(ctx *runtimeContext, mediationServices, hosts []string) (*exec.Cmd, <-chan error, error) {
+	if c.Grants != "" || !onlyMediationService(mediationServices, contentCacheServiceName) || contentCacheHealthy() {
 		return nil, nil, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, nil, fmt.Errorf("find cleanroom executable: %w", err)
 	}
-	cmd := exec.Command(exe, "content-cache", "serve", "--listen", defaultContentCacheListen)
+	cmd := exec.Command(exe, contentCacheServeArgs(hosts)...)
 	cmd.Dir = ctx.CWD
 	cmd.Stdout = ctx.stderr()
 	cmd.Stderr = ctx.stderr()
@@ -159,6 +164,17 @@ func (c *RunCommand) startContentCache(ctx *runtimeContext, prov bake.Provenance
 	return cmd, done, nil
 }
 
+func contentCacheServeArgs(hosts []string) []string {
+	args := []string{"content-cache", "serve", "--listen", defaultContentCacheListen, "--no-default-hosts"}
+	if len(hosts) > 0 {
+		args = append(args, "--git-allowed-hosts", strings.Join(hosts, ","))
+	}
+	if hasString(hosts, "dl.google.com") {
+		args = append(args, "--fetch-allowed-hosts", "dl.google.com")
+	}
+	return args
+}
+
 func (c *RunCommand) runSpore(ctx *runtimeContext, args []string) error {
 	cmd := exec.Command(c.Spore, args...)
 	cmd.Dir = ctx.CWD
@@ -171,12 +187,10 @@ func (c *RunCommand) runSpore(ctx *runtimeContext, args []string) error {
 	return nil
 }
 
-func sporeRunArgs(sporeDir string, prov bake.Provenance, socketPath string, argv []string) []string {
+func sporeRunArgs(sporeDir string, bindGateway bool, socketPath string, argv []string) []string {
 	args := []string{"run", "--from", sporeDir}
-	if socketPath != "" {
-		for _, service := range prov.GatewayServices {
-			args = append(args, "--bind-service", fmt.Sprintf("%s=unix:%s", service.Name, socketPath))
-		}
+	if bindGateway && socketPath != "" {
+		args = append(args, "--bind-service", fmt.Sprintf("%s=unix:%s", mediation.BoundServiceName, socketPath))
 	}
 	args = append(args, "--")
 	args = append(args, argv...)
@@ -198,11 +212,10 @@ func wrapArgvWithEnv(argv, env []string) []string {
 	return append(wrapped, argv...)
 }
 
-func contentCacheEnv(prov bake.Provenance, argv []string, lookupEnv func(string) (string, bool)) []string {
-	if !hasString(prov.MediationServices, contentCacheServiceName) {
+func contentCacheEnv(mediationServices, hosts, argv []string, lookupEnv func(string) (string, bool)) []string {
+	if !hasString(mediationServices, contentCacheServiceName) {
 		return nil
 	}
-	hosts := allowedHTTPSHosts(prov.NetworkRules)
 	if len(hosts) == 0 {
 		return nil
 	}
@@ -281,8 +294,8 @@ func hasString(values []string, want string) bool {
 	return false
 }
 
-func onlyMediationService(prov bake.Provenance, name string) bool {
-	return len(prov.MediationServices) == 1 && prov.MediationServices[0] == name
+func onlyMediationService(services []string, name string) bool {
+	return len(services) == 1 && services[0] == name
 }
 
 func writeContentCacheGatewayConfig(dir, policyHash string) (string, error) {

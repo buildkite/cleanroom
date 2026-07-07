@@ -30,6 +30,7 @@ type ContentCacheServeCommand struct {
 	Storage           string        `help:"Storage directory (default: user cache dir/cleanroom/content-cache)"`
 	GitAllowedHosts   []string      `help:"Comma-separated Git upstream hosts to cache" sep:","`
 	FetchAllowedHosts []string      `help:"Comma-separated /fetch upstream hosts to cache" sep:","`
+	NoDefaultHosts    bool          `help:"Do not apply default Git/fetch host allowlists" hidden:""`
 	CacheMaxSize      int64         `help:"Maximum cache size in bytes (0 disables size eviction)" default:"10737418240"`
 	BlobRetention     time.Duration `help:"Minimum blob retention after last access" default:"24h"`
 	LogLevel          string        `help:"Log level" enum:"debug,info,warn,error" default:"info"`
@@ -48,8 +49,8 @@ func (c *ContentCacheServeCommand) Run(ctx *runtimeContext) error {
 	srv, err := ccserver.New(ccserver.Config{
 		Address:               c.Listen,
 		StoragePath:           storage,
-		GitAllowedHosts:       defaultStrings(c.GitAllowedHosts, defaultContentCacheGitHosts),
-		FetchAllowedHosts:     defaultStrings(c.FetchAllowedHosts, defaultContentCacheFetchHosts),
+		GitAllowedHosts:       contentCacheAllowedHosts(c.GitAllowedHosts, defaultContentCacheGitHosts, c.NoDefaultHosts),
+		FetchAllowedHosts:     contentCacheAllowedHosts(c.FetchAllowedHosts, defaultContentCacheFetchHosts, c.NoDefaultHosts),
 		GitMaxRequestBodySize: 100 << 20,
 		GoProxyMetadataTTL:    24 * time.Hour,
 		NPMMetadataTTL:        24 * time.Hour,
@@ -120,4 +121,11 @@ func defaultStrings(values, defaults []string) []string {
 		return append([]string(nil), defaults...)
 	}
 	return values
+}
+
+func contentCacheAllowedHosts(values, defaults []string, noDefaults bool) []string {
+	if noDefaults {
+		return append([]string(nil), values...)
+	}
+	return defaultStrings(values, defaults)
 }

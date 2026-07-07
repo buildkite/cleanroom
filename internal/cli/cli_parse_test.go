@@ -149,6 +149,7 @@ func TestContentCacheServeParses(t *testing.T) {
 		"--storage", "/tmp/cache",
 		"--git-allowed-hosts", "github.com,gitlab.com",
 		"--fetch-allowed-hosts", "dl.google.com,releases.hashicorp.com",
+		"--no-default-hosts",
 	}); err != nil {
 		t.Fatalf("parse content-cache serve returned error: %v", err)
 	}
@@ -163,6 +164,9 @@ func TestContentCacheServeParses(t *testing.T) {
 	}
 	if got, want := c.Content.Serve.FetchAllowedHosts, []string{"dl.google.com", "releases.hashicorp.com"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected fetch hosts: got %#v want %#v", got, want)
+	}
+	if !c.Content.Serve.NoDefaultHosts {
+		t.Fatal("expected no-default-hosts")
 	}
 }
 

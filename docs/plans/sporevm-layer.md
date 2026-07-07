@@ -248,13 +248,13 @@ not the socket.
 
 `cleanroom run <spore-dir> --dir <repo> -- <argv...>` is the thin launcher over
 `spore run --from`. It inspects provenance, audits the bake key against the
-repository, starts `cleanroom gateway serve` when the spore records gateway
-services, waits for the socket, binds it as `cleanroom-gateway`, and then
-delegates to `spore run --from`.
+repository, starts `cleanroom gateway serve` when the audited policy requests
+mediation services, waits for the socket, binds it as `cleanroom-gateway`, and
+then delegates to `spore run --from`.
 
-Content-cache command setup lives here, not in bake. If provenance records the
-`content-cache` mediation service and HTTPS allow rules, `cleanroom run` wraps
-the command with `/usr/bin/env` values for Git and Go:
+Content-cache command setup lives here, not in bake. If the audited policy
+requests the `content-cache` mediation service and HTTPS allow rules,
+`cleanroom run` wraps the command with `/usr/bin/env` values for Git and Go:
 
 - Git `url.<gateway>/git/<host>/.insteadOf=https://<host>/` entries for allowed
   HTTPS hosts.
@@ -271,10 +271,11 @@ The content-cache storage is host-scoped, not spore-scoped. In the common
 content-cache-only case, `cleanroom run` starts the backing cache as a child
 process if `127.0.0.1:8128/health` is not already serving, then writes a
 temporary gateway config granting `content-cache` to the audited policy hash.
-The process is run-scoped, but the storage lives under the user's cache
-directory by default, so repeated spores from one repo reuse Git, Go proxy, and
-fetch blobs. `cleanroom content-cache serve` remains available for prewarming,
-debugging, or externally managed host setup.
+The child is started with host allowlists derived from that audited policy. The
+process is run-scoped, but the storage lives under the user's cache directory by
+default, so repeated spores from one repo reuse Git, Go proxy, and fetch blobs.
+`cleanroom content-cache serve` remains available for prewarming, debugging, or
+externally managed host setup.
 
 ```console
 cleanroom gateway serve --dir . --for repo.spore --socket gw.sock &

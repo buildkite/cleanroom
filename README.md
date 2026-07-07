@@ -90,7 +90,8 @@ sandbox:
 `compile` and `stamp` are the composable plumbing behind `bake`; use them to
 drive `spore` directly or in CI policy checks.
 
-`cleanroom run` is the command-launch convenience layer. When provenance records
+`cleanroom run` is the command-launch convenience layer. After it audits the
+spore's bake key against the current repository policy, if that policy requests
 the `content-cache` mediation service and HTTPS allow rules, it binds the
 gateway and wraps the command with Git and Go environment pointing at
 `http://cleanroom-gateway.spore.internal:8170/services/content-cache/...`.
@@ -108,8 +109,10 @@ cleanroom content-cache serve
 
 By default it listens on `127.0.0.1:8128` and stores data under the user's cache
 directory at `cleanroom/content-cache`. Git caching allows `github.com` by
-default; use `--git-allowed-hosts` for other Git hosts. For non-cache mediation
-services, or custom cache upstreams, grant services through the gateway config:
+default; use `--git-allowed-hosts` for other Git hosts. The run-scoped child
+cache is started with host allowlists derived from the audited policy. For
+non-cache mediation services, or custom cache upstreams, grant services through
+the gateway config:
 
 ```yaml
 services:
