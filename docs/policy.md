@@ -128,7 +128,7 @@ warmup logs, and may be captured in the spore. Use mediation for credentials.
 Block `inputs.files` and `outputs` are declaration metadata. Inputs are
 validated and hash-covered as policy metadata; content freshness comes from the
 commit/dirty bake key. Outputs are honoured by the whole checkpoint: everything
-present in the VM when `spore save --stop` runs is captured, while output
+present in the VM when `spore save --out ... --stop` runs is captured, while output
 path/overlap validation prevents ambiguous declarations.
 
 `dependencies.reuse: exact` and the default are accepted because the whole
@@ -147,6 +147,20 @@ sandbox:
   mediation:
     services: [github-token]
 ```
+
+`content-cache` is also a mediation service. In the common content-cache-only
+case, `cleanroom run` checks `127.0.0.1:8128/health` and starts a child backing
+cache for the run if one is not already available, then grants that service to
+the audited policy hash through a temporary gateway config. It also injects
+per-command Git and Go environment such as Git `insteadOf`, `GOPROXY`, and
+`MISE_GO_DOWNLOAD_MIRROR` values pointing at `/services/content-cache/...`.
+This setup happens at run time; bake only stamps the requested service and
+allowed hosts into provenance.
+
+For prewarming, debugging, or managed host setup, run
+`cleanroom content-cache serve`. It listens on `127.0.0.1:8128` by default and
+keeps storage in the user's cache directory, so multiple spores from the same
+repository can share the same host cache through separate per-run gateways.
 
 The gateway operator grants services per lineage in the gateway's own config;
 a spore gets the intersection of what its policy requests and what the

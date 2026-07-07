@@ -48,8 +48,8 @@ type Result struct {
 }
 
 // Run executes the bake pipeline: compile -> create builder -> copy-in ->
-// warmup -> suspend -> verify. The builder VM is ephemeral: it is destroyed
-// on failure and consumed by suspend on success.
+// warmup -> save -> verify. The builder VM is ephemeral: it is destroyed
+// on failure and consumed by save on success.
 func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 	inputs, err := Compile(compiled)
 	if err != nil {
@@ -131,10 +131,10 @@ func Run(compiled *policy.CompiledPolicy, options Options) (Result, error) {
 	}
 
 	fmt.Fprintf(options.Log, "cleanroom bake: capturing %s\n", out)
-	if err := options.Runner.Suspend(builder, out); err != nil {
+	if err := options.Runner.Save(builder, out); err != nil {
 		return Result{}, fmt.Errorf("capture builder VM: %w", err)
 	}
-	// Suspend consumes the builder VM; nothing left to clean up.
+	// Save consumes the builder VM; nothing left to clean up.
 	cleanupBuilder = false
 
 	if err := verifyArtifact(options.Runner, out, key); err != nil {

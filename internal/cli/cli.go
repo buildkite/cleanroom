@@ -34,6 +34,8 @@ type CLI struct {
 	Stamp   StampCommand   `cmd:"" help:"Emit provenance annotations as spore create arguments"`
 	Bake    BakeCommand    `cmd:"" help:"Bake repo policy into a warm spore (consume with spore run --from, fork, fanout)"`
 	Verify  VerifyCommand  `cmd:"" help:"Verify cleanroom provenance of a spore and report required bindings"`
+	Run     RunCommand     `cmd:"" help:"Run a baked spore, starting the gateway when provenance requires it"`
+	Content ContentCommand `cmd:"" name:"content-cache" help:"Run host-side content-cache services for cleanroom gateways"`
 	Gateway GatewayCommand `cmd:"" help:"Lineage gateway: mediate credentialed upstream access for baked spores"`
 	Version VersionCommand `cmd:"" help:"Print version information"`
 }

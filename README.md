@@ -46,8 +46,8 @@ Cleanroom is the build tool; spore is the run tool.
 # Bake a warm spore from a repo's cleanroom.yaml (deps installed via warmup)
 cleanroom bake . --out repo.spore
 
-# Run it — restores in fork time, dependencies already present
-spore run --from repo.spore 'make test'
+# Run it — starts the gateway and command cache env when provenance requires them
+cleanroom run repo.spore --dir . -- /bin/sh -lc 'make test'
 
 # Fan out copy-on-write children that share the parent's memory and disk
 spore fork repo.spore --count 100 --out agents/
@@ -79,6 +79,8 @@ sandbox:
 | Command | Purpose |
 |---|---|
 | `cleanroom bake [dir] --out <spore>` | Compile policy, boot a builder, run warmup, capture a warm spore |
+| `cleanroom run <spore> --dir <repo> -- <argv...>` | Verify a warm spore, start the gateway if needed, then run it with SporeVM |
+| `cleanroom content-cache serve` | Serve a persistent host content-cache for gateway-backed runs |
 | `cleanroom compile [dir]` | Emit `spore create` arguments from policy (fail-closed) |
 | `cleanroom stamp [dir]` | Emit provenance annotations as `spore create` arguments |
 | `cleanroom verify [spore-dir]` | Verify provenance; audit the bake key against a repo with `--dir` |
@@ -88,10 +90,40 @@ sandbox:
 `compile` and `stamp` are the composable plumbing behind `bake`; use them to
 drive `spore` directly or in CI policy checks.
 
+`cleanroom run` is the command-launch convenience layer. When provenance records
+the `content-cache` mediation service and HTTPS allow rules, it binds the
+gateway and wraps the command with Git and Go environment pointing at
+`http://cleanroom-gateway.spore.internal:8170/services/content-cache/...`.
+`cleanroom bake` does not mutate guest config for package managers; it only
+captures the warm spore and stamps policy/provenance.
+
+For the common `content-cache`-only case, `cleanroom run` checks
+`127.0.0.1:8128/health` and starts a child content-cache service for the run if
+one is not already available. The backing storage is still shared on disk across
+runs. To prewarm, debug, or manage the cache yourself, run:
+
+```bash
+cleanroom content-cache serve
+```
+
+By default it listens on `127.0.0.1:8128` and stores data under the user's cache
+directory at `cleanroom/content-cache`. Git caching allows `github.com` by
+default; use `--git-allowed-hosts` for other Git hosts. For non-cache mediation
+services, or custom cache upstreams, grant services through the gateway config:
+
+```yaml
+services:
+  content-cache:
+    upstream: http://127.0.0.1:8128
+grants:
+  - match: { remote: "https://github.com/buildkite/*" }
+    services: [content-cache]
+```
+
 ## How it fits together
 
 ```
-cleanroom bake ─▶ spore create ─▶ copy-in ─▶ warmup ─▶ spore save --stop ─▶ repo.spore
+cleanroom bake ─▶ spore create ─▶ copy-in ─▶ warmup ─▶ spore save --out ... --stop ─▶ repo.spore
                                                 │                         │
                         credentials via gateway ┘        provenance annotations
 ```

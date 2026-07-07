@@ -99,7 +99,7 @@ provenance facts and verification, and the gateway service.
 │  compile policy (fail closed)│
 │  spore create + copy-in      │──▶ repo.spore ──▶ spore run --from
 │  warmup via gateway          │    (provenance    spore fork --count N
-│  spore save --stop --out     │     annotations)  spore fanout
+│  spore save --out --stop     │     annotations)  spore fanout
 ╰──────────────┬───────────────╯
                │ binds during warmup          one socket per lineage
                ▼                                       ▼
@@ -244,6 +244,38 @@ around it changes. Lineage scoping is an authorization semantic, not a process
 topology — per-pod sockets are fine because the scope derives from identity,
 not the socket.
 
+### `cleanroom run`
+
+`cleanroom run <spore-dir> --dir <repo> -- <argv...>` is the thin launcher over
+`spore run --from`. It inspects provenance, audits the bake key against the
+repository, starts `cleanroom gateway serve` when the spore records gateway
+services, waits for the socket, binds it as `cleanroom-gateway`, and then
+delegates to `spore run --from`.
+
+Content-cache command setup lives here, not in bake. If provenance records the
+`content-cache` mediation service and HTTPS allow rules, `cleanroom run` wraps
+the command with `/usr/bin/env` values for Git and Go:
+
+- Git `url.<gateway>/git/<host>/.insteadOf=https://<host>/` entries for allowed
+  HTTPS hosts.
+- `GOPROXY=<gateway>/goproxy,direct` when `proxy.golang.org:443` is allowed and
+  the caller did not set `GOPROXY`.
+- `MISE_GO_DOWNLOAD_MIRROR=<gateway>/fetch/dl.google.com/go` when
+  `dl.google.com:443` is allowed and the caller did not set it.
+
+Bundler/npm/pip config-file based mirrors are deferred until they can be added
+as a similarly explicit command wrapper or SporeVM grows run-time environment
+flags. There is no hidden guest init or captured guest mutation in this path.
+
+The content-cache storage is host-scoped, not spore-scoped. In the common
+content-cache-only case, `cleanroom run` starts the backing cache as a child
+process if `127.0.0.1:8128/health` is not already serving, then writes a
+temporary gateway config granting `content-cache` to the audited policy hash.
+The process is run-scoped, but the storage lives under the user's cache
+directory by default, so repeated spores from one repo reuse Git, Go proxy, and
+fetch blobs. `cleanroom content-cache serve` remains available for prewarming,
+debugging, or externally managed host setup.
+
 ```console
 cleanroom gateway serve --dir . --for repo.spore --socket gw.sock &
 spore fork repo.spore --count 100 --out agents/ \
@@ -340,7 +372,7 @@ defaults to http). Multi-vCPU fork also landed upstream, so fan-out bakes
 may set `resources.vcpus` freely.
 
 - Implemented the bake pipeline (`internal/bake/bake.go`, `cleanroom bake`):
-  compile → create builder → copy-in → warmup → suspend → verify, with the
+  compile -> create builder -> copy-in -> warmup -> save -> verify, with the
   bake key (`internal/bake/key.go`), idempotent no-op for clean workspaces,
   dirty-workspace fail-closed rebake, ephemeral builder cleanup on failure,
   and a spore >= 0.6.0 version gate. `sandbox.warmup` (flat shell-command
@@ -374,7 +406,7 @@ change to SporeVM's runtime model.
   uses absolute paths. Block environment maps are sorted by key and emitted as
   shell-quoted `KEY=value` assignments before the command line.
 - Under the checkpoint model, declared block outputs are honoured by the whole
-  spore captured at suspend time: everything present in the VM is captured, not
+  spore captured at save time: everything present in the VM is captured, not
   a per-output file set. Existing output path and overlap validation remains
   important because it prevents ambiguous declarations. Inputs remain validated
   and hash-covered declaration metadata; content freshness still comes from the
