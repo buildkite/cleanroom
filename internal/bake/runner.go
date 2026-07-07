@@ -8,13 +8,13 @@ import (
 	"strings"
 )
 
-// minSporeVersion is the first spore release with the save/restore CLI
-// vocabulary Cleanroom's bake runner uses.
-const minSporeVersion = "0.6.0"
+// minSporeVersion is the first spore release carrying the save command
+// Cleanroom uses to capture and stop builder VMs.
+const minSporeVersion = "0.7.0"
 
 // Runner runs spore lifecycle commands for the bake pipeline.
 type Runner interface {
-	// Version returns the spore CLI version string, e.g. "0.6.0".
+	// Version returns the spore CLI version string, e.g. "0.7.0".
 	Version() (string, error)
 	// Create starts a named builder VM with raw spore create arguments.
 	Create(name string, args []string) error
@@ -22,8 +22,8 @@ type Runner interface {
 	CopyIn(name, hostPath, guestPath string) error
 	// ExecShell runs a shell command in the named VM, streaming output.
 	ExecShell(name, command string) error
-	// Suspend captures the named VM to outDir and stops it.
-	Suspend(name, outDir string) error
+	// Save captures the named VM to outDir and stops it.
+	Save(name, outDir string) error
 	// InspectAnnotations reads the annotations of a spore directory.
 	InspectAnnotations(sporeDir string) (map[string]string, error)
 	// Remove destroys a named VM.
@@ -62,7 +62,7 @@ func (r *CLIRunner) ExecShell(name, command string) error {
 	return r.run([]string{"exec", name, command})
 }
 
-func (r *CLIRunner) Suspend(name, outDir string) error {
+func (r *CLIRunner) Save(name, outDir string) error {
 	return r.run([]string{"save", name, "--out", outDir, "--stop"})
 }
 

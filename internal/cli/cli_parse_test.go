@@ -33,13 +33,15 @@ func TestTopLevelCommandsAreTheBakeSurface(t *testing.T) {
 		got[command.Name] = true
 	}
 	want := map[string]bool{
-		"policy":  true,
-		"compile": true,
-		"stamp":   true,
-		"bake":    true,
-		"verify":  true,
-		"gateway": true,
-		"version": true,
+		"policy":        true,
+		"compile":       true,
+		"stamp":         true,
+		"bake":          true,
+		"verify":        true,
+		"run":           true,
+		"content-cache": true,
+		"gateway":       true,
+		"version":       true,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("top-level commands = %#v, want %#v", got, want)
@@ -109,6 +111,62 @@ func TestVerifyCommandParses(t *testing.T) {
 	}
 	if c.Verify.SporeDir != "" {
 		t.Fatalf("unexpected default spore dir: %q", c.Verify.SporeDir)
+	}
+}
+
+func TestRunCommandParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"run", "./repo.spore", "--dir", "./repo", "--grants", "./gateway.yaml", "--", "make", "test"}); err != nil {
+		t.Fatalf("parse run returned error: %v", err)
+	}
+	if got, want := c.Run.SporeDir, "./repo.spore"; got != want {
+		t.Fatalf("unexpected run spore dir: got %q want %q", got, want)
+	}
+	if got, want := c.Run.Dir, "./repo"; got != want {
+		t.Fatalf("unexpected run dir: got %q want %q", got, want)
+	}
+	if got, want := c.Run.Grants, "./gateway.yaml"; got != want {
+		t.Fatalf("unexpected run grants: got %q want %q", got, want)
+	}
+	if got, want := c.Run.Spore, "spore"; got != want {
+		t.Fatalf("unexpected run spore default: got %q want %q", got, want)
+	}
+	if got, want := cleanPassthroughArgv(c.Run.Argv), []string{"make", "test"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected run argv: got %#v want %#v", got, want)
+	}
+	if _, err := newParserForTest(t, &CLI{}).Parse([]string{"run", "./repo.spore", "--", "make", "test"}); err == nil {
+		t.Fatal("expected parse error when --dir is missing")
+	}
+}
+
+func TestContentCacheServeParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+	if _, err := parser.Parse([]string{
+		"content-cache", "serve",
+		"--listen", "127.0.0.1:9999",
+		"--storage", "/tmp/cache",
+		"--git-allowed-hosts", "github.com,gitlab.com",
+		"--fetch-allowed-hosts", "dl.google.com,releases.hashicorp.com",
+		"--no-default-hosts",
+	}); err != nil {
+		t.Fatalf("parse content-cache serve returned error: %v", err)
+	}
+	if got, want := c.Content.Serve.Listen, "127.0.0.1:9999"; got != want {
+		t.Fatalf("unexpected listen: got %q want %q", got, want)
+	}
+	if got, want := c.Content.Serve.Storage, "/tmp/cache"; got != want {
+		t.Fatalf("unexpected storage: got %q want %q", got, want)
+	}
+	if got, want := c.Content.Serve.GitAllowedHosts, []string{"github.com", "gitlab.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected git hosts: got %#v want %#v", got, want)
+	}
+	if got, want := c.Content.Serve.FetchAllowedHosts, []string{"dl.google.com", "releases.hashicorp.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected fetch hosts: got %#v want %#v", got, want)
+	}
+	if !c.Content.Serve.NoDefaultHosts {
+		t.Fatal("expected no-default-hosts")
 	}
 }
 

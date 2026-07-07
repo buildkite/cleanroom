@@ -87,6 +87,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "non-canonical request path", http.StatusBadRequest)
 		return
 	}
+	if definition.AllowedPathPrefixes != nil && !pathPrefixAllowed(rest, definition.AllowedPathPrefixes) {
+		s.logf("deny client=%s service=%s method=%s path=%s reason=path-not-granted", client, name, r.Method, sanitizePath(rest))
+		http.Error(w, "mediation service path not granted", http.StatusForbidden)
+		return
+	}
 
 	upstream, err := url.Parse(definition.Upstream)
 	if err != nil {
@@ -148,6 +153,15 @@ func isCanonicalPath(rest string) bool {
 		cleaned += "/"
 	}
 	return cleaned == rest
+}
+
+func pathPrefixAllowed(rest string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(rest, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func splitServicePath(requestPath string) (name, rest string, ok bool) {

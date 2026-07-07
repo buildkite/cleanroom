@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,9 @@ func TestLoadConfigRejectsUnknownFieldsAndBadGrants(t *testing.T) {
 	}
 	if _, err := LoadConfig(write("grants:\n  - match: {remote: x}\n    services: [missing]\n")); err == nil || !strings.Contains(err.Error(), "undefined service") {
 		t.Fatalf("expected undefined service rejection, got %v", err)
+	}
+	if _, err := LoadConfig(write("services:\n  a:\n    upstream: https://example.com\n    allowed_path_prefixes: [relative]\n")); err == nil || !strings.Contains(err.Error(), "allowed_path_prefixes") {
+		t.Fatalf("expected allowed path prefix rejection, got %v", err)
 	}
 }
 
@@ -169,6 +173,47 @@ func TestServerMediatesWithCredentialInjectionAndAttribution(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "allow client=spore-abc-000001 service=echo-test") {
 		t.Fatalf("attribution missing from log: %s", log.String())
+	}
+}
+
+func TestServerEnforcesAllowedPathPrefixes(t *testing.T) {
+	var upstreamPaths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPaths = append(upstreamPaths, r.URL.Path)
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	scope := map[string]ServiceDefinition{
+		"content-cache": {
+			Upstream:            upstream.URL,
+			AllowedPathPrefixes: []string{"/git/"},
+		},
+	}
+	client, log := serveOnSocket(t, scope, func(string) (string, bool) { return "", false })
+
+	resp, err := client.Get("http://gateway/services/content-cache/git/github.com/repo/info/refs")
+	if err != nil {
+		t.Fatalf("allowed request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("allowed path status = %d", resp.StatusCode)
+	}
+
+	resp, err = client.Get("http://gateway/services/content-cache/npm/pkg")
+	if err != nil {
+		t.Fatalf("denied request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("denied path status = %d", resp.StatusCode)
+	}
+	if !reflect.DeepEqual(upstreamPaths, []string{"/git/github.com/repo/info/refs"}) {
+		t.Fatalf("upstream paths = %#v", upstreamPaths)
+	}
+	if !strings.Contains(log.String(), "reason=path-not-granted") {
+		t.Fatalf("expected path-not-granted log, got %s", log.String())
 	}
 }
 

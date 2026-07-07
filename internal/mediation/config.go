@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -46,6 +47,10 @@ type Config struct {
 type ServiceDefinition struct {
 	// Upstream is the base URL requests are forwarded to.
 	Upstream string `yaml:"upstream"`
+	// AllowedPathPrefixes optionally narrows which service-relative paths can
+	// be proxied. Nil means no path restriction; an explicit empty list denies
+	// every path.
+	AllowedPathPrefixes []string `yaml:"allowed_path_prefixes"`
 	// CredentialEnv names the host environment variable holding the secret.
 	// Empty means the service forwards without credential injection.
 	CredentialEnv string `yaml:"credential_env"`
@@ -103,6 +108,11 @@ func (c Config) validate() error {
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			return fmt.Errorf("service %s has invalid upstream %q: must be an http(s) URL", name, upstream)
 		}
+		for _, prefix := range service.AllowedPathPrefixes {
+			if !isCanonicalPathPrefix(prefix) {
+				return fmt.Errorf("service %s has invalid allowed_path_prefixes entry %q: must be an absolute canonical path prefix", name, prefix)
+			}
+		}
 	}
 	for i, grant := range c.Grants {
 		if grant.Match.Remote == "" && grant.Match.PolicyHash == "" {
@@ -118,6 +128,17 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
+}
+
+func isCanonicalPathPrefix(prefix string) bool {
+	if prefix == "" || !strings.HasPrefix(prefix, "/") {
+		return false
+	}
+	cleaned := path.Clean(prefix)
+	if strings.HasSuffix(prefix, "/") && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned == prefix
 }
 
 // LineageFacts are the verified provenance facts grants match on.
