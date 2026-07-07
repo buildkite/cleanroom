@@ -272,10 +272,11 @@ content-cache-only case, `cleanroom run` starts the backing cache as a child
 process if `127.0.0.1:8128/health` is not already serving, then writes a
 temporary gateway config granting `content-cache` to the audited policy hash.
 The child is started with host allowlists derived from that audited policy. The
-process is run-scoped, but the storage lives under the user's cache directory by
-default, so repeated spores from one repo reuse Git, Go proxy, and fetch blobs.
-`cleanroom content-cache serve` remains available for prewarming, debugging, or
-externally managed host setup.
+temporary gateway only forwards the configured cache route prefixes. The process
+is run-scoped, but the storage lives under the user's cache directory by default,
+so repeated spores from one repo reuse Git, Go proxy, and fetch blobs. `cleanroom
+content-cache serve` remains available for prewarming, debugging, or externally
+managed host setup.
 
 ```console
 cleanroom gateway serve --dir . --for repo.spore --socket gw.sock &

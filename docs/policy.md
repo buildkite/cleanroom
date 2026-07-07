@@ -152,11 +152,11 @@ sandbox:
 case, `cleanroom run` audits the spore's bake key against the current policy,
 checks `127.0.0.1:8128/health`, and starts a child backing cache for the run if
 one is not already available. That child is scoped to the audited policy's
-allowed hosts, and the temporary gateway config grants the service to the
-audited policy hash. `cleanroom run` also injects per-command Git and Go
-environment such as Git `insteadOf`, `GOPROXY`, and `MISE_GO_DOWNLOAD_MIRROR`
-values pointing at `/services/content-cache/...`. This setup happens at run
-time; bake only stamps policy/provenance.
+allowed hosts, and the temporary gateway config grants only the configured cache
+route prefixes to the audited policy hash. `cleanroom run` also injects
+per-command Git and Go environment such as Git `insteadOf`, `GOPROXY`, and
+`MISE_GO_DOWNLOAD_MIRROR` values pointing at `/services/content-cache/...`. This
+setup happens at run time; bake only stamps policy/provenance.
 
 For prewarming, debugging, or managed host setup, run
 `cleanroom content-cache serve`. It listens on `127.0.0.1:8128` by default and

@@ -110,7 +110,8 @@ cleanroom content-cache serve
 By default it listens on `127.0.0.1:8128` and stores data under the user's cache
 directory at `cleanroom/content-cache`. Git caching allows `github.com` by
 default; use `--git-allowed-hosts` for other Git hosts. The run-scoped child
-cache is started with host allowlists derived from the audited policy. For
+cache is started with host allowlists derived from the audited policy, and the
+temporary gateway only forwards the configured cache route prefixes. For
 non-cache mediation services, or custom cache upstreams, grant services through
 the gateway config:
 

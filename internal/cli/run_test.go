@@ -83,6 +83,17 @@ func TestContentCacheServeArgsScopeChildCacheHosts(t *testing.T) {
 	}
 }
 
+func TestContentCacheGatewayPathPrefixes(t *testing.T) {
+	hosts := []string{"dl.google.com", "github.com", "proxy.golang.org"}
+	want := []string{"/git/", "/goproxy/", "/fetch/"}
+	if got := contentCacheGatewayPathPrefixes(hosts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("content cache gateway prefixes = %#v, want %#v", got, want)
+	}
+	if got := contentCacheGatewayPathPrefixes(nil); len(got) != 0 {
+		t.Fatalf("empty content cache gateway prefixes = %#v, want none", got)
+	}
+}
+
 func TestWrapArgvWithEnv(t *testing.T) {
 	got := wrapArgvWithEnv([]string{"go", "test"}, []string{"GOPROXY=http://cache,direct"})
 	want := []string{"/usr/bin/env", "GOPROXY=http://cache,direct", "go", "test"}
@@ -93,7 +104,8 @@ func TestWrapArgvWithEnv(t *testing.T) {
 
 func TestContentCacheGatewayConfigGrantsCurrentPolicyHash(t *testing.T) {
 	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	path, err := writeContentCacheGatewayConfig(t.TempDir(), hash)
+	prefixes := []string{"/git/", "/fetch/"}
+	path, err := writeContentCacheGatewayConfig(t.TempDir(), hash, prefixes)
 	if err != nil {
 		t.Fatalf("write content-cache gateway config: %v", err)
 	}
@@ -107,6 +119,9 @@ func TestContentCacheGatewayConfigGrantsCurrentPolicyHash(t *testing.T) {
 	}
 	if got, want := scope["content-cache"].Upstream, "http://"+defaultContentCacheListen; got != want {
 		t.Fatalf("content-cache upstream = %q, want %q", got, want)
+	}
+	if got := scope["content-cache"].AllowedPathPrefixes; !reflect.DeepEqual(got, prefixes) {
+		t.Fatalf("content-cache allowed path prefixes = %#v, want %#v", got, prefixes)
 	}
 	if _, err := mediation.ResolveScope(config, []string{"content-cache"}, mediation.LineageFacts{PolicyHash: "different"}); err == nil {
 		t.Fatal("expected generated config to reject a different policy hash")

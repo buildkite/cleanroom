@@ -72,7 +72,7 @@ func (c *RunCommand) Run(ctx *runtimeContext) error {
 	defer stopGateway(cache, cacheDone)
 
 	if grantsPath == "" && onlyMediationService(compiled.Mediation, contentCacheServiceName) {
-		grantsPath, err = writeContentCacheGatewayConfig(tempDir, compiled.Hash)
+		grantsPath, err = writeContentCacheGatewayConfig(tempDir, compiled.Hash, contentCacheGatewayPathPrefixes(cacheHosts))
 		if err != nil {
 			return err
 		}
@@ -298,15 +298,38 @@ func onlyMediationService(services []string, name string) bool {
 	return len(services) == 1 && services[0] == name
 }
 
-func writeContentCacheGatewayConfig(dir, policyHash string) (string, error) {
+func contentCacheGatewayPathPrefixes(hosts []string) []string {
+	prefixes := []string{}
+	if len(hosts) > 0 {
+		prefixes = append(prefixes, "/git/")
+	}
+	if hasString(hosts, "proxy.golang.org") {
+		prefixes = append(prefixes, "/goproxy/")
+	}
+	if hasString(hosts, "dl.google.com") {
+		prefixes = append(prefixes, "/fetch/")
+	}
+	return prefixes
+}
+
+func writeContentCacheGatewayConfig(dir, policyHash string, allowedPathPrefixes []string) (string, error) {
 	path := filepath.Join(dir, "gateway.yaml")
+	var paths strings.Builder
+	if len(allowedPathPrefixes) == 0 {
+		paths.WriteString("    allowed_path_prefixes: []\n")
+	} else {
+		paths.WriteString("    allowed_path_prefixes:\n")
+		for _, prefix := range allowedPathPrefixes {
+			paths.WriteString("      - " + prefix + "\n")
+		}
+	}
 	config := fmt.Sprintf(`services:
   content-cache:
     upstream: http://%s
-grants:
+%sgrants:
   - match: { policy_hash: "%s" }
     services: [content-cache]
-`, defaultContentCacheListen, policyHash)
+`, defaultContentCacheListen, paths.String(), policyHash)
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		return "", fmt.Errorf("write content-cache gateway config: %w", err)
 	}
