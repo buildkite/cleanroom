@@ -6,7 +6,7 @@ hyperfine = "1.20.0"
 svu = "3.4.1"
 goreleaser = "2.17.0"
 # spore is the VM runtime cleanroom bakes for; pinned for the bake E2E smoke.
-"github:sporevm/sporevm" = "0.11.0"
+"github:sporevm/sporevm" = "0.11.2"
 
 [env]
 GOTOOLCHAIN = "local"
