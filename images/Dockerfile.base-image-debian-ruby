@@ -1,4 +1,4 @@
-FROM ruby:4.0.5-slim-bookworm
+FROM ruby:4.0.6-slim-bookworm
 
 ARG MISE_VERSION=v2026.5.12
 
