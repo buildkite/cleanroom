@@ -3,7 +3,7 @@ module github.com/buildkite/cleanroom
 go 1.26.2
 
 require (
-	github.com/alecthomas/kong v1.16.0
+	github.com/alecthomas/kong v1.16.1
 	github.com/buildkite/content-cache v1.4.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
