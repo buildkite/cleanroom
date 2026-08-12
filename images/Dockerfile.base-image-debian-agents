@@ -6,7 +6,7 @@ ARG CODEX_VERSION=0.147.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.228
 # renovate: datasource=npm depName=@google/gemini-cli
-ARG GEMINI_CLI_VERSION=0.54.4
+ARG GEMINI_CLI_VERSION=0.55.1
 # renovate: datasource=npm depName=@mariozechner/pi-coding-agent
 ARG PI_CODING_AGENT_VERSION=0.73.1
 
