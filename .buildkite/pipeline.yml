@@ -22,7 +22,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - test-collector#v1.11.0:
+      - test-collector#v1.12.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-go-test-engine.sh
@@ -49,7 +49,7 @@ steps:
       - mise#a5845c5082d3a4fe36dd77ae74973dfc86fc91a2:
           version: "2026.5.12"
           install_args: gotestsum
-      - test-collector#v1.11.0:
+      - test-collector#v1.12.0:
           files: "tmp/test-engine/*.xml"
           format: "junit"
     command: scripts/ci-go-test-engine.sh
