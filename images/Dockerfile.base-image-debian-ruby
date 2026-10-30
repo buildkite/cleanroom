@@ -9,22 +9,53 @@ RUN apt-get update \
       ca-certificates \
       curl \
       default-libmysqlclient-dev \
+      fonts-freefont-ttf \
+      fonts-ipafont-gothic \
+      fonts-liberation \
+      fonts-noto-color-emoji \
+      fonts-tlwg-loma-otf \
+      fonts-unifont \
+      fonts-wqy-zenhei \
       git \
       iproute2 \
+      libasound2 \
       libatomic1 \
+      libatk-bridge2.0-0 \
+      libatk1.0-0 \
+      libatspi2.0-0 \
+      libcairo2 \
+      libcups2 \
+      libdbus-1-3 \
+      libdrm2 \
       libffi-dev \
+      libfontconfig1 \
+      libfreetype6 \
+      libgbm1 \
       libgdbm-dev \
+      libglib2.0-0 \
       libncurses-dev \
+      libnspr4 \
+      libnss3 \
+      libpango-1.0-0 \
       libpq-dev \
       libreadline-dev \
       libxml2-dev \
       libsqlite3-dev \
       libssl-dev \
+      libx11-6 \
+      libxcb1 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxext6 \
+      libxfixes3 \
+      libxkbcommon0 \
+      libxrandr2 \
       libyaml-dev \
       openssh-client \
       patch \
       pkg-config \
       strace \
+      xfonts-scalable \
       xz-utils \
       zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
